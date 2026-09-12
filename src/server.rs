@@ -25,6 +25,7 @@ use crate::app::{
     SaveAuthProvider, SaveDashboardLayout, SaveRedirectAllowlist, SeedDashboardDemos,
     SelectOrganization, StartOauthLogin, StartPasskeyLogin, StartPasskeyRegistration,
     StartPasswordReset, StartTotpEnrollment, TestDashboardHttpSource, TransferTaxProfile,
+    PatchTaxProfile,
     TransferWorkspaceOwnership,
     UpdateAccountProfile, UpdateDashboardNote, UpdateWorkspaceName, UpsertCurrentOrganizationRole,
     UpsertDashboardQuery, UpsertDashboardResource, UpsertDashboardSource, UpsertWorkspaceRole,
@@ -283,6 +284,7 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
             .with_server_fn::<ChangePassword>()
             .with_server_fn::<ListTaxProfiles>()
             .with_server_fn::<CreateTaxProfile>()
+            .with_server_fn::<PatchTaxProfile>()
             .with_server_fn::<ClaimTaxProfile>()
             .with_server_fn::<ReclaimTaxProfile>()
             .with_server_fn::<TransferTaxProfile>()

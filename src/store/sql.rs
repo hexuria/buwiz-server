@@ -178,7 +178,11 @@ pub async fn initialize_schema_async() -> AuthStackResult<()> {
                 .join(", ")
         )));
     }
-    for version in ["0001_app_storage", "0002_tax_profiles_and_oauth"] {
+    for version in [
+        "0001_app_storage",
+        "0002_tax_profiles_and_oauth",
+        "0003_hashed_tin_and_sync_stubs",
+    ] {
         let app_migration = execute_postgres(
             "SELECT version FROM buwiz_server.schema_migrations WHERE version = ?1",
             vec![Value::String(version.to_owned())],

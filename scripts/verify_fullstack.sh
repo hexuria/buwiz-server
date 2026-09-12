@@ -510,12 +510,19 @@ curl -sS -f "$BASE_URL/.well-known/oauth-authorization-server" \
     (.authorization_endpoint | test("/oauth/authorize"))
     and (.token_endpoint | test("/oauth/token"))
     and (.device_authorization_endpoint | test("/oauth/device/code"))
+    and (.buwiz_device_start_endpoint | test("/auth/device/start"))
+    and (.buwiz_device_poll_endpoint | test("/auth/device/poll"))
     and (.code_challenge_methods_supported | index("S256"))
   ' >/dev/null
 
-device_response="$(json_post /oauth/device/code "{\"client_id\":\"buwiz-desktop\"}")"
-jq -e '.device_code and .user_code and (.verification_uri | test("/login/device"))' \
+device_response="$(json_post /auth/device/start "{\"client_id\":\"buwiz-desktop\"}")"
+jq -e '.device_code and .user_code and .interval and (.verification_uri | test("/login/device"))' \
   <<<"$device_response" >/dev/null
+device_code="$(jq -r '.device_code' <<<"$device_response")"
+poll_pending="$(curl -sS -X POST "$BASE_URL/auth/device/poll" \
+  -H 'content-type: application/json' \
+  --data "{\"device_code\":\"$device_code\"}")"
+jq -e '.error == "authorization_pending"' <<<"$poll_pending" >/dev/null
 
 assert_error 405 validation GET "$BASE_URL/api/auth/password/login"
 assert_error 404 not_found GET "$BASE_URL/api/auth/not-a-real-route"
@@ -815,14 +822,26 @@ json_post /api/auth/token/verify "{\"access_token\":\"$access_token\"}" \
 
 tin_root="123456789"
 branch_code="00000"
-create_tp="$(json_post /api/tax-profiles \
+create_tp="$(json_post /tax-profiles \
   "{\"tin_root\":\"$tin_root\",\"branch_code\":\"$branch_code\",\"registered_name\":\"Smoke Taxpayer\",\"rdo_code\":\"039\",\"line_of_business\":\"Software\",\"registered_address\":\"Makati\",\"zip_code\":\"1200\",\"phone\":\"\",\"email\":\"$email\",\"taxpayer_type\":\"individual\"}" \
   -H "$session_cookie" -H "x-csrf-token: $csrf_token")"
-jq -e '.profile_id and .ownership_status == "personal_exclusive" and .tin_root == "123456789"' \
+jq -e '.id and .profile_id and .claim_status == "owned" and .tin_last4 == "6789" and (has("tin_root") | not)' \
   <<<"$create_tp" >/dev/null
-curl -sS -f "$BASE_URL/api/tax-profiles" -H "$session_cookie" \
+profile_id="$(jq -r '.id' <<<"$create_tp")"
+updated_at="$(jq -r '.updated_at' <<<"$create_tp")"
+curl -sS -f "$BASE_URL/me" -H "$session_cookie" \
+  | jq -e --arg email "$email" '.user_id and .email == $email and (.orgs | type == "array")' >/dev/null
+curl -sS -f "$BASE_URL/tax-profiles" -H "$session_cookie" \
+  -H 'accept: application/json' \
   | jq -e '.profiles | length >= 1' >/dev/null
-assert_error 409 conflict POST "$BASE_URL/api/tax-profiles" \
+curl -sS -f "$BASE_URL/tax-profiles/$profile_id" -H "$session_cookie" \
+  | jq -e --arg id "$profile_id" '.id == $id and .tin_last4 == "6789"' >/dev/null
+patch_tp="$(curl -sS -f -X PATCH "$BASE_URL/tax-profiles/$profile_id" \
+  -H "$session_cookie" -H "x-csrf-token: $csrf_token" \
+  -H 'content-type: application/json' \
+  --data "{\"display_name\":\"Smoke Taxpayer Updated\",\"updated_at\":\"$updated_at\"}")"
+jq -e '.display_name == "Smoke Taxpayer Updated"' <<<"$patch_tp" >/dev/null
+assert_error 409 conflict POST "$BASE_URL/tax-profiles" \
   -H 'content-type: application/json' \
   -H "$session_cookie" \
   -H "x-csrf-token: $csrf_token" \

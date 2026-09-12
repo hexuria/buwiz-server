@@ -45,6 +45,7 @@ pub async fn create_tax_profile(
             TaxProfileCreateRequest {
                 tin_root,
                 branch_code,
+                display_name: Some(registered_name.clone()),
                 registered_name,
                 rdo_code,
                 line_of_business,
@@ -56,7 +57,7 @@ pub async fn create_tax_profile(
                 tax_classification,
                 is_vat_registered,
                 organization_id,
-                expected_revision: Some(0),
+                org_id: None,
             },
             server_fn_request_auth(),
         )
@@ -80,6 +81,46 @@ pub async fn create_tax_profile(
             is_vat_registered,
             organization_id,
         );
+        unreachable!()
+    }
+}
+
+#[server(prefix = "/api/ui")]
+pub async fn patch_tax_profile(
+    profile_id: String,
+    display_name: Option<String>,
+    registered_name: Option<String>,
+    rdo_code: Option<String>,
+    updated_at: Option<String>,
+) -> Result<TaxProfileView, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::patch_tax_profile(
+            profile_id,
+            TaxProfilePatchRequest {
+                display_name,
+                registered_name,
+                rdo_code,
+                line_of_business: None,
+                registered_address: None,
+                zip_code: None,
+                phone: None,
+                email: None,
+                taxpayer_type: None,
+                tax_classification: None,
+                is_vat_registered: None,
+                updated_at,
+                tin_root: None,
+                branch_code: None,
+            },
+            server_fn_request_auth(),
+        )
+        .await
+        .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (profile_id, display_name, registered_name, rdo_code, updated_at);
         unreachable!()
     }
 }
@@ -136,16 +177,14 @@ pub async fn reclaim_tax_profile(
 
 #[server(prefix = "/api/ui")]
 pub async fn transfer_tax_profile(
-    tin_root: String,
-    branch_code: String,
+    profile_id: String,
     organization_id: String,
 ) -> Result<TaxProfileView, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
         crate::application::transfer_tax_profile(
             TaxProfileTransferRequest {
-                tin_root,
-                branch_code,
+                id: profile_id,
                 organization_id,
                 expected_revision: None,
             },
@@ -156,7 +195,7 @@ pub async fn transfer_tax_profile(
     }
     #[cfg(not(feature = "ssr"))]
     {
-        let _ = (tin_root, branch_code, organization_id);
+        let _ = (profile_id, organization_id);
         unreachable!()
     }
 }

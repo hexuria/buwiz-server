@@ -1,20 +1,24 @@
 //! First-party desktop OAuth client policy (no identity provider).
 //!
 //! wasi-auth is an OAuth *client* for Google/Apple/Facebook. Buwiz desktop needs
-//! this app to act as an authorization server (PKCE + device code).
+//! this app to act as an authorization server (device flow + PKCE).
 
 /// Public native client for the Buwiz desktop app. No client secret.
 pub const DESKTOP_CLIENT_ID: &str = "buwiz-desktop";
 
 pub const DESKTOP_SCOPE: &str = "openid profile email tax_profiles";
 
-/// Custom-scheme callback used by the native app.
-pub const DESKTOP_CUSTOM_SCHEME_REDIRECT: &str = "buwiz://auth/callback";
+/// Preferred custom-scheme callback (optional secondary to device flow).
+pub const DESKTOP_CUSTOM_SCHEME_REDIRECT: &str = "buwiz://oauth/callback";
+
+/// Older custom-scheme URI still accepted so in-flight clients keep working.
+pub const DESKTOP_LEGACY_CUSTOM_SCHEME_REDIRECT: &str = "buwiz://auth/callback";
 
 /// Whether `redirect_uri` is allowed for the public desktop client.
 ///
-/// Loopback HTTP(S) on any port is allowed so a native helper can bind an
-/// ephemeral port. Extra URIs come from `DESKTOP_OAUTH_REDIRECT_URIS`.
+/// Loopback HTTP(S) on any port is allowed so a native helper can bind
+/// `http://127.0.0.1:<port>/callback`. Extra URIs come from
+/// `DESKTOP_OAUTH_REDIRECT_URIS`. Device flow does not use a redirect URI.
 pub fn desktop_redirect_uri_allowed(uri: &str, extra: &[String]) -> bool {
     let uri = uri.trim();
     if uri.is_empty() {
@@ -23,7 +27,7 @@ pub fn desktop_redirect_uri_allowed(uri: &str, extra: &[String]) -> bool {
     if extra.iter().any(|candidate| candidate.trim() == uri) {
         return true;
     }
-    if uri == DESKTOP_CUSTOM_SCHEME_REDIRECT {
+    if uri == DESKTOP_CUSTOM_SCHEME_REDIRECT || uri == DESKTOP_LEGACY_CUSTOM_SCHEME_REDIRECT {
         return true;
     }
     loopback_http_redirect_allowed(uri)
@@ -65,6 +69,10 @@ mod tests {
     #[test]
     fn allows_custom_scheme_and_loopback() {
         assert!(desktop_redirect_uri_allowed(
+            "buwiz://oauth/callback",
+            &[]
+        ));
+        assert!(desktop_redirect_uri_allowed(
             "buwiz://auth/callback",
             &[]
         ));
@@ -73,7 +81,7 @@ mod tests {
             &[]
         ));
         assert!(desktop_redirect_uri_allowed(
-            "http://localhost:43110/auth",
+            "http://localhost:43110/callback",
             &[]
         ));
         assert!(desktop_redirect_uri_allowed("http://[::1]:8080/", &[]));

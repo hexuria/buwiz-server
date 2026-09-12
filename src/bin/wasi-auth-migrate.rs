@@ -50,6 +50,10 @@ async fn apply_or_verify_app_schema(
             "0002_tax_profiles_and_oauth",
             include_str!("../../migrations/postgres/0002_tax_profiles_and_oauth.sql"),
         ),
+        (
+            "0003_hashed_tin_and_sync_stubs",
+            include_str!("../../migrations/postgres/0003_hashed_tin_and_sync_stubs.sql"),
+        ),
     ];
     let (mut client, connection) =
         tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;

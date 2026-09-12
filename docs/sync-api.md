@@ -1,47 +1,75 @@
-# Filing-history sync API (intended shape)
+# Sync entities (headless-bir / Grok Bot)
 
-This document is the **extension point** for syncing BIR filing history between **hexuria/headless-bir** (or the Buwiz desktop app) and this cloud control plane. v1 does **not** implement the protocol.
+v1 ships **stable server ids and stub tables**. The HTTP sync protocol is not implemented yet.
 
-Durable source of truth for tax-profile **ownership** is already Postgres (`buwiz_server.tax_profiles`). Filing rows would be a separate aggregate keyed by the same registration unit (`tin_root` + `branch_code`).
+Cloud never stores IMAP passwords, mailbox OAuth tokens, `profile_pin_hash`, or `totp_secret`.
 
-## Goals
+Effective-dated COR version ledgers are **not** modeled. Per-year forms are **Manual-only**.
 
-- Desktop / headless-bir can push a **checkpointed** filing list after a local scrape.
-- Cloud never stores IMAP passwords, mailbox OAuth refresh tokens, or the desktop PIN/TOTP.
-- Exclusive tax-profile ownership gates who may push or pull (`holder` or verified owner).
-- Redis may **wake** subscribers after a sync commit; clients then GET the projection.
+## 1. TaxProfile (implemented)
 
-## Sketch (not implemented)
+UUID `id` is the source of truth. Exclusive uniqueness is the hashed TIN identity, not raw TIN.
+
+| REST | |
+|------|--|
+| `GET/POST /tax-profiles` | list / create |
+| `GET/PATCH /tax-profiles/{id}` | fetch / metadata LWW |
+
+See the product README. Redis may wake subscribers after a profile commit; clients then GET the projection.
+
+## 2. PerYearFormsSet (stub table)
+
+`buwiz_server.per_year_forms_sets`
+
+```
+{
+  "id": "<uuid>",
+  "profile_id": "<tax profile uuid>",
+  "tax_year": 2026,
+  "entries": [
+    { "form_code": "2550Q", "frequency": "quarterly", "active": true, "source": "Manual" }
+  ]
+}
+```
+
+`source` is Manual in v1. No HTTP routes yet.
+
+## 3. FormDraft (stub table)
+
+`buwiz_server.form_drafts`
+
+Stable `draft_id`. Fields: `form_code`, `period`, `status`, `payload_json`. Full draft sync is **not** implemented.
+
+## 4. Filing / submission job (stub tables)
+
+`buwiz_server.filing_jobs` + append-only `filing_job_events`.
+
+Status path: **Draft → Queued → Submitted → Confirmed → Paid**, plus `receipt_match_keys`.
+
+Metadata only. **Not** BIR credentials.
+
+## Intended later HTTP (not implemented)
 
 ```
 POST /api/sync/filing-history
 Authorization: Bearer <access_token>
 {
-  "tin_root": "123456789",
-  "branch_code": "00000",
-  "expected_revision": 4,
+  "profile_id": "<uuid>",
   "source": "headless-bir",
   "checkpoint": "2026-09-01T00:00:00Z",
-  "filings": [
-    {
-      "form_type": "2550Q",
-      "period": "2026Q2",
-      "rdo_code": "039",
-      "status": "filed",
-      "reference": "optional-bir-ref",
-      "filed_at": "2026-07-15T08:00:00Z"
-    }
-  ]
+  "filings": []
 }
 
-GET /api/sync/filing-history?tin_root=123456789&branch_code=00000&after=...
+GET /api/sync/filing-history?profile_id=...&after=...
 ```
 
 ### Rules to encode later
 
 - Require verified email + tax-profile holder (or reclaim-capable verified owner).
-- Optimistic concurrency on `expected_revision` of the filing-history stream (same pattern as tax profiles).
-- Idempotency key per `(tin_root, branch_code, source, checkpoint)`.
-- Reject payloads that include secrets (`imap_*`, `totp_*`, `pin`, mailbox tokens).
+- Key all sync by **profile UUID**, never raw TIN.
+- Idempotency per `(profile_id, source, checkpoint)`.
+- Reject payloads that include secrets (`imap_*`, `totp_*`, `pin`, mailbox tokens, `profile_pin_hash`).
 
 ORUS verification remains independent: syncing history does not prove TIN ownership.
+
+TSP / BIR SFTP relay is out of scope. See [extensions.md](extensions.md).

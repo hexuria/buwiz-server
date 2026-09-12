@@ -26,6 +26,8 @@ pub fn is_desktop_oauth_request(path: &str) -> bool {
             | "/oauth/authorize"
             | "/oauth/token"
             | "/oauth/device/code"
+            | "/auth/device/start"
+            | "/auth/device/poll"
             | "/login/device"
     )
 }
@@ -41,7 +43,10 @@ pub async fn serve(req: RestRequest) -> AuthStackResult<RestResponse> {
         (Method::GET, "/oauth/authorize") => authorize_get(&req, &uri).await,
         (Method::POST, "/oauth/authorize") => authorize_post(req).await,
         (Method::POST, "/oauth/token") => token(req).await,
-        (Method::POST, "/oauth/device/code") => device_code(req).await,
+        (Method::POST, "/oauth/device/code") | (Method::POST, "/auth/device/start") => {
+            device_code(req).await
+        }
+        (Method::POST, "/auth/device/poll") => device_poll(req).await,
         (Method::GET, "/login/device") => device_get(&req, &uri).await,
         (Method::POST, "/login/device") => device_post(req).await,
         (Method::OPTIONS, _) => empty(StatusCode::NO_CONTENT),
@@ -59,6 +64,8 @@ async fn authorization_server_metadata() -> serde_json::Value {
         "authorization_endpoint": format!("{issuer}/oauth/authorize"),
         "token_endpoint": format!("{issuer}/oauth/token"),
         "device_authorization_endpoint": format!("{issuer}/oauth/device/code"),
+        "buwiz_device_start_endpoint": format!("{issuer}/auth/device/start"),
+        "buwiz_device_poll_endpoint": format!("{issuer}/auth/device/poll"),
         "revocation_endpoint": format!("{issuer}/api/auth/logout"),
         "jwks_uri": format!("{issuer}/api/auth/.well-known/jwks.json"),
         "response_types_supported": ["code"],
@@ -360,6 +367,21 @@ async fn device_code(req: RestRequest) -> AuthStackResult<RestResponse> {
     )
 }
 
+async fn device_poll(req: RestRequest) -> AuthStackResult<RestResponse> {
+    let form = parse_form_or_json(req).await?;
+    let mut form = form;
+    if !form.contains_key("grant_type") {
+        form.insert(
+            "grant_type".to_owned(),
+            "urn:ietf:params:oauth:grant-type:device_code".to_owned(),
+        );
+    }
+    if !form.contains_key("client_id") {
+        form.insert("client_id".to_owned(), DESKTOP_CLIENT_ID.to_owned());
+    }
+    device_grant(&form).await
+}
+
 async fn device_get(req: &RestRequest, uri: &http::Uri) -> AuthStackResult<RestResponse> {
     let Some(session) = session_from_request(req).await? else {
         let next = format!("/login/device?{}", uri.query().unwrap_or_default());
@@ -390,7 +412,7 @@ async fn device_get(req: &RestRequest, uri: &http::Uri) -> AuthStackResult<RestR
         StatusCode::OK,
         &oauth_page(
             "Authorize a device",
-            "Enter the code shown in the Buwiz desktop app. You stay in control of the submit.",
+            "Enter the code shown in the Buwiz desktop app, then return to the app. You stay in control of the submit.",
             &body,
         ),
     )
@@ -428,6 +450,8 @@ async fn token_from_session(session_id: &str) -> AuthStackResult<RestResponse> {
         .map_err(|_| AuthStackError::AuthRequired)?;
     let (access_token, refresh_token, expires_in) =
         crate::auth_product::issue_tokens(&session_id).await?;
+    // Access + refresh are issued together. Clients store refresh in the OS
+    // keychain. This handler never logs token values.
     json_response(
         StatusCode::OK,
         &serde_json::json!({
@@ -706,6 +730,8 @@ mod tests {
             "/.well-known/oauth-authorization-server"
         ));
         assert!(is_desktop_oauth_request("/oauth/device/code"));
+        assert!(is_desktop_oauth_request("/auth/device/start"));
+        assert!(is_desktop_oauth_request("/auth/device/poll"));
         assert!(!is_desktop_oauth_request("/api/auth/password/login"));
     }
 }

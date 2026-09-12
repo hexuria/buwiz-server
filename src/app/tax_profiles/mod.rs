@@ -23,7 +23,7 @@ use server_fn::ServerFnError;
 pub fn TaxProfilesPage() -> impl IntoView {
     page_shell(
         "Tax profiles",
-        "Exclusive cloud control of a BIR registration unit (TIN + branch). Desktop secrets stay on the device.",
+        "Exclusive cloud control of a BIR registration unit. Server identity is a UUID; TIN is attested and hashed. Desktop secrets stay on the device.",
         view! { <TaxProfilesHome /> },
     )
 }
@@ -46,6 +46,8 @@ pub fn TaxProfilesHome() -> impl IntoView {
     let rdo_code = RwSignal::new(String::new());
     let taxpayer_type = RwSignal::new("individual".to_string());
     let hold_org = RwSignal::new(false);
+    let claim_tin = RwSignal::new(String::new());
+    let claim_branch = RwSignal::new("00000".to_string());
     let selected_org = RwSignal::new(String::new());
 
     let refresh = move |_| {
@@ -72,7 +74,7 @@ pub fn TaxProfilesHome() -> impl IntoView {
                     <p class=ORG_KICKER>"Cloud control plane"</p>
                     <h2 class=ORG_TOOLBAR_TITLE>"Tax profiles"</h2>
                     <p class=ORG_TOOLBAR_SUB>
-                        "One holder per TIN + branch. A company may hold a profile until the verified owner claims or reclaims it."
+                        "One holder per hashed TIN identity. A company may hold a profile until the verified owner claims or reclaims it. Cloud identity is the profile UUID, not the TIN."
                     </p>
                 </div>
                 <button class=BTN_SECONDARY type="button" on:click=refresh>"Refresh"</button>
@@ -194,6 +196,43 @@ pub fn TaxProfilesHome() -> impl IntoView {
             </section>
 
             <section class=PANEL>
+                <p class=SECTION_LABEL>"Claim or reclaim"</p>
+                <p class=RESULT_LINE>
+                    "Attest the TIN to match the hashed identity. ORUS is stubbed unless ORUS_FAKE_VERIFIER is on."
+                </p>
+                <div class=FIELD_GROUP>
+                    <label class=FIELD>
+                        <span>"TIN (9 digits)"</span>
+                        <input class=INPUT prop:value=move || claim_tin.get()
+                            on:input=move |ev| claim_tin.set(event_target_value(&ev)) />
+                    </label>
+                    <label class=FIELD>
+                        <span>"Branch code"</span>
+                        <input class=INPUT prop:value=move || claim_branch.get()
+                            on:input=move |ev| claim_branch.set(event_target_value(&ev)) />
+                    </label>
+                    <div class="flex flex-wrap gap-2">
+                        <button class=BTN_SECONDARY type="button"
+                            on:click=move |_| {
+                                claim.dispatch(ClaimTaxProfile {
+                                    tin_root: claim_tin.get_untracked(),
+                                    branch_code: claim_branch.get_untracked(),
+                                });
+                            }
+                        >"Claim as owner"</button>
+                        <button class=BTN_SECONDARY type="button"
+                            on:click=move |_| {
+                                reclaim.dispatch(ReclaimTaxProfile {
+                                    tin_root: claim_tin.get_untracked(),
+                                    branch_code: claim_branch.get_untracked(),
+                                });
+                            }
+                        >"Reclaim"</button>
+                    </div>
+                </div>
+            </section>
+
+            <section class=PANEL>
                 <p class=SECTION_LABEL>"Held profiles"</p>
                 <Show when=move || profiles.get().is_none()>
                     <p class=RESULT_LINE>"Loading tax profiles"</p>
@@ -209,40 +248,21 @@ pub fn TaxProfilesHome() -> impl IntoView {
                         each=move || profiles.get().and_then(Result::ok).map(|list| list.profiles).unwrap_or_default()
                         key=|profile| profile.profile_id.clone()
                         children=move |profile| {
-                            let tin = profile.tin_root.clone();
-                            let branch = profile.branch_code.clone();
-                            let tin_claim = tin.clone();
-                            let branch_claim = branch.clone();
                             view! {
                                 <li class="mb-4 rounded-xl border border-border-subtle p-4">
-                                    <strong>{profile.registered_name}</strong>
+                                    <strong>{profile.display_name}</strong>
                                     <p class=RESULT_LINE>
                                         {format!(
-                                            "{}-{} · {} · {} · rev {}",
-                                            profile.tin_root,
-                                            profile.branch_code,
+                                            "····{} · {} · {} · {} · {}",
+                                            profile.tin_last4,
+                                            profile.claim_status,
                                             profile.ownership_status,
                                             profile.verification_status,
-                                            profile.revision
+                                            profile.id
                                         )}
                                     </p>
                                     <div class="mt-2 flex flex-wrap gap-2">
-                                        <button class=BTN_SECONDARY type="button"
-                                            on:click=move |_| {
-                                                claim.dispatch(ClaimTaxProfile {
-                                                    tin_root: tin_claim.clone(),
-                                                    branch_code: branch_claim.clone(),
-                                                });
-                                            }
-                                        >"Claim as owner"</button>
-                                        <button class=BTN_SECONDARY type="button"
-                                            on:click=move |_| {
-                                                reclaim.dispatch(ReclaimTaxProfile {
-                                                    tin_root: tin.clone(),
-                                                    branch_code: branch.clone(),
-                                                });
-                                            }
-                                        >"Reclaim"</button>
+                                        <span class=RESULT_LINE>"Claim/reclaim uses TIN attestation below — the UUID is the cloud key."</span>
                                     </div>
                                 </li>
                             }

@@ -33,7 +33,7 @@ make dev transport=both
 | Target | Purpose |
 |--------|---------|
 | `make db-up` | Postgres + Redis |
-| `make db-migrate` | wasi-auth schema + Buwiz migrations (`0001`, `0002`) |
+| `make db-migrate` | wasi-auth schema + Buwiz migrations (`0001`–`0003`) |
 | `make dev` | Spin + outbox worker (register / verify) |
 | `make check` | `wasm32-wasip2` compile |
 | `make smoke` | REST + web route checks against `BASE_URL` |
@@ -60,72 +60,91 @@ The worker uses `AUTH_MAIL_PRODUCT_NAME=Buwiz` in templates.
 
 ---
 
-## Desktop OAuth / device login
+## Desktop auth — device flow (preferred)
 
-wasi-auth is an OAuth **client** (Google/Apple/Facebook). The Buwiz desktop app needs this service as a first-party **authorization server**.
+GPUI desktop has no embedded browser we want to depend on. Do **not** rely on “browser redirect to a random https URL” as the primary path.
 
-Public native client id: `buwiz-desktop` (no client secret; PKCE S256).
+Public native client id: `buwiz-desktop` (no client secret).
+
+1. Desktop calls `POST /auth/device/start`.
+2. App shows the short `user_code` and an **Open browser** action pointing at `verification_uri` (`/login/device`).
+3. User signs up or logs in on the web (email verification still required before tax-profile mutations).
+4. Desktop polls `POST /auth/device/poll` until it receives **access + refresh** tokens (or `authorization_pending`).
+5. Clients store the **refresh token in the OS keychain**. This server never logs refresh tokens.
 
 | Endpoint | URL |
 |----------|-----|
+| Device start (primary) | `POST {AUTH_PUBLIC_BASE_URL}/auth/device/start` |
+| Device poll (primary) | `POST {AUTH_PUBLIC_BASE_URL}/auth/device/poll` |
+| Current user | `GET {AUTH_PUBLIC_BASE_URL}/me` |
+| User verification page | `{AUTH_PUBLIC_BASE_URL}/login/device` |
 | Metadata | `GET {AUTH_PUBLIC_BASE_URL}/.well-known/oauth-authorization-server` |
-| Authorize (PKCE) | `GET {AUTH_PUBLIC_BASE_URL}/oauth/authorize` |
-| Token | `POST {AUTH_PUBLIC_BASE_URL}/oauth/token` |
-| Device code | `POST {AUTH_PUBLIC_BASE_URL}/oauth/device/code` |
-| User verification | `{AUTH_PUBLIC_BASE_URL}/login/device` |
 
-### Authorization-code + PKCE
+`POST /auth/device/start` → `{ device_code, user_code, verification_uri, interval }` (also `expires_in`, `verification_uri_complete`).
 
-1. Desktop opens a browser (or embedded webview) at:
+`POST /auth/device/poll` with `{ "device_code": "..." }` → access+refresh, or `{ "error": "authorization_pending" }`.
 
-   `{AUTH_PUBLIC_BASE_URL}/oauth/authorize?response_type=code&client_id=buwiz-desktop&redirect_uri=buwiz://auth/callback&code_challenge=...&code_challenge_method=S256&state=...`
+`GET /me` (Bearer or session cookie) → `{ user_id, email, orgs }`.
 
-2. User registers or logs in on the web, then authorizes the desktop app.
-3. Browser redirects to `redirect_uri?code=...&state=...`.
-4. Desktop exchanges the code at `/oauth/token` (`grant_type=authorization_code`) with `code_verifier`. Refresh tokens use `grant_type=refresh_token`.
+RFC 8628 aliases remain: `POST /oauth/device/code` and poll via `POST /oauth/token` with `grant_type=urn:ietf:params:oauth:grant-type:device_code`.
 
-**Allowed `redirect_uri` values**
+### Secondary: loopback PKCE
 
-- `buwiz://auth/callback` (custom scheme)
-- Loopback `http://` / `https://` on `127.0.0.1`, `localhost`, or `[::1]` (any port)
+For clients that can bind a local port:
+
+1. `GET /oauth/authorize?response_type=code&client_id=buwiz-desktop&redirect_uri=http://127.0.0.1:<port>/callback&code_challenge=...&code_challenge_method=S256&state=...`
+2. User registers or logs in on the web, then authorizes.
+3. Browser redirects to `http://127.0.0.1:<port>/callback?code=...&state=...`.
+4. Desktop exchanges the code at `/oauth/token` (`grant_type=authorization_code`) with `code_verifier`. Refresh uses `grant_type=refresh_token`.
+
+**Allowed `redirect_uri` values** (PKCE only; device flow does not use one):
+
+- Loopback `http://` / `https://` on `127.0.0.1`, `localhost`, or `[::1]` (any port), typically `/callback`
+- Optional custom scheme `buwiz://oauth/callback` (legacy `buwiz://auth/callback` still accepted)
 - Extra comma-separated URIs in `DESKTOP_OAUTH_REDIRECT_URIS` / Spin variable `desktop_oauth_redirect_uris`
 
-### Device code (headless / TV-style)
+Scope issued: `openid profile email tax_profiles`.
 
 ```bash
-curl -sS -X POST http://localhost:3008/oauth/device/code \
+curl -sS -X POST http://localhost:3008/auth/device/start \
   -H 'content-type: application/json' \
   -d '{"client_id":"buwiz-desktop"}'
 ```
-
-Poll `/oauth/token` with `grant_type=urn:ietf:params:oauth:grant-type:device_code` until the user finishes `/login/device`.
-
-Scope issued: `openid profile email tax_profiles`.
 
 ---
 
 ## Tax profiles
 
-Cloud subset of the desktop `TaxpayerProfile` (TIN + branch is the uniqueness key). A **personal** account or a **company/org** workspace can hold a profile. Rules:
+Cloud subset of the desktop taxpayer profile. **`id` (UUID) is the server source of truth.** Clients must not treat TIN as the local identity key.
 
-1. Only one holder controls a TIN+branch at a time.
+The server stores `tin_last4` for display and an HMAC of `{tin_root}|{branch_code}` (derived from `AUTH_ROOT_KEY_BASE64`) for exclusive uniqueness and claim matching. Raw TIN is attested at create/claim time and is **not** the primary key.
+
+`claim_status`: `owned` | `pending_claim` | `read_only`.
+
+Rules:
+
+1. Only one active holder per hashed taxpayer registration unit.
 2. Personal hold is exclusive to that user (and their agents).
-3. A company may hold it until the verified owner claims or reclaims.
+3. A company may hold it until the verified owner claims or reclaims (`pending_claim`).
 4. The verified owner can reclaim at any time.
-5. If the owner has no account yet, a company may create/hold; the owner claims later with TIN proof.
-6. Concurrent claims fail safely (expected revision + unique `(tin_root, branch_code)`).
+5. Multi-device metadata uses last-write-wins via `updated_at` (PATCH must echo the last seen `updated_at`). Never silent-merge two different TINs into one row.
+6. Concurrent creates of the same hashed identity fail with 409.
 
-Email must be **verified** before create/claim/reclaim/transfer.
+Email must be **verified** before create/claim/reclaim/transfer/patch.
+
+Cloud field subset for sync: `full_name`, `rdo_code`, `address`, `taxpayer_type`, plus contact/classification fields. **Never** sync `profile_pin_hash`, `totp_secret`, IMAP passwords, or mailbox OAuth tokens.
 
 | REST | |
 |------|--|
-| `GET /api/tax-profiles` | List held profiles |
-| `POST /api/tax-profiles` | Create |
-| `POST /api/tax-profiles/claim` | Claim from company hold (ORUS proof) |
-| `POST /api/tax-profiles/reclaim` | Take back control |
-| `POST /api/tax-profiles/transfer` | Transfer to an org you belong to |
+| `GET /tax-profiles` | List held profiles (`GET /api/tax-profiles` alias) |
+| `POST /tax-profiles` | Create (TIN attested; UUID returned) |
+| `GET /tax-profiles/{id}` | Fetch by UUID |
+| `PATCH /tax-profiles/{id}` | Metadata LWW (`updated_at`) |
+| `POST /tax-profiles/claim` | Claim from company hold (ORUS proof; TIN attested) |
+| `POST /tax-profiles/reclaim` | Take back control |
+| `POST /tax-profiles/transfer` | Transfer to an org you belong to (`{ id, organization_id }`) |
 
-UI: `/tax-profiles`.
+UI: `/tax-profiles` (HTML). Desktop `GET /tax-profiles` should send `Authorization: Bearer` or `Accept: application/json` so it is not treated as the page. `GET /api/tax-profiles` is always JSON.
 
 Claim/reclaim call `TinOwnershipVerifier`. Production ORUS is **not** implemented. Set `ORUS_FAKE_VERIFIER=true` for local proof. See [docs/extensions.md](docs/extensions.md).
 
@@ -190,8 +209,8 @@ Rust **1.93.0**. Toolchain is gated by `scripts/verify_toolchain.sh`.
 ## What is stubbed (not in this slice)
 
 - Live **ORUS** TIN verification — trait + `FakeOrusVerifier` only
-- Filing-history sync with headless-bir — [docs/sync-api.md](docs/sync-api.md)
-- BIR SFTP / TSP submission relay ([hexuria/buwiz-forms#44](https://github.com/hexuria/buwiz-forms/issues/44)) — not implemented on purpose
+- Full **form-draft sync** and filing-history protocol with headless-bir / Grok Bot — tables exist (`per_year_forms_sets`, `form_drafts`, `filing_jobs`); HTTP sync is not implemented. See [docs/sync-api.md](docs/sync-api.md)
+- BIR SFTP / **TSP submission relay** ([hexuria/buwiz-forms#44](https://github.com/hexuria/buwiz-forms/issues/44)) — not implemented on purpose
 - Copying desktop profile encryption / email OAuth secrets to cloud
 
 ---
@@ -199,11 +218,11 @@ Rust **1.93.0**. Toolchain is gated by `scripts/verify_toolchain.sh`.
 ## Layout
 
 ```
-src/domain/           tax profile aggregate, TIN, ORUS port, desktop redirect policy
+src/domain/           tax profile aggregate, hashed TIN identity, ORUS port, desktop redirect policy
 src/application/       verified-email gate + commands
 src/store/            Postgres events/projection + Redis wake + OAuth codes
-src/desktop_oauth.rs  first-party AS
+src/desktop_oauth.rs  device flow + PKCE authorization server
 src/app/              Leptos UI (auth, tax profiles, WebMCP)
-migrations/postgres/  0001 app storage, 0002 tax profiles + OAuth
+migrations/postgres/  0001 app storage, 0002 tax profiles + OAuth, 0003 hashed TIN + sync stubs
 docs/                 webmcp, sync API, extensions
 ```

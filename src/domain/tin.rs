@@ -59,7 +59,11 @@ impl BranchCode {
     }
 }
 
-/// Registration unit: TIN root + branch code. Exclusive-ownership uniqueness key.
+/// Registration unit: TIN root + branch code.
+///
+/// Used to *attest* identity at create/claim time. Cloud exclusive ownership
+/// is enforced on [`crate::domain::TinIdentityHash`], never on this value as a
+/// primary key.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RegistrationKey {
     pub tin_root: TinRoot,
@@ -86,7 +90,7 @@ impl RegistrationKey {
         format!("{}{}", self.tin_root.as_str(), self.branch_code.as_str())
     }
 
-    /// Event-stream / aggregate id (`000000000-00000`).
+    /// Compact display id. **Not** the cloud event-stream key (that is the profile UUID).
     pub fn stream_id(&self) -> String {
         format!("{}-{}", self.tin_root.as_str(), self.branch_code.as_str())
     }

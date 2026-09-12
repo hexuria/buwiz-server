@@ -12,7 +12,8 @@ use crate::contracts::{
     OrganizationUpdateRequest, PasskeyStartRequest, PasskeyVerifyRequest, PasswordChangeRequest,
     PasswordResetCompleteRequest, PasswordResetStartRequest, PolicyPublishRequest,
     RoleUpsertRequest, SessionRevokeRequest, SigningKeyRotateRequest, TokenRefreshRequest,
-    TokenVerifyRequest, TaxProfileClaimRequest, TaxProfileCreateRequest, TaxProfileTransferRequest,
+    TokenVerifyRequest, TaxProfileClaimRequest, TaxProfileCreateRequest, TaxProfilePatchRequest,
+    TaxProfileTransferRequest,
 };
 use crate::error::{AuthStackError, AuthStackResult};
 
@@ -23,6 +24,12 @@ const MAX_REST_BODY_BYTES: usize = 256 * 1024;
 
 pub fn is_rest_request(req: &RestRequest) -> bool {
     let path = req.uri().path();
+    if path == "/me" {
+        return true;
+    }
+    if path.starts_with("/tax-profiles") {
+        return tax_profiles_http_is_api(req);
+    }
     path.starts_with("/api/auth/")
         || path.starts_with("/api/authorization/")
         || path.starts_with("/api/organizations")
@@ -31,6 +38,27 @@ pub fn is_rest_request(req: &RestRequest) -> bool {
         || path.starts_with("/api/audit/")
         // ddd:domain-rest-prefix
         // ddd:domain-rest-prefix:end
+}
+
+fn tax_profiles_http_is_api(req: &RestRequest) -> bool {
+    let path = req.uri().path();
+    if !matches!(*req.method(), Method::GET | Method::HEAD) {
+        return true;
+    }
+    if path != "/tax-profiles" && path != "/tax-profiles/" {
+        return true;
+    }
+    access_token_from_request(req).is_some() || accept_prefers_json(req)
+}
+
+fn accept_prefers_json(req: &RestRequest) -> bool {
+    req.headers()
+        .get(http::header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            let lower = value.to_ascii_lowercase();
+            lower.contains("application/json") && !lower.contains("text/html")
+        })
 }
 
 pub async fn serve(req: RestRequest) -> AuthStackResult<RestResponse> {
@@ -389,26 +417,50 @@ async fn dispatch(req: RestRequest) -> AuthStackResult<RestResponse> {
                 .await,
             )
         }
-        (Method::GET, "/api/tax-profiles") => json_result(
+        (Method::GET, "/me") => json_result(crate::application::current_user_me(request_auth).await),
+        (Method::GET, "/api/tax-profiles") | (Method::GET, "/tax-profiles") => json_result(
             crate::application::list_tax_profiles(query_value(&uri, "organization_id"), request_auth)
                 .await,
         ),
-        (Method::POST, "/api/tax-profiles") => {
+        (Method::POST, "/api/tax-profiles") | (Method::POST, "/tax-profiles") => {
             validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
             let payload = parse_json::<TaxProfileCreateRequest>(req).await?;
             json_result(crate::application::create_tax_profile(payload, request_auth).await)
         }
-        (Method::POST, "/api/tax-profiles/claim") => {
+        (Method::GET, path)
+            if tax_profile_id_from_path(path).is_some()
+                && !matches!(
+                    path,
+                    "/api/tax-profiles/claim"
+                        | "/tax-profiles/claim"
+                        | "/api/tax-profiles/reclaim"
+                        | "/tax-profiles/reclaim"
+                        | "/api/tax-profiles/transfer"
+                        | "/tax-profiles/transfer"
+                ) =>
+        {
+            let id = tax_profile_id_from_path(path).expect("checked");
+            json_result(crate::application::get_tax_profile(id.to_owned(), request_auth).await)
+        }
+        (Method::PATCH, path) if tax_profile_id_from_path(path).is_some() => {
+            validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+            let id = tax_profile_id_from_path(path)
+                .expect("checked")
+                .to_owned();
+            let payload = parse_json::<TaxProfilePatchRequest>(req).await?;
+            json_result(crate::application::patch_tax_profile(id, payload, request_auth).await)
+        }
+        (Method::POST, "/api/tax-profiles/claim") | (Method::POST, "/tax-profiles/claim") => {
             validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
             let payload = parse_json::<TaxProfileClaimRequest>(req).await?;
             json_result(crate::application::claim_tax_profile(payload, request_auth).await)
         }
-        (Method::POST, "/api/tax-profiles/reclaim") => {
+        (Method::POST, "/api/tax-profiles/reclaim") | (Method::POST, "/tax-profiles/reclaim") => {
             validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
             let payload = parse_json::<TaxProfileClaimRequest>(req).await?;
             json_result(crate::application::reclaim_tax_profile(payload, request_auth).await)
         }
-        (Method::POST, "/api/tax-profiles/transfer") => {
+        (Method::POST, "/api/tax-profiles/transfer") | (Method::POST, "/tax-profiles/transfer") => {
             validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
             let payload = parse_json::<TaxProfileTransferRequest>(req).await?;
             json_result(crate::application::transfer_tax_profile(payload, request_auth).await)
@@ -748,9 +800,24 @@ fn non_empty_string(value: &str) -> Option<String> {
     }
 }
 
+fn tax_profile_id_from_path(path: &str) -> Option<&str> {
+    let rest = path
+        .strip_prefix("/tax-profiles/")
+        .or_else(|| path.strip_prefix("/api/tax-profiles/"))?;
+    if rest.is_empty() || rest.contains('/') {
+        return None;
+    }
+    if matches!(rest, "claim" | "reclaim" | "transfer") {
+        return None;
+    }
+    Some(rest)
+}
+
 fn known_rest_path(path: &str) -> bool {
-    path.starts_with("/api/organizations")
+    path == "/me"
+        || path.starts_with("/api/organizations")
         || path.starts_with("/api/tax-profiles")
+        || path.starts_with("/tax-profiles")
         || path.starts_with("/api/admin/")
         || path.starts_with("/api/audit/")
         || matches!(
@@ -845,6 +912,20 @@ mod tests {
     }
 
     #[test]
+    fn tax_profile_id_from_path_reads_uuid() {
+        assert_eq!(
+            tax_profile_id_from_path("/tax-profiles/11111111-1111-4111-8111-111111111111"),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+        assert_eq!(
+            tax_profile_id_from_path("/api/tax-profiles/11111111-1111-4111-8111-111111111111"),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+        assert_eq!(tax_profile_id_from_path("/tax-profiles/claim"), None);
+        assert_eq!(tax_profile_id_from_path("/tax-profiles"), None);
+    }
+
+    #[test]
     fn session_id_from_cookie_header_reads_auth_cookie() {
         assert_eq!(
             session_id_from_cookie_header("theme=light; wasi_auth_dev_session=session_1; other=1")
@@ -853,3 +934,4 @@ mod tests {
         );
     }
 }
+

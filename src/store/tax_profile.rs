@@ -1,14 +1,17 @@
 //! Postgres event log + exclusive-ownership projection for tax profiles.
+//!
+//! Event stream id is the profile UUID. Exclusive uniqueness is
+//! `tin_identity_hash`, never raw TIN.
 
 use serde_json::{json, Value};
 
 use getrandom::getrandom;
 
 use crate::domain::{
-    AccountHolder, CloudTaxProfileFacts, OwnershipStatus, TaxProfile, TaxProfileCommand,
-    TaxProfileError, TaxProfileEvent, TaxpayerType, VerificationStatus,
+    AccountHolder, ClaimStatus, CloudTaxProfileFacts, OwnershipStatus, TaxProfile,
+    TaxProfileCommand, TaxProfileError, TaxProfileEvent, TaxpayerType, TinIdentityHash,
+    VerificationStatus,
 };
-use crate::domain::tin::RegistrationKey;
 use crate::error::{AuthStackError, AuthStackResult};
 
 use super::{
@@ -21,11 +24,58 @@ pub(crate) struct LoadedTaxProfile {
     pub revision: u64,
 }
 
-pub(crate) async fn load_tax_profile(
-    registration: &RegistrationKey,
-) -> AuthStackResult<LoadedTaxProfile> {
+pub(crate) async fn tin_identity_pepper() -> AuthStackResult<[u8; 32]> {
+    crate::auth_product::derived_key(crate::auth_product::TIN_IDENTITY_INFO).await
+}
+
+pub(crate) fn rfc3339_now() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    unix_to_rfc3339(now.as_secs(), now.subsec_millis())
+}
+
+fn unix_to_rfc3339(secs: u64, millis: u32) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let h = rem / 3600;
+    let min = (rem % 3600) / 60;
+    let s = rem % 60;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mth = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if mth <= 2 { y + 1 } else { y };
+    format!("{year:04}-{mth:02}-{d:02}T{h:02}:{min:02}:{s:02}.{millis:03}Z")
+}
+
+pub(crate) async fn load_tax_profile_by_id(profile_id: &str) -> AuthStackResult<LoadedTaxProfile> {
     initialize_schema_async().await?;
-    let stream_id = registration.stream_id();
+    load_stream(profile_id).await
+}
+
+pub(crate) async fn load_tax_profile_by_identity_hash(
+    identity_hash: &TinIdentityHash,
+) -> AuthStackResult<Option<LoadedTaxProfile>> {
+    initialize_schema_async().await?;
+    let rows = execute_sql(
+        "SELECT profile_id::text AS profile_id FROM buwiz_server.tax_profiles \
+         WHERE tin_identity_hash = ?1",
+        vec![json!(identity_hash.as_str())],
+    )
+    .await?;
+    let Some(profile_id) = rows.first().and_then(|row| row_string(row, "profile_id")) else {
+        return Ok(None);
+    };
+    Ok(Some(load_stream(&profile_id).await?))
+}
+
+async fn load_stream(stream_id: &str) -> AuthStackResult<LoadedTaxProfile> {
     let rows = execute_sql(
         "SELECT payload FROM buwiz_server.tax_profile_events \
          WHERE stream_id = ?1 ORDER BY revision ASC",
@@ -42,19 +92,96 @@ pub(crate) async fn load_tax_profile(
             .map_err(|error| AuthStackError::store(format!("invalid tax profile event: {error}")))?;
         state.apply(&event);
     }
+    if !state.exists {
+        if let Some(projected) = load_projection_fallback(stream_id).await? {
+            return Ok(projected);
+        }
+    }
     Ok(LoadedTaxProfile {
         revision: rows.len() as u64,
         state,
     })
 }
 
+async fn load_projection_fallback(profile_id: &str) -> AuthStackResult<Option<LoadedTaxProfile>> {
+    let rows = execute_sql(
+        "SELECT profile_id::text AS profile_id, tin_identity_hash, tin_last4, display_name, \
+                registered_name, rdo_code, line_of_business, registered_address, zip_code, \
+                phone, email, taxpayer_type, tax_classification, is_vat_registered, \
+                holder_kind, holder_user_id::text AS holder_user_id, \
+                holder_organization_id::text AS holder_organization_id, \
+                ownership_status, verification_status, \
+                verified_owner_user_id::text AS verified_owner_user_id, \
+                revision, updated_at::text AS updated_at \
+         FROM buwiz_server.tax_profiles WHERE profile_id = ?1::uuid",
+        vec![json!(profile_id)],
+    )
+    .await?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    Ok(Some(LoadedTaxProfile {
+        revision: row_i64(row, "revision").unwrap_or(1) as u64,
+        state: tax_profile_from_row(row)?,
+    }))
+}
+
+fn tax_profile_from_row(row: &Value) -> AuthStackResult<TaxProfile> {
+    let holder_kind = required_string(row, "holder_kind")?;
+    let holder = match holder_kind.as_str() {
+        "personal" => AccountHolder::Personal {
+            user_id: required_string(row, "holder_user_id")?,
+        },
+        "organization" => AccountHolder::Organization {
+            organization_id: required_string(row, "holder_organization_id")?,
+        },
+        _ => {
+            return Err(AuthStackError::store("tax profile holder_kind is invalid"));
+        }
+    };
+    let facts = CloudTaxProfileFacts {
+        registered_name: required_string(row, "registered_name")?,
+        rdo_code: required_string(row, "rdo_code")?,
+        line_of_business: row_string(row, "line_of_business").unwrap_or_default(),
+        registered_address: row_string(row, "registered_address").unwrap_or_default(),
+        zip_code: row_string(row, "zip_code").unwrap_or_default(),
+        phone: row_string(row, "phone").unwrap_or_default(),
+        email: row_string(row, "email").unwrap_or_default(),
+        taxpayer_type: TaxpayerType::parse(&required_string(row, "taxpayer_type")?)
+            .map_err(map_tax_profile_error)?,
+        tax_classification: row_string(row, "tax_classification").filter(|value| !value.is_empty()),
+        is_vat_registered: row_bool(row, "is_vat_registered").unwrap_or(false),
+    };
+    Ok(TaxProfile {
+        exists: true,
+        profile_id: Some(required_string(row, "profile_id")?),
+        identity_hash: row_string(row, "tin_identity_hash")
+            .map(|value| TinIdentityHash::parse(&value))
+            .transpose()
+            .map_err(AuthStackError::store)?,
+        tin_last4: row_string(row, "tin_last4"),
+        display_name: row_string(row, "display_name")
+            .or_else(|| row_string(row, "registered_name")),
+        holder: Some(holder),
+        ownership: Some(
+            OwnershipStatus::parse(&required_string(row, "ownership_status")?)
+                .map_err(map_tax_profile_error)?,
+        ),
+        verification: VerificationStatus::parse(&required_string(row, "verification_status")?)
+            .map_err(map_tax_profile_error)?,
+        facts: Some(facts),
+        verified_owner_user_id: row_string(row, "verified_owner_user_id"),
+        updated_at: row_string(row, "updated_at"),
+    })
+}
+
 pub(crate) async fn commit_tax_profile_command(
-    registration: &RegistrationKey,
+    profile_id: &str,
     command: TaxProfileCommand,
     expected_revision: u64,
 ) -> AuthStackResult<(TaxProfile, u64)> {
     initialize_schema_async().await?;
-    let loaded = load_tax_profile(registration).await?;
+    let loaded = load_stream(profile_id).await?;
     if loaded.revision != expected_revision {
         return Err(AuthStackError::conflict(
             TaxProfileError::ConcurrentModification.to_string(),
@@ -62,7 +189,7 @@ pub(crate) async fn commit_tax_profile_command(
     }
     let events = loaded
         .state
-        .handle(registration, command)
+        .handle(command)
         .map_err(map_tax_profile_error)?;
     if events.is_empty() {
         return Ok((loaded.state, loaded.revision));
@@ -87,23 +214,22 @@ pub(crate) async fn commit_tax_profile_command(
              ) \
              RETURNING stream_id",
             vec![
-                json!(registration.stream_id()),
+                json!(profile_id),
                 json!(revision as i64),
                 json!(event.event_type()),
                 payload,
             ],
         ));
     }
-    statements.push(projection_upsert_statement(registration, &next, revision)?);
+    statements.push(projection_upsert_statement(&next, revision)?);
     execute_sql_atomic(statements)
         .await
         .map_err(map_concurrency_store_error)?;
-    publish_tax_profile_wake(&registration.stream_id(), revision).await;
+    publish_tax_profile_wake(profile_id, revision).await;
     Ok((next, revision))
 }
 
 fn projection_upsert_statement(
-    registration: &RegistrationKey,
     state: &TaxProfile,
     revision: u64,
 ) -> AuthStackResult<AtomicSqlStatement> {
@@ -122,26 +248,50 @@ fn projection_upsert_statement(
     let ownership = state
         .ownership
         .ok_or_else(|| AuthStackError::store("projected tax profile is missing ownership"))?;
+    let identity_hash = state
+        .identity_hash
+        .as_ref()
+        .ok_or_else(|| AuthStackError::store("projected tax profile is missing identity hash"))?;
+    let tin_last4 = state
+        .tin_last4
+        .clone()
+        .ok_or_else(|| AuthStackError::store("projected tax profile is missing tin_last4"))?;
+    let display_name = state
+        .display_name
+        .clone()
+        .unwrap_or_else(|| facts.registered_name.clone());
     let (holder_kind, holder_user_id, holder_organization_id) = match &holder {
         AccountHolder::Personal { user_id } => ("personal", Some(user_id.clone()), None),
-        AccountHolder::Organization { organization_id } => (
-            "organization",
-            None,
-            Some(organization_id.clone()),
-        ),
+        AccountHolder::Organization { organization_id } => {
+            ("organization", None, Some(organization_id.clone()))
+        }
+    };
+    let owner_user_id = state.owner_user_id();
+    let org_id = state.org_id();
+    let claim_status = match ownership {
+        OwnershipStatus::PersonalExclusive => ClaimStatus::Owned,
+        OwnershipStatus::CompanyManaged => ClaimStatus::PendingClaim,
     };
     Ok(AtomicSqlStatement::execute(
         "INSERT INTO buwiz_server.tax_profiles (\
-            profile_id, stream_id, tin_root, branch_code, registered_name, rdo_code, \
+            profile_id, stream_id, tin_root, branch_code, tin_identity_hash, tin_last4, \
+            display_name, claim_status, org_id, owner_user_id, registered_name, rdo_code, \
             line_of_business, registered_address, zip_code, phone, email, taxpayer_type, \
             tax_classification, is_vat_registered, holder_kind, holder_user_id, \
             holder_organization_id, ownership_status, verification_status, \
             verified_owner_user_id, revision, created_at, updated_at \
          ) VALUES (\
-            ?1::uuid, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-            ?16::uuid, ?17::uuid, ?18, ?19, ?20::uuid, ?21, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP \
+            ?1::uuid, ?2, NULL, NULL, ?3, ?4, ?5, ?6, ?7::uuid, ?8::uuid, ?9, ?10, ?11, ?12, \
+            ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20::uuid, ?21::uuid, ?22, ?23, ?24::uuid, ?25, \
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP \
          ) \
-         ON CONFLICT (stream_id) DO UPDATE SET \
+         ON CONFLICT (profile_id) DO UPDATE SET \
+            tin_identity_hash = EXCLUDED.tin_identity_hash, \
+            tin_last4 = EXCLUDED.tin_last4, \
+            display_name = EXCLUDED.display_name, \
+            claim_status = EXCLUDED.claim_status, \
+            org_id = EXCLUDED.org_id, \
+            owner_user_id = EXCLUDED.owner_user_id, \
             registered_name = EXCLUDED.registered_name, \
             rdo_code = EXCLUDED.rdo_code, \
             line_of_business = EXCLUDED.line_of_business, \
@@ -159,12 +309,18 @@ fn projection_upsert_statement(
             verification_status = EXCLUDED.verification_status, \
             verified_owner_user_id = EXCLUDED.verified_owner_user_id, \
             revision = EXCLUDED.revision, \
-            updated_at = CURRENT_TIMESTAMP",
+            updated_at = CURRENT_TIMESTAMP, \
+            tin_root = NULL, \
+            branch_code = NULL",
         vec![
             json!(profile_id),
-            json!(registration.stream_id()),
-            json!(registration.tin_root.as_str()),
-            json!(registration.branch_code.as_str()),
+            json!(profile_id),
+            json!(identity_hash.as_str()),
+            json!(tin_last4),
+            json!(display_name),
+            json!(claim_status.as_str()),
+            json!(org_id),
+            json!(owner_user_id),
             json!(facts.registered_name),
             json!(facts.rdo_code),
             json!(facts.line_of_business),
@@ -186,6 +342,35 @@ fn projection_upsert_statement(
     ))
 }
 
+const TAX_PROFILE_VIEW_COLUMNS: &str = "profile_id::text AS profile_id, tin_last4, display_name, claim_status, \
+                    owner_user_id::text AS owner_user_id, org_id::text AS org_id, \
+                    registered_name, rdo_code, line_of_business, registered_address, zip_code, \
+                    phone, email, taxpayer_type, tax_classification, is_vat_registered, \
+                    holder_kind, holder_user_id::text AS holder_user_id, \
+                    holder_organization_id::text AS holder_organization_id, \
+                    ownership_status, verification_status, \
+                    verified_owner_user_id::text AS verified_owner_user_id, \
+                    revision, created_at::text AS created_at, updated_at::text AS updated_at";
+
+pub(crate) async fn fetch_tax_profile_view(
+    profile_id: &str,
+    actor_user_id: &str,
+) -> AuthStackResult<crate::contracts::TaxProfileView> {
+    initialize_schema_async().await?;
+    let rows = execute_sql(
+        &format!(
+            "SELECT {TAX_PROFILE_VIEW_COLUMNS} FROM buwiz_server.tax_profiles \
+             WHERE profile_id = ?1::uuid"
+        ),
+        vec![json!(profile_id)],
+    )
+    .await?;
+    let row = rows
+        .first()
+        .ok_or_else(|| AuthStackError::not_found("tax profile not found"))?;
+    tax_profile_view_from_row(row, actor_user_id)
+}
+
 pub(crate) async fn list_tax_profiles_for(
     user_id: &str,
     organization_id: Option<&str>,
@@ -193,44 +378,49 @@ pub(crate) async fn list_tax_profiles_for(
     initialize_schema_async().await?;
     let rows = if let Some(organization_id) = organization_id.filter(|id| !id.trim().is_empty()) {
         execute_sql(
-            "SELECT profile_id::text AS profile_id, tin_root, branch_code, registered_name, \
-                    rdo_code, line_of_business, registered_address, zip_code, phone, email, \
-                    taxpayer_type, tax_classification, is_vat_registered, holder_kind, \
-                    holder_user_id::text AS holder_user_id, \
+            "SELECT profile_id::text AS profile_id, tin_last4, display_name, claim_status, \
+                    owner_user_id::text AS owner_user_id, org_id::text AS org_id, \
+                    registered_name, rdo_code, line_of_business, registered_address, zip_code, \
+                    phone, email, taxpayer_type, tax_classification, is_vat_registered, \
+                    holder_kind, holder_user_id::text AS holder_user_id, \
                     holder_organization_id::text AS holder_organization_id, \
                     ownership_status, verification_status, \
                     verified_owner_user_id::text AS verified_owner_user_id, \
                     revision, created_at::text AS created_at, updated_at::text AS updated_at \
              FROM buwiz_server.tax_profiles \
              WHERE holder_user_id = ?1::uuid OR holder_organization_id = ?2::uuid \
+                OR org_id = ?2::uuid \
              ORDER BY updated_at DESC",
             vec![json!(user_id), json!(organization_id)],
         )
         .await?
     } else {
         execute_sql(
-            "SELECT profile_id::text AS profile_id, tin_root, branch_code, registered_name, \
-                    rdo_code, line_of_business, registered_address, zip_code, phone, email, \
-                    taxpayer_type, tax_classification, is_vat_registered, holder_kind, \
-                    holder_user_id::text AS holder_user_id, \
+            "SELECT profile_id::text AS profile_id, tin_last4, display_name, claim_status, \
+                    owner_user_id::text AS owner_user_id, org_id::text AS org_id, \
+                    registered_name, rdo_code, line_of_business, registered_address, zip_code, \
+                    phone, email, taxpayer_type, tax_classification, is_vat_registered, \
+                    holder_kind, holder_user_id::text AS holder_user_id, \
                     holder_organization_id::text AS holder_organization_id, \
                     ownership_status, verification_status, \
                     verified_owner_user_id::text AS verified_owner_user_id, \
                     revision, created_at::text AS created_at, updated_at::text AS updated_at \
              FROM buwiz_server.tax_profiles \
-             WHERE holder_user_id = ?1::uuid \
+             WHERE holder_user_id = ?1::uuid OR owner_user_id = ?1::uuid \
              ORDER BY updated_at DESC",
             vec![json!(user_id)],
         )
         .await?
     };
-    rows.iter().map(tax_profile_view_from_row).collect()
+    rows.iter()
+        .map(|row| tax_profile_view_from_row(row, user_id))
+        .collect()
 }
 
 pub(crate) fn tax_profile_view_from_state(
-    registration: &RegistrationKey,
     state: &TaxProfile,
     revision: u64,
+    actor_user_id: &str,
 ) -> AuthStackResult<crate::contracts::TaxProfileView> {
     let facts = state.facts.clone().ok_or_else(|| {
         AuthStackError::store("tax profile facts are missing after commit")
@@ -238,29 +428,33 @@ pub(crate) fn tax_profile_view_from_state(
     let holder = state.holder.clone().ok_or_else(|| {
         AuthStackError::store("tax profile holder is missing after commit")
     })?;
-    let (holder_kind, holder_user_id, holder_organization_id) = match holder {
-        AccountHolder::Personal { user_id } => ("personal".to_owned(), Some(user_id), None),
-        AccountHolder::Organization { organization_id } => {
-            ("organization".to_owned(), None, Some(organization_id))
-        }
+    let holder_kind = match holder {
+        AccountHolder::Personal { .. } => "personal",
+        AccountHolder::Organization { .. } => "organization",
     };
+    let profile_id = state.profile_id.clone().unwrap_or_default();
     Ok(crate::contracts::TaxProfileView {
-        profile_id: state.profile_id.clone().unwrap_or_default(),
-        tin_root: registration.tin_root.as_str().to_owned(),
-        branch_code: registration.branch_code.as_str().to_owned(),
-        registered_name: facts.registered_name,
+        id: profile_id.clone(),
+        profile_id,
+        owner_user_id: state.owner_user_id(),
+        org_id: state.org_id(),
+        tin_last4: state.tin_last4.clone().unwrap_or_default(),
+        display_name: state
+            .display_name
+            .clone()
+            .unwrap_or_else(|| facts.registered_name.clone()),
+        claim_status: state.claim_status_for(actor_user_id).as_str().to_owned(),
+        full_name: facts.registered_name.clone(),
         rdo_code: facts.rdo_code,
+        address: facts.registered_address,
         line_of_business: facts.line_of_business,
-        registered_address: facts.registered_address,
         zip_code: facts.zip_code,
         phone: facts.phone,
         email: facts.email,
         taxpayer_type: facts.taxpayer_type.as_str().to_owned(),
         tax_classification: facts.tax_classification,
         is_vat_registered: facts.is_vat_registered,
-        holder_kind,
-        holder_user_id,
-        holder_organization_id,
+        holder_kind: holder_kind.to_owned(),
         ownership_status: state
             .ownership
             .unwrap_or(OwnershipStatus::PersonalExclusive)
@@ -270,32 +464,61 @@ pub(crate) fn tax_profile_view_from_state(
         verified_owner_user_id: state.verified_owner_user_id.clone(),
         revision,
         created_at: None,
-        updated_at: None,
+        updated_at: state.updated_at.clone(),
     })
 }
 
-fn tax_profile_view_from_row(row: &Value) -> AuthStackResult<crate::contracts::TaxProfileView> {
+fn tax_profile_view_from_row(
+    row: &Value,
+    actor_user_id: &str,
+) -> AuthStackResult<crate::contracts::TaxProfileView> {
+    let profile_id = required_string(row, "profile_id")?;
+    let holder_kind = required_string(row, "holder_kind")?;
+    let holder_user_id = row_string(row, "holder_user_id");
+    let holder_organization_id = row_string(row, "holder_organization_id");
+    let ownership = OwnershipStatus::parse(&required_string(row, "ownership_status")?)
+        .map_err(map_tax_profile_error)?;
+    let verified_owner = row_string(row, "verified_owner_user_id");
+    let claim_status = row_string(row, "claim_status").unwrap_or_else(|| {
+        let holder = match holder_kind.as_str() {
+            "organization" => AccountHolder::Organization {
+                organization_id: holder_organization_id.clone().unwrap_or_default(),
+            },
+            _ => AccountHolder::Personal {
+                user_id: holder_user_id.clone().unwrap_or_default(),
+            },
+        };
+        let mut state = TaxProfile::new();
+        state.exists = true;
+        state.holder = Some(holder);
+        state.ownership = Some(ownership);
+        state.verified_owner_user_id = verified_owner.clone();
+        state.claim_status_for(actor_user_id).as_str().to_owned()
+    });
+    let registered_name = required_string(row, "registered_name")?;
     Ok(crate::contracts::TaxProfileView {
-        profile_id: required_string(row, "profile_id")?,
-        tin_root: required_string(row, "tin_root")?,
-        branch_code: required_string(row, "branch_code")?,
-        registered_name: required_string(row, "registered_name")?,
+        id: profile_id.clone(),
+        profile_id,
+        owner_user_id: row_string(row, "owner_user_id").or_else(|| holder_user_id.clone()),
+        org_id: row_string(row, "org_id").or(holder_organization_id),
+        tin_last4: row_string(row, "tin_last4").unwrap_or_default(),
+        display_name: row_string(row, "display_name")
+            .unwrap_or_else(|| registered_name.clone()),
+        claim_status,
+        full_name: registered_name,
         rdo_code: required_string(row, "rdo_code")?,
+        address: row_string(row, "registered_address").unwrap_or_default(),
         line_of_business: row_string(row, "line_of_business").unwrap_or_default(),
-        registered_address: row_string(row, "registered_address").unwrap_or_default(),
         zip_code: row_string(row, "zip_code").unwrap_or_default(),
         phone: row_string(row, "phone").unwrap_or_default(),
         email: row_string(row, "email").unwrap_or_default(),
         taxpayer_type: required_string(row, "taxpayer_type")?,
-        tax_classification: row_string(row, "tax_classification")
-            .filter(|value| !value.is_empty()),
+        tax_classification: row_string(row, "tax_classification").filter(|value| !value.is_empty()),
         is_vat_registered: row_bool(row, "is_vat_registered").unwrap_or(false),
-        holder_kind: required_string(row, "holder_kind")?,
-        holder_user_id: row_string(row, "holder_user_id"),
-        holder_organization_id: row_string(row, "holder_organization_id"),
-        ownership_status: required_string(row, "ownership_status")?,
+        holder_kind,
+        ownership_status: ownership.as_str().to_owned(),
         verification_status: required_string(row, "verification_status")?,
-        verified_owner_user_id: row_string(row, "verified_owner_user_id"),
+        verified_owner_user_id: verified_owner,
         revision: row_i64(row, "revision").unwrap_or(1) as u64,
         created_at: row_string(row, "created_at"),
         updated_at: row_string(row, "updated_at"),
@@ -368,9 +591,10 @@ pub(crate) fn new_uuid_v4() -> AuthStackResult<String> {
 pub(crate) fn map_tax_profile_error(error: TaxProfileError) -> AuthStackError {
     match error {
         TaxProfileError::InvalidFacts { reason } => AuthStackError::validation(reason),
-        TaxProfileError::AlreadyHeld { .. } | TaxProfileError::ConcurrentModification => {
-            AuthStackError::conflict(error.to_string())
-        }
+        TaxProfileError::AlreadyHeld { .. }
+        | TaxProfileError::ConcurrentModification
+        | TaxProfileError::StaleWrite
+        | TaxProfileError::IdentityImmutable => AuthStackError::conflict(error.to_string()),
         TaxProfileError::NotFound => AuthStackError::not_found(error.to_string()),
         TaxProfileError::NotHolder
         | TaxProfileError::ClaimRequiresCompanyHold
@@ -387,7 +611,9 @@ fn map_concurrency_store_error(error: AuthStackError) -> AuthStackError {
         || message.contains("minimum")
         || message.contains("23505")
     {
-        AuthStackError::conflict(TaxProfileError::ConcurrentModification.to_string())
+        AuthStackError::conflict(
+            "registration unit is already held exclusively (hashed TIN identity)".to_owned(),
+        )
     } else {
         error
     }
