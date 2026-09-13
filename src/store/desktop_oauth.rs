@@ -95,7 +95,7 @@ pub(crate) async fn insert_device_code(
 ) -> AuthStackResult<()> {
     initialize_schema_async().await?;
     // `::bigint` so Spin's JSON→Int64 bind matches the prepared parameter.
-    // A bare INTEGER column (or `::int4`) fails with WrongType Int4 vs i64.
+    // Bare INTEGER / `to_timestamp($n)` infer Int4 / Float8 and fail ToSql.
     execute_sql(
         "INSERT INTO buwiz_server.oauth_device_codes (\
             device_code_hash, user_code, client_id, verification_uri, interval_seconds, expires_at \
