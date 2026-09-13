@@ -1207,11 +1207,15 @@ pub const WSS_CONTENT: &str =
 
 // ── Tax profiles (TIN → branch → year) ─────────────────────────────────────
 
-/// Two-pane workspace: TIN rail + yearly editor.
+/// Root under `PAGE_GRID` (2-col ≥721px). Must span both columns or the
+/// workspace is crushed into the left cell on tablet and desktop.
+pub const TAX_PAGE: &str = "col-span-full grid w-full min-w-0 gap-5";
+/// Two-pane workspace: TIN rail + yearly editor. Stack until the viewport
+/// is wide enough that the main pane can hold a 2-col form.
 pub const TAX_WORKSPACE: &str =
-    "grid min-w-0 items-start gap-5 grid-cols-1 min-[961px]:grid-cols-[minmax(240px,280px)_minmax(0,1fr)]";
+    "grid w-full min-w-0 items-start gap-5 grid-cols-1 min-[1100px]:grid-cols-[minmax(17rem,19rem)_minmax(0,1fr)]";
 pub const TAX_RAIL: &str =
-    "grid min-w-0 content-start gap-3 rounded-[14px] border border-border-subtle bg-surface p-4";
+    "grid w-full min-w-0 content-start gap-3 rounded-[14px] border border-border-subtle bg-surface p-4";
 pub const TAX_RAIL_ACTIONS: &str = "grid grid-cols-2 gap-2";
 pub const TAX_TIN_GROUP: &str = "grid gap-1.5";
 pub const TAX_TIN_HEAD: &str =
@@ -1223,7 +1227,10 @@ pub const TAX_BRANCH_ACTIVE: &str =
 pub const TAX_BRANCH_NAME: &str = "text-[13px] font-semibold tracking-tight text-primary";
 pub const TAX_BRANCH_META: &str = "font-mono text-[11px] text-secondary";
 pub const TAX_MAIN: &str =
-    "grid min-w-0 content-start gap-4 rounded-[14px] border border-border-subtle bg-surface p-6 max-[720px]:p-4";
+    "grid w-full min-w-0 content-start gap-4 rounded-[14px] border border-border-subtle bg-surface p-6 max-[720px]:p-4";
+/// Composer / year editor fields. Aligns with the two-pane breakpoint so a
+/// stacked workspace never also splits fields into unusable half-columns.
+pub const TAX_FORM_GRID: &str = "grid w-full min-w-0 grid-cols-1 gap-3.5 min-[1100px]:grid-cols-2";
 pub const TAX_YEAR_BAR: &str =
     "flex flex-wrap items-end justify-between gap-3 border-b border-border-subtle pb-4";
 pub const TAX_YEAR_BAR_FIELDS: &str = "flex flex-wrap items-end gap-3";

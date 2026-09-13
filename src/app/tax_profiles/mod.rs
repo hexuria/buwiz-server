@@ -16,12 +16,13 @@ use crate::contracts::{
 use crate::ui::classes::{
     BANNER_ERROR, BANNER_SUCCESS, BTN_PRIMARY, BTN_SECONDARY, FIELD, FIELD_GROUP, FIELD_HINT,
     INLINE_FIELD, INPUT, ORG_KICKER, ORG_TOOLBAR, ORG_TOOLBAR_COPY, ORG_TOOLBAR_SUB,
-    ORG_TOOLBAR_TITLE, PANEL, PROFILE_FORM_GRID, PROFILE_SWITCH, PROFILE_SWITCH_COPY,
+    ORG_TOOLBAR_TITLE, PANEL, PROFILE_SWITCH, PROFILE_SWITCH_COPY,
     PROFILE_SWITCH_COPY_SMALL, PROFILE_SWITCH_COPY_STRONG, PROFILE_SWITCH_INPUT,
     PROFILE_SWITCH_THUMB, PROFILE_SWITCH_TRACK, RESULT_LINE, SECTION_LABEL, TAX_BRANCH_META,
-    TAX_BRANCH_NAME, TAX_EMPTY, TAX_FORM_CODE, TAX_FORM_FREQ, TAX_FORM_LIST, TAX_FORM_TITLE,
-    TAX_FORM_TOOLBAR, TAX_MAIN, TAX_RAIL, TAX_RAIL_ACTIONS, TAX_TIN_GROUP, TAX_TIN_HEAD,
-    TAX_TIN_SEGMENT, TAX_TIN_SEGMENTS, TAX_TABS, TAX_WORKSPACE, TAX_YEAR_BAR, TAX_YEAR_BAR_FIELDS,
+    TAX_BRANCH_NAME, TAX_EMPTY, TAX_FORM_CODE, TAX_FORM_FREQ, TAX_FORM_GRID, TAX_FORM_LIST,
+    TAX_FORM_TITLE, TAX_FORM_TOOLBAR, TAX_MAIN, TAX_PAGE, TAX_RAIL, TAX_RAIL_ACTIONS, TAX_TIN_GROUP,
+    TAX_TIN_HEAD, TAX_TIN_SEGMENT, TAX_TIN_SEGMENTS, TAX_TABS, TAX_WORKSPACE, TAX_YEAR_BAR,
+    TAX_YEAR_BAR_FIELDS,
     tax_branch_class, tax_form_row_class, tax_tab_class,
 };
 use crate::ui::page_shell;
@@ -212,7 +213,7 @@ pub fn TaxProfilesHome() -> impl IntoView {
     });
 
     view! {
-        <div class="grid min-w-0 gap-5" data-testid="tax-profile-workspace">
+        <div class=TAX_PAGE data-testid="tax-profile-workspace">
             <header class=ORG_TOOLBAR>
                 <div class=ORG_TOOLBAR_COPY>
                     <p class=ORG_KICKER>"Registration units"</p>
@@ -376,7 +377,7 @@ pub fn TaxProfilesHome() -> impl IntoView {
                                     "TIN is attested once and never stored as the key. After this, only last4 and branch are shown."
                                 }}
                             </p>
-                            <div class=PROFILE_FORM_GRID>
+                            <div class=TAX_FORM_GRID>
                                 <label class=FIELD>
                                     <span>"TIN (9 digits)"</span>
                                     <input class=INPUT name="tin_root" {..custom_attribute("toolparamdescription", "Nine-digit TIN root")}
@@ -538,7 +539,7 @@ pub fn TaxProfilesHome() -> impl IntoView {
                             </div>
 
                             <Show when=move || tab.get() == WorkspaceTab::Profile>
-                                <div class=PROFILE_FORM_GRID data-testid="tax-profile-editor">
+                                <div class=TAX_FORM_GRID data-testid="tax-profile-editor">
                                     <label class=FIELD>
                                         <span>"Registered name"</span>
                                         <input class=INPUT prop:value=move || registered_name.get()
