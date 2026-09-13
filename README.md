@@ -33,7 +33,7 @@ make dev transport=both
 | Target | Purpose |
 |--------|---------|
 | `make db-up` | Postgres + Redis |
-| `make db-migrate` | wasi-auth schema + Buwiz migrations (`0001`–`0004`) |
+| `make db-migrate` | wasi-auth schema + Buwiz migrations (`0001`–`0005`) |
 | `make dev` | Spin + outbox worker (register / verify) |
 | `make check` | `wasm32-wasip2` compile |
 | `make smoke` | REST + web route checks against `BASE_URL` |

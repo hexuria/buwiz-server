@@ -586,10 +586,10 @@ pub fn EmailVerificationForm() -> impl IntoView {
     );
 
     view! {
-        <section class=AUTH_FORM>
+        <section class=AUTH_FORM data-testid="verify-email-form">
             <div>
                 <p class=SECTION_LABEL>"Email verification"</p>
-                <h1 class=AUTH_TITLE>"Verify your email"</h1>
+                <h1 class=AUTH_TITLE data-testid="verify-email-heading">"Verify your email"</h1>
                 <p class=AUTH_COPY>"The one-time link is hashed at rest and can be used once."</p>
             </div>
             <Show when=move || pending.get()>

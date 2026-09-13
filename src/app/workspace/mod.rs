@@ -348,7 +348,7 @@ pub fn WorkspaceOnboardingPanel() -> impl IntoView {
     );
 
     view! {
-        <section class=ONBOARDING_CARD>
+        <section class=ONBOARDING_CARD data-testid="onboarding-workspace">
             <p class=SECTION_LABEL>"Welcome"</p>
             <h1 class=ONBOARDING_TITLE>"Create your workspace"</h1>
             <p class=ONBOARDING_LEDE>

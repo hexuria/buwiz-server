@@ -68,6 +68,12 @@ mod tests {
             postgres_sql("SELECT * FROM auth_users WHERE user_id = ?1 AND status = ?2"),
             "SELECT * FROM auth_users WHERE user_id = $1 AND status = $2"
         );
+        assert_eq!(
+            postgres_sql(
+                "INSERT INTO buwiz_server.oauth_device_codes (interval_seconds) VALUES (?5::bigint)"
+            ),
+            "INSERT INTO buwiz_server.oauth_device_codes (interval_seconds) VALUES ($5::bigint)"
+        );
     }
 
     #[test]

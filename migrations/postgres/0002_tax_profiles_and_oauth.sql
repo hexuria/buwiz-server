@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS buwiz_server.oauth_device_codes (
     user_id UUID REFERENCES auth_users(user_id) ON DELETE CASCADE,
     session_id TEXT,
     verification_uri TEXT NOT NULL,
-    interval_seconds INTEGER NOT NULL DEFAULT 5,
+    interval_seconds BIGINT NOT NULL DEFAULT 5,
     expires_at TIMESTAMPTZ NOT NULL,
     authorized_at TIMESTAMPTZ,
     consumed_at TIMESTAMPTZ,
