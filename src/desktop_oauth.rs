@@ -589,21 +589,27 @@ async fn parse_form_or_json(
 }
 
 async fn read_body(req: RestRequest) -> AuthStackResult<Vec<u8>> {
-    let mut incoming = req.into_body();
-    let mut body = Vec::new();
-    while let Some(frame) = incoming.frame().await {
-        let frame = frame.map_err(|error| {
-            AuthStackError::transport(format!("failed to read request body: {error:?}"))
-        })?;
-        let Ok(data) = frame.into_data() else {
-            continue;
-        };
-        if body.len().saturating_add(data.len()) > 64 * 1024 {
-            return Err(AuthStackError::validation("request body is too large"));
-        }
-        body.extend_from_slice(&data);
-    }
-    Ok(body)
+    let (parts, incoming) = req.into_parts();
+    let body = if let Some(body) = crate::server_fn_http::payload_from_headers(&parts.headers)
+        .map_err(|status| match status {
+            http::StatusCode::PAYLOAD_TOO_LARGE => {
+                AuthStackError::validation("request body is too large")
+            }
+            _ => AuthStackError::validation("invalid request body header"),
+        })? {
+        crate::server_fn_http::discard_incoming_body(incoming);
+        body
+    } else {
+        crate::server_fn_http::collect_wasi_request_body(incoming, 64 * 1024)
+            .await
+            .map_err(|status| match status {
+                http::StatusCode::PAYLOAD_TOO_LARGE => {
+                    AuthStackError::validation("request body is too large")
+                }
+                _ => AuthStackError::transport("failed to read request body"),
+            })?
+    };
+    Ok(body.to_vec())
 }
 
 fn query_map(query: &str) -> std::collections::HashMap<String, String> {

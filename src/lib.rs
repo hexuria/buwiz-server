@@ -48,6 +48,9 @@ mod rest;
 mod server;
 
 #[cfg(feature = "ssr")]
+mod server_fn_http;
+
+#[cfg(feature = "ssr")]
 mod store;
 
 #[cfg(feature = "hydrate")]

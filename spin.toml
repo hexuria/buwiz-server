@@ -112,6 +112,11 @@ component = "auth-api"
 executor = { type = "http" }
 
 [[trigger.http]]
+route = "/api/ui/..."
+component = "auth-api"
+executor = { type = "http" }
+
+[[trigger.http]]
 route = "/api/authorization/..."
 component = "authorization-api"
 executor = { type = "http" }

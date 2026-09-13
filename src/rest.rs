@@ -488,22 +488,26 @@ async fn dispatch(req: RestRequest) -> AuthStackResult<RestResponse> {
 }
 
 async fn parse_json<T: DeserializeOwned>(req: RestRequest) -> AuthStackResult<T> {
-    let mut incoming = req.into_body();
-    let mut body = Vec::new();
-    while let Some(frame) = incoming.frame().await {
-        let frame = frame.map_err(|error| {
-            AuthStackError::transport(format!("failed to read request body: {error:?}"))
-        })?;
-        let Ok(data) = frame.into_data() else {
-            continue;
-        };
-        if body.len().saturating_add(data.len()) > MAX_REST_BODY_BYTES {
-            return Err(AuthStackError::validation(
-                "JSON body exceeds the 256 KiB limit",
-            ));
-        }
-        body.extend_from_slice(&data);
-    }
+    let (parts, incoming) = req.into_parts();
+    let body = if let Some(body) = crate::server_fn_http::payload_from_headers(&parts.headers)
+        .map_err(|status| match status {
+            StatusCode::PAYLOAD_TOO_LARGE => {
+                AuthStackError::validation("JSON body exceeds the 256 KiB limit")
+            }
+            _ => AuthStackError::validation("invalid request body header"),
+        })? {
+        crate::server_fn_http::discard_incoming_body(incoming);
+        body
+    } else {
+        crate::server_fn_http::collect_wasi_request_body(incoming, MAX_REST_BODY_BYTES)
+            .await
+            .map_err(|status| match status {
+                StatusCode::PAYLOAD_TOO_LARGE => {
+                    AuthStackError::validation("JSON body exceeds the 256 KiB limit")
+                }
+                _ => AuthStackError::transport("failed to read request body"),
+            })?
+    };
 
     if body.is_empty() {
         return Err(AuthStackError::validation("JSON body is required"));

@@ -70,6 +70,9 @@ pub(crate) async fn set_session_cookie(response: &LoginCompletionResponse) {
         return;
     };
     if let Some(resp) = use_context::<leptos_wasi::response::ResponseOptions>() {
+        resp.append_header(SET_COOKIE, cookie.clone());
+    }
+    if let Some(resp) = use_context::<crate::server_fn_http::OutgoingUiResponse>() {
         resp.append_header(SET_COOKIE, cookie);
     }
 }
@@ -90,6 +93,9 @@ pub(crate) fn append_response_cookie(cookie_value: &str) {
         return;
     };
     if let Some(resp) = use_context::<leptos_wasi::response::ResponseOptions>() {
+        resp.append_header(SET_COOKIE, cookie.clone());
+    }
+    if let Some(resp) = use_context::<crate::server_fn_http::OutgoingUiResponse>() {
         resp.append_header(SET_COOKIE, cookie);
     }
 }

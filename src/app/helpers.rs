@@ -498,6 +498,9 @@ pub(crate) fn set_page_status(status: http::StatusCode) {
         if let Some(resp) = use_context::<leptos_wasi::response::ResponseOptions>() {
             resp.set_status(status);
         }
+        if let Some(resp) = use_context::<crate::server_fn_http::OutgoingUiResponse>() {
+            resp.set_status(status);
+        }
     }
     let _ = status;
 }

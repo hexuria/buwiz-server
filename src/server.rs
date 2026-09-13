@@ -37,14 +37,19 @@ struct FullstackServer;
 
 impl wasip3::exports::http::handler::Guest for FullstackServer {
     async fn handle(request: Request) -> Result<Response, ErrorCode> {
-        init_wasip3_spawner().map_err(internal_error)?;
+        let mut req = wasip3::http_compat::http_from_wasi_request(request)?;
+        ensure_request_id(&mut req)?;
+        let request_path = req.uri().path().to_string();
+        // Drain `/api/ui` POST bodies before `init_wasip3_spawner`. The
+        // spawner installs a waitable set; reading the incoming body after
+        // that traps (`waitable cannot be used synchronously`).
+        if request_path.starts_with("/api/ui/") {
+            return crate::server_fn_http::serve(req).await;
+        }
 
         let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .try_init();
-
-        let mut req = wasip3::http_compat::http_from_wasi_request(request)?;
-        ensure_request_id(&mut req)?;
         let trusted_context = match crate::application::trusted_context_from_request(&req).await {
             Ok(context) => context,
             Err(error) => {
@@ -118,14 +123,6 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
             && !is_grpc
             && let Err(error) = crate::application::validate_browser_origin(req.headers()).await
         {
-            // Server functions expect `Type|message` error bodies. Plain text
-            // yields "error deserializing server function results: missing delimiter".
-            if request_path.starts_with("/api/ui/") {
-                return server_fn_error_response(
-                    error.http_status(),
-                    "Request origin rejected. Open the app with the same host as AUTH_PUBLIC_BASE_URL (localhost and 127.0.0.1 are interchangeable on loopback).",
-                );
-            }
             return plain_text_response(error.http_status(), "Request origin rejected.");
         }
 
@@ -219,14 +216,18 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
         // Streaming SSR via leptos-wasi Handler traps on current wasip3 /
         // wit-bindgen (`waitable cannot be used synchronously while added to a
         // waitable set`) and returns HTTP 500 with an empty body. Serve a
-        // static CSR document for browser navigations; keep Handler for /pkg
-        // and /api/ui server functions.
+        // static CSR document for browser navigations. `/api/ui` is handled
+        // earlier by `server_fn_http`.
         if is_browser_navigation
             && !request_path.starts_with("/pkg/")
             && !request_path.starts_with("/api/")
         {
             return csr_document_response();
         }
+
+        // Only the leftover leptos-wasi Handler needs this executor. Installing
+        // it earlier poisons later WASI waits (Postgres, incoming bodies).
+        init_wasip3_spawner().map_err(internal_error)?;
 
         let conf = get_configuration(None).map_err(|error| {
             tracing::error!(
@@ -646,9 +647,19 @@ fn csr_document_html() -> &'static str {
         "<meta name=\"description\" content=\"Buwiz Philippine tax SaaS: verified sessions, exclusive tax-profile ownership, desktop OAuth, and Spin + Leptos.\" />\n",
         "</head>\n",
         "<body>\n",
+        "<script>",
+        // wasip3 request-body streams trap on current wasmtime
+        // (`waitable cannot be used synchronously`). Copy small /api/ POST
+        // payloads into a header and send an empty body so the guest never
+        // starts that stream. gloo-net calls fetch(Request).
+        r#"(function(){var f=window.fetch;if(!f)return;function move(url,headers,body){if(!url||url.indexOf("/api/")===-1||typeof body!=="string"||!body||body.length>6000)return null;var h=new Headers(headers||undefined);h.set("x-buwiz-request-body",btoa(unescape(encodeURIComponent(body))));h.set("x-buwiz-request-body-enc","b64");return h;}window.fetch=function(input,init){try{if(typeof Request!=="undefined"&&input instanceof Request){var url=input.url;return input.clone().text().then(function(body){var h=move(url,input.headers,body);if(!h)return f.call(window,input,init);return f.call(window,new Request(input,{headers:h,body:""}),init);});}var url=typeof input==="string"?input:(input&&input.url)||"";var body=init&&init.body;var h=move(url,init&&init.headers,typeof body==="string"?body:"");if(h){init=Object.assign({},init,{headers:h,body:""});}}catch(e){}return f.call(window,input,init);};})();"#,
+        "</script>\n",
         "<script type=\"module\">",
         "import init, { hydrate } from \"/pkg/buwiz_server.js\";",
-        "init().then(hydrate);",
+        // cargo-leptos --split emits buwiz_server.wasm, not wasm-bindgen's
+        // default buwiz_server_bg.wasm. Passing the path avoids a 404 that
+        // leaves the CSR shell blank.
+        "init({ module_or_path: \"/pkg/buwiz_server.wasm\" }).then(hydrate);",
         "</script>\n",
         "</body>\n",
         "</html>\n",
@@ -834,6 +845,25 @@ fn internal_error(error: impl std::fmt::Display) -> ErrorCode {
 }
 
 #[cfg(test)]
+mod server_fn_path_tests {
+    use server_fn::ServerFn;
+
+    #[test]
+    fn webmcp_and_session_paths_are_prefixed() {
+        assert!(
+            crate::app::WebmcpEnabled::PATH.starts_with("/api/ui/"),
+            "{}",
+            crate::app::WebmcpEnabled::PATH
+        );
+        assert!(
+            crate::app::GetCurrentSession::PATH.starts_with("/api/ui/"),
+            "{}",
+            crate::app::GetCurrentSession::PATH
+        );
+    }
+}
+
+#[cfg(test)]
 mod csr_document_tests {
     use super::csr_document_html;
 
@@ -842,8 +872,10 @@ mod csr_document_tests {
         let html = csr_document_html();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("/pkg/buwiz_server.js"));
+        assert!(html.contains("/pkg/buwiz_server.wasm"));
         assert!(html.contains("/pkg/buwiz_server.css"));
         assert!(html.contains("hydrate"));
+        assert!(html.contains("x-buwiz-request-body"));
     }
 }
 
