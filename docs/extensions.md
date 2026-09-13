@@ -13,9 +13,9 @@ Trait: `src/domain/orus.rs` (`TinOwnershipVerifier`).
 
 Production adapter (live ORUS session, document capture, branch matching) is **not** in this repo. Keep proof material out of Redis; store only what Postgres already has (`verification_status`, `verified_owner_user_id`). Claim matching uses the hashed TIN identity, not a raw TIN primary key.
 
-## Form drafts + filing jobs (headless-bir / Grok Bot)
+## Form drafts + filings (headless-bir / Grok Bot)
 
-See [sync-api.md](sync-api.md). Stub tables exist (`per_year_forms_sets`, `form_drafts`, `filing_jobs`). **Full draft sync is not implemented.** No HTTP routes yet.
+See [sync-api.md](sync-api.md). Canonical tables exist (`profile_years`, `per_year_forms`, `form_drafts`, `filings`). V1 command names are typed stubs. **Full draft sync is not implemented.** No HTTP routes yet.
 
 ## TSP / BIR SFTP relay
 

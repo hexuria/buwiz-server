@@ -54,6 +54,10 @@ async fn apply_or_verify_app_schema(
             "0003_hashed_tin_and_sync_stubs",
             include_str!("../../migrations/postgres/0003_hashed_tin_and_sync_stubs.sql"),
         ),
+        (
+            "0004_canonical_v1_read_models",
+            include_str!("../../migrations/postgres/0004_canonical_v1_read_models.sql"),
+        ),
     ];
     let (mut client, connection) =
         tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;

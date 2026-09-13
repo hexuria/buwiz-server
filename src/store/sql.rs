@@ -182,6 +182,7 @@ pub async fn initialize_schema_async() -> AuthStackResult<()> {
         "0001_app_storage",
         "0002_tax_profiles_and_oauth",
         "0003_hashed_tin_and_sync_stubs",
+        "0004_canonical_v1_read_models",
     ] {
         let app_migration = execute_postgres(
             "SELECT version FROM buwiz_server.schema_migrations WHERE version = ?1",

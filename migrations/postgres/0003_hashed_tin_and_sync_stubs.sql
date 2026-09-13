@@ -1,5 +1,10 @@
--- Hashed TIN identity (UUID remains PK) + stub sync entities for Grok Bot / headless-bir.
--- Effective-dated COR version ledger is not modeled; per-year forms stay Manual-only.
+-- Hashed TIN identity (UUID remains PK).
+-- Effective-dated COR version ledger is not modeled.
+-- Per-year forms / drafts / filings live in 0004 (canonical V1).
+--
+-- wasi-auth-migrate re-runs every SQL file on apply. Do not CREATE the old
+-- stub tables here: 0004 replaces them, and recreating the draft_id schema
+-- would fail after 0004's form_drafts(id) rewrite.
 
 ALTER TABLE buwiz_server.tax_profiles
     ADD COLUMN IF NOT EXISTS tin_identity_hash TEXT,
@@ -21,7 +26,8 @@ SET
     END
 WHERE tin_root IS NOT NULL;
 
--- Exclusive uniqueness on hashed identity, not raw TIN.
+-- Exclusive uniqueness on hashed identity, not raw TIN. 0004 replaces this
+-- with UNIQUE (tin_hash) BYTEA after backfill.
 CREATE UNIQUE INDEX IF NOT EXISTS tax_profiles_tin_identity_hash_uidx
     ON buwiz_server.tax_profiles (tin_identity_hash)
     WHERE tin_identity_hash IS NOT NULL;
@@ -34,57 +40,6 @@ ALTER TABLE buwiz_server.tax_profiles
     DROP CONSTRAINT IF EXISTS tax_profiles_tin_branch_unique;
 
 DROP INDEX IF EXISTS buwiz_server.tax_profiles_tin_uidx;
-
--- Per-year forms set (Manual source only in v1). Full sync is stubbed.
-CREATE TABLE IF NOT EXISTS buwiz_server.per_year_forms_sets (
-    forms_set_id UUID PRIMARY KEY,
-    profile_id UUID NOT NULL REFERENCES buwiz_server.tax_profiles (profile_id) ON DELETE CASCADE,
-    tax_year SMALLINT NOT NULL,
-    entries_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (profile_id, tax_year)
-);
-
--- Form drafts: form_code + period + status + payload JSON. Full draft sync is stubbed.
-CREATE TABLE IF NOT EXISTS buwiz_server.form_drafts (
-    draft_id UUID PRIMARY KEY,
-    profile_id UUID NOT NULL REFERENCES buwiz_server.tax_profiles (profile_id) ON DELETE CASCADE,
-    form_code TEXT NOT NULL,
-    period TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'draft',
-    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS form_drafts_profile_idx
-    ON buwiz_server.form_drafts (profile_id, form_code, period);
-
--- Filing / submission jobs: Draft → Queued → Submitted → Confirmed → Paid.
--- Append-only metadata. Never store BIR credentials, profile_pin_hash, totp_secret,
--- IMAP passwords, or mailbox OAuth tokens.
-CREATE TABLE IF NOT EXISTS buwiz_server.filing_jobs (
-    filing_id UUID PRIMARY KEY,
-    profile_id UUID NOT NULL REFERENCES buwiz_server.tax_profiles (profile_id) ON DELETE CASCADE,
-    draft_id UUID REFERENCES buwiz_server.form_drafts (draft_id) ON DELETE SET NULL,
-    form_code TEXT NOT NULL,
-    period TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'Draft',
-    receipt_match_keys JSONB NOT NULL DEFAULT '{}'::jsonb,
-    metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS buwiz_server.filing_job_events (
-    event_id BIGSERIAL PRIMARY KEY,
-    filing_id UUID NOT NULL REFERENCES buwiz_server.filing_jobs (filing_id) ON DELETE CASCADE,
-    status TEXT NOT NULL,
-    metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-    recorded_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS filing_jobs_profile_idx
-    ON buwiz_server.filing_jobs (profile_id, status);
 
 INSERT INTO buwiz_server.schema_migrations (version)
 VALUES ('0003_hashed_tin_and_sync_stubs')

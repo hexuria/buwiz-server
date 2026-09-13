@@ -10,7 +10,12 @@
 use serde::{Deserialize, Serialize};
 
 use crate::domain::orus::ProofMethod;
+use crate::domain::tin::BranchCode;
 use crate::domain::tin_identity::TinIdentityHash;
+
+fn default_branch_code() -> String {
+    BranchCode::HEAD_OFFICE.to_owned()
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AccountHolder {
@@ -172,6 +177,14 @@ pub struct CloudTaxProfileFacts {
     pub taxpayer_type: TaxpayerType,
     pub tax_classification: Option<String>,
     pub is_vat_registered: bool,
+    #[serde(default)]
+    pub eopt_tier: Option<String>,
+    #[serde(default)]
+    pub business_start_date: Option<String>,
+    #[serde(default)]
+    pub birth_date: Option<String>,
+    #[serde(default)]
+    pub atc_codes: Vec<String>,
 }
 
 impl CloudTaxProfileFacts {
@@ -192,16 +205,36 @@ impl CloudTaxProfileFacts {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TaxProfileCommand {
-    Create {
+    /// Create the cloud row. TIN exclusivity is enforced here via `tin_hash` only.
+    RegisterTaxProfile {
         profile_id: String,
+        account_id: String,
         holder: AccountHolder,
         facts: CloudTaxProfileFacts,
         display_name: String,
-        identity_hash: TinIdentityHash,
+        tin_hash: TinIdentityHash,
         tin_last4: String,
+        branch_code: String,
         actor_user_id: String,
         occurred_at: String,
     },
+    /// Patch identity / contact / classification. Never secrets; never TIN.
+    UpdateTaxProfileIdentity {
+        display_name: Option<String>,
+        facts: Option<CloudTaxProfileFacts>,
+        expected_updated_at: Option<String>,
+        actor_user_id: String,
+        occurred_at: String,
+    },
+    ArchiveTaxProfile {
+        actor_user_id: String,
+        occurred_at: String,
+    },
+    RestoreTaxProfile {
+        actor_user_id: String,
+        occurred_at: String,
+    },
+    /// Extra (company-managed). Not a V1 listed command; kept for reclaim/claim.
     Claim {
         claimant: AccountHolder,
         actor_user_id: String,
@@ -217,21 +250,20 @@ pub enum TaxProfileCommand {
         new_holder: AccountHolder,
         actor_user_id: String,
     },
-    PatchMetadata {
-        display_name: Option<String>,
-        facts: Option<CloudTaxProfileFacts>,
-        expected_updated_at: Option<String>,
-        actor_user_id: String,
-        occurred_at: String,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaxProfileEvent {
-    Created {
+    #[serde(alias = "Created")]
+    TaxProfileRegistered {
         profile_id: String,
-        identity_hash: TinIdentityHash,
+        #[serde(default)]
+        account_id: String,
+        #[serde(alias = "identity_hash")]
+        tin_hash: TinIdentityHash,
         tin_last4: String,
+        #[serde(default = "default_branch_code")]
+        branch_code: String,
         display_name: String,
         holder: AccountHolder,
         ownership: OwnershipStatus,
@@ -261,9 +293,18 @@ pub enum TaxProfileEvent {
         ownership: OwnershipStatus,
         actor_user_id: String,
     },
-    MetadataUpdated {
+    #[serde(alias = "MetadataUpdated")]
+    TaxProfileIdentityUpdated {
         display_name: String,
         facts: CloudTaxProfileFacts,
+        actor_user_id: String,
+        occurred_at: String,
+    },
+    TaxProfileArchived {
+        actor_user_id: String,
+        occurred_at: String,
+    },
+    TaxProfileRestored {
         actor_user_id: String,
         occurred_at: String,
     },
@@ -272,11 +313,13 @@ pub enum TaxProfileEvent {
 impl TaxProfileEvent {
     pub fn event_type(&self) -> &'static str {
         match self {
-            Self::Created { .. } => "tax_profile.created",
+            Self::TaxProfileRegistered { .. } => "tax_profile.registered",
             Self::Claimed { .. } => "tax_profile.claimed",
             Self::Reclaimed { .. } => "tax_profile.reclaimed",
             Self::Transferred { .. } => "tax_profile.transferred",
-            Self::MetadataUpdated { .. } => "tax_profile.metadata_updated",
+            Self::TaxProfileIdentityUpdated { .. } => "tax_profile.identity_updated",
+            Self::TaxProfileArchived { .. } => "tax_profile.archived",
+            Self::TaxProfileRestored { .. } => "tax_profile.restored",
         }
     }
 }
@@ -293,6 +336,8 @@ pub enum TaxProfileError {
     ConcurrentModification,
     StaleWrite,
     IdentityImmutable,
+    AlreadyArchived,
+    NotArchived,
 }
 
 impl std::fmt::Display for TaxProfileError {
@@ -329,6 +374,8 @@ impl std::fmt::Display for TaxProfileError {
                 f,
                 "TIN identity is immutable; never merge two different TINs into one row"
             ),
+            Self::AlreadyArchived => write!(f, "tax profile is already archived"),
+            Self::NotArchived => write!(f, "tax profile is not archived"),
         }
     }
 }
@@ -338,14 +385,17 @@ impl std::fmt::Display for TaxProfileError {
 pub struct TaxProfile {
     pub exists: bool,
     pub profile_id: Option<String>,
+    pub account_id: Option<String>,
     pub identity_hash: Option<TinIdentityHash>,
     pub tin_last4: Option<String>,
+    pub branch_code: Option<String>,
     pub display_name: Option<String>,
     pub holder: Option<AccountHolder>,
     pub ownership: Option<OwnershipStatus>,
     pub verification: VerificationStatus,
     pub facts: Option<CloudTaxProfileFacts>,
     pub verified_owner_user_id: Option<String>,
+    pub is_archived: bool,
     pub updated_at: Option<String>,
 }
 
@@ -354,14 +404,17 @@ impl Default for TaxProfile {
         Self {
             exists: false,
             profile_id: None,
+            account_id: None,
             identity_hash: None,
             tin_last4: None,
+            branch_code: None,
             display_name: None,
             holder: None,
             ownership: None,
             verification: VerificationStatus::Unverified,
             facts: None,
             verified_owner_user_id: None,
+            is_archived: false,
             updated_at: None,
         }
     }
@@ -411,25 +464,50 @@ impl TaxProfile {
         command: TaxProfileCommand,
     ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
         match command {
-            TaxProfileCommand::Create {
+            TaxProfileCommand::RegisterTaxProfile {
                 profile_id,
+                account_id,
                 holder,
                 facts,
                 display_name,
-                identity_hash,
+                tin_hash,
                 tin_last4,
+                branch_code,
                 actor_user_id,
                 occurred_at,
-            } => self.handle_create(
+            } => self.handle_register(
                 profile_id,
+                account_id,
                 holder,
                 facts,
                 display_name,
-                identity_hash,
+                tin_hash,
                 tin_last4,
+                branch_code,
                 actor_user_id,
                 occurred_at,
             ),
+            TaxProfileCommand::UpdateTaxProfileIdentity {
+                display_name,
+                facts,
+                expected_updated_at,
+                actor_user_id,
+                occurred_at,
+            } => self.handle_update_identity(
+                display_name,
+                facts,
+                expected_updated_at,
+                actor_user_id,
+                occurred_at,
+            ),
+            TaxProfileCommand::ArchiveTaxProfile {
+                actor_user_id,
+                occurred_at,
+            } => self.handle_archive(actor_user_id, occurred_at),
+            TaxProfileCommand::RestoreTaxProfile {
+                actor_user_id,
+                occurred_at,
+            } => self.handle_restore(actor_user_id, occurred_at),
             TaxProfileCommand::Claim {
                 claimant,
                 actor_user_id,
@@ -445,45 +523,48 @@ impl TaxProfile {
                 new_holder,
                 actor_user_id,
             } => self.handle_transfer(new_holder, actor_user_id),
-            TaxProfileCommand::PatchMetadata {
-                display_name,
-                facts,
-                expected_updated_at,
-                actor_user_id,
-                occurred_at,
-            } => self.handle_patch(
-                display_name,
-                facts,
-                expected_updated_at,
-                actor_user_id,
-                occurred_at,
-            ),
         }
     }
 
     pub fn apply(&mut self, event: &TaxProfileEvent) {
         match event {
-            TaxProfileEvent::Created {
+            TaxProfileEvent::TaxProfileRegistered {
                 profile_id,
-                identity_hash,
+                account_id,
+                tin_hash,
                 tin_last4,
+                branch_code,
                 display_name,
                 holder,
                 ownership,
                 verification,
                 facts,
+                actor_user_id,
                 occurred_at,
-                ..
             } => {
                 self.exists = true;
                 self.profile_id = Some(profile_id.clone());
-                self.identity_hash = Some(identity_hash.clone());
+                self.identity_hash = Some(tin_hash.clone());
                 self.tin_last4 = Some(tin_last4.clone());
+                self.branch_code = Some(if branch_code.trim().is_empty() {
+                    default_branch_code()
+                } else {
+                    branch_code.clone()
+                });
+                self.account_id = Some(if account_id.trim().is_empty() {
+                    match holder {
+                        AccountHolder::Personal { user_id } => user_id.clone(),
+                        AccountHolder::Organization { .. } => actor_user_id.clone(),
+                    }
+                } else {
+                    account_id.clone()
+                });
                 self.display_name = Some(display_name.clone());
                 self.holder = Some(holder.clone());
                 self.ownership = Some(*ownership);
                 self.verification = *verification;
                 self.facts = Some(facts.clone());
+                self.is_archived = false;
                 self.updated_at = Some(occurred_at.clone());
             }
             TaxProfileEvent::Claimed {
@@ -511,7 +592,7 @@ impl TaxProfile {
                 self.holder = Some(holder.clone());
                 self.ownership = Some(*ownership);
             }
-            TaxProfileEvent::MetadataUpdated {
+            TaxProfileEvent::TaxProfileIdentityUpdated {
                 display_name,
                 facts,
                 occurred_at,
@@ -521,17 +602,27 @@ impl TaxProfile {
                 self.facts = Some(facts.clone());
                 self.updated_at = Some(occurred_at.clone());
             }
+            TaxProfileEvent::TaxProfileArchived { occurred_at, .. } => {
+                self.is_archived = true;
+                self.updated_at = Some(occurred_at.clone());
+            }
+            TaxProfileEvent::TaxProfileRestored { occurred_at, .. } => {
+                self.is_archived = false;
+                self.updated_at = Some(occurred_at.clone());
+            }
         }
     }
 
-    fn handle_create(
+    fn handle_register(
         &self,
         profile_id: String,
+        account_id: String,
         holder: AccountHolder,
         facts: CloudTaxProfileFacts,
         display_name: String,
-        identity_hash: TinIdentityHash,
+        tin_hash: TinIdentityHash,
         tin_last4: String,
+        branch_code: String,
         actor_user_id: String,
         occurred_at: String,
     ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
@@ -546,11 +637,19 @@ impl TaxProfile {
                 reason: "profile id is required".to_owned(),
             });
         }
+        if account_id.trim().is_empty() {
+            return Err(TaxProfileError::InvalidFacts {
+                reason: "account_id is required".to_owned(),
+            });
+        }
         if tin_last4.len() != 4 || !tin_last4.chars().all(|ch| ch.is_ascii_digit()) {
             return Err(TaxProfileError::InvalidFacts {
                 reason: "tin_last4 is invalid".to_owned(),
             });
         }
+        let branch_code = BranchCode::parse(&branch_code).map_err(|reason| {
+            TaxProfileError::InvalidFacts { reason }
+        })?;
         let display_name = if display_name.trim().is_empty() {
             facts.registered_name.clone()
         } else {
@@ -560,10 +659,12 @@ impl TaxProfile {
             AccountHolder::Personal { .. } => OwnershipStatus::PersonalExclusive,
             AccountHolder::Organization { .. } => OwnershipStatus::CompanyManaged,
         };
-        Ok(vec![TaxProfileEvent::Created {
+        Ok(vec![TaxProfileEvent::TaxProfileRegistered {
             profile_id,
-            identity_hash,
+            account_id,
+            tin_hash,
             tin_last4,
+            branch_code: branch_code.as_str().to_owned(),
             display_name,
             holder,
             ownership,
@@ -676,7 +777,7 @@ impl TaxProfile {
         }])
     }
 
-    fn handle_patch(
+    fn handle_update_identity(
         &self,
         display_name: Option<String>,
         facts: Option<CloudTaxProfileFacts>,
@@ -687,15 +788,9 @@ impl TaxProfile {
         if !self.exists {
             return Err(TaxProfileError::NotFound);
         }
-        let Some(holder) = &self.holder else {
-            return Err(TaxProfileError::NotFound);
-        };
-        let allowed = match holder {
-            AccountHolder::Personal { user_id } => user_id == &actor_user_id,
-            AccountHolder::Organization { .. } => true,
-        };
-        if !allowed {
-            return Err(TaxProfileError::NotHolder);
+        self.require_account(&actor_user_id)?;
+        if self.is_archived {
+            return Err(TaxProfileError::AlreadyArchived);
         }
         if let Some(expected) = expected_updated_at {
             if self.updated_at.as_deref() != Some(expected.as_str()) {
@@ -717,12 +812,55 @@ impl TaxProfile {
                     .clone()
                     .unwrap_or_else(|| next_facts.registered_name.clone())
             });
-        Ok(vec![TaxProfileEvent::MetadataUpdated {
+        Ok(vec![TaxProfileEvent::TaxProfileIdentityUpdated {
             display_name: next_name,
             facts: next_facts,
             actor_user_id,
             occurred_at,
         }])
+    }
+
+    fn handle_archive(
+        &self,
+        actor_user_id: String,
+        occurred_at: String,
+    ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
+        if !self.exists {
+            return Err(TaxProfileError::NotFound);
+        }
+        self.require_account(&actor_user_id)?;
+        if self.is_archived {
+            return Err(TaxProfileError::AlreadyArchived);
+        }
+        Ok(vec![TaxProfileEvent::TaxProfileArchived {
+            actor_user_id,
+            occurred_at,
+        }])
+    }
+
+    fn handle_restore(
+        &self,
+        actor_user_id: String,
+        occurred_at: String,
+    ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
+        if !self.exists {
+            return Err(TaxProfileError::NotFound);
+        }
+        self.require_account(&actor_user_id)?;
+        if !self.is_archived {
+            return Err(TaxProfileError::NotArchived);
+        }
+        Ok(vec![TaxProfileEvent::TaxProfileRestored {
+            actor_user_id,
+            occurred_at,
+        }])
+    }
+
+    fn require_account(&self, actor_user_id: &str) -> Result<(), TaxProfileError> {
+        match self.account_id.as_deref() {
+            Some(account_id) if account_id == actor_user_id => Ok(()),
+            _ => Err(TaxProfileError::NotHolder),
+        }
     }
 
     fn require_identity(&self, identity_hash: &TinIdentityHash) -> Result<(), TaxProfileError> {
@@ -761,8 +899,8 @@ impl InMemoryTaxProfileStore {
         command: TaxProfileCommand,
         expected_revision: u64,
     ) -> Result<(TaxProfile, u64), TaxProfileError> {
-        if let TaxProfileCommand::Create { identity_hash, .. } = &command {
-            if let Some(existing_id) = self.identity_index.get(identity_hash.as_str()) {
+        if let TaxProfileCommand::RegisterTaxProfile { tin_hash, .. } = &command {
+            if let Some(existing_id) = self.identity_index.get(tin_hash.as_str()) {
                 if existing_id != profile_id {
                     let (existing, _) = self.load(existing_id);
                     return Err(TaxProfileError::AlreadyHeld {
@@ -776,14 +914,14 @@ impl InMemoryTaxProfileStore {
             return Err(TaxProfileError::ConcurrentModification);
         }
         let events = state.handle(command)?;
-        if let Some(TaxProfileEvent::Created {
-            identity_hash,
+        if let Some(TaxProfileEvent::TaxProfileRegistered {
+            tin_hash,
             profile_id: created_id,
             ..
         }) = events.first()
         {
             self.identity_index
-                .insert(identity_hash.as_str().to_owned(), created_id.clone());
+                .insert(tin_hash.as_str().to_owned(), created_id.clone());
         }
         let stream = self.streams.entry(profile_id.to_owned()).or_default();
         stream.extend(events);
@@ -811,6 +949,10 @@ mod tests {
             taxpayer_type: TaxpayerType::Individual,
             tax_classification: None,
             is_vat_registered: false,
+            eopt_tier: None,
+            business_start_date: None,
+            birth_date: None,
+            atc_codes: Vec::new(),
         }
     }
 
@@ -840,13 +982,15 @@ mod tests {
     }
 
     fn create(id: &str, holder: AccountHolder, actor: &str, name: &str) -> TaxProfileCommand {
-        TaxProfileCommand::Create {
+        TaxProfileCommand::RegisterTaxProfile {
             profile_id: id.to_owned(),
+            account_id: actor.to_owned(),
             holder,
             facts: facts(name),
             display_name: name.to_owned(),
-            identity_hash: identity(),
+            tin_hash: identity(),
             tin_last4: last4(),
+            branch_code: BranchCode::HEAD_OFFICE.to_owned(),
             actor_user_id: actor.to_owned(),
             occurred_at: "2026-01-01T00:00:00Z".to_owned(),
         }
@@ -861,6 +1005,9 @@ mod tests {
         assert_eq!(rev, 1);
         assert_eq!(state.profile_id.as_deref(), Some("tp-1"));
         assert_eq!(state.tin_last4.as_deref(), Some("6789"));
+        assert_eq!(state.account_id.as_deref(), Some("alice"));
+        assert_eq!(state.branch_code.as_deref(), Some("00000"));
+        assert!(!state.is_archived);
         assert_eq!(state.ownership, Some(OwnershipStatus::PersonalExclusive));
         assert_eq!(state.holder, Some(personal("alice")));
         assert_eq!(state.claim_status_for("alice"), ClaimStatus::Owned);
@@ -1031,7 +1178,7 @@ mod tests {
         let (state, _) = store
             .execute(
                 "tp-1",
-                TaxProfileCommand::PatchMetadata {
+                TaxProfileCommand::UpdateTaxProfileIdentity {
                     display_name: Some("Alice Corp".into()),
                     facts: None,
                     expected_updated_at: Some("2026-01-01T00:00:00Z".into()),
@@ -1045,7 +1192,7 @@ mod tests {
         let err = store
             .execute(
                 "tp-1",
-                TaxProfileCommand::PatchMetadata {
+                TaxProfileCommand::UpdateTaxProfileIdentity {
                     display_name: Some("stale".into()),
                     facts: None,
                     expected_updated_at: Some("2026-01-01T00:00:00Z".into()),
@@ -1067,7 +1214,7 @@ mod tests {
         let (state, _) = store
             .execute(
                 "tp-1",
-                TaxProfileCommand::PatchMetadata {
+                TaxProfileCommand::UpdateTaxProfileIdentity {
                     display_name: Some("Renamed".into()),
                     facts: Some(facts("Renamed")),
                     expected_updated_at: Some("2026-01-01T00:00:00Z".into()),
@@ -1079,5 +1226,86 @@ mod tests {
             .unwrap();
         assert_eq!(state.identity_hash, Some(identity()));
         assert_eq!(state.tin_last4.as_deref(), Some("6789"));
+    }
+
+    #[test]
+    fn archive_and_restore_require_account_id() {
+        let mut store = InMemoryTaxProfileStore::default();
+        store
+            .execute("tp-1", create("tp-1", personal("alice"), "alice", "Alice"), 0)
+            .unwrap();
+        let err = store
+            .execute(
+                "tp-1",
+                TaxProfileCommand::ArchiveTaxProfile {
+                    actor_user_id: "bob".into(),
+                    occurred_at: "2026-01-03T00:00:00Z".into(),
+                },
+                1,
+            )
+            .unwrap_err();
+        assert_eq!(err, TaxProfileError::NotHolder);
+        let (state, _) = store
+            .execute(
+                "tp-1",
+                TaxProfileCommand::ArchiveTaxProfile {
+                    actor_user_id: "alice".into(),
+                    occurred_at: "2026-01-03T00:00:00Z".into(),
+                },
+                1,
+            )
+            .unwrap();
+        assert!(state.is_archived);
+        let err = store
+            .execute(
+                "tp-1",
+                TaxProfileCommand::UpdateTaxProfileIdentity {
+                    display_name: Some("nope".into()),
+                    facts: None,
+                    expected_updated_at: None,
+                    actor_user_id: "alice".into(),
+                    occurred_at: "2026-01-04T00:00:00Z".into(),
+                },
+                2,
+            )
+            .unwrap_err();
+        assert_eq!(err, TaxProfileError::AlreadyArchived);
+        let (state, _) = store
+            .execute(
+                "tp-1",
+                TaxProfileCommand::RestoreTaxProfile {
+                    actor_user_id: "alice".into(),
+                    occurred_at: "2026-01-04T00:00:00Z".into(),
+                },
+                2,
+            )
+            .unwrap();
+        assert!(!state.is_archived);
+    }
+
+    #[test]
+    fn legacy_created_event_payload_still_applies() {
+        let json = serde_json::json!({
+            "Created": {
+                "profile_id": "tp-legacy",
+                "identity_hash": identity(),
+                "tin_last4": "6789",
+                "display_name": "Legacy",
+                "holder": { "Personal": { "user_id": "alice" } },
+                "ownership": "PersonalExclusive",
+                "verification": "Unverified",
+                "facts": facts("Legacy"),
+                "actor_user_id": "alice",
+                "occurred_at": "2026-01-01T00:00:00Z"
+            }
+        });
+        let event: TaxProfileEvent = serde_json::from_value(json).unwrap();
+        assert_eq!(event.event_type(), "tax_profile.registered");
+        let mut state = TaxProfile::new();
+        state.apply(&event);
+        assert_eq!(state.profile_id.as_deref(), Some("tp-legacy"));
+        assert_eq!(state.account_id.as_deref(), Some("alice"));
+        assert_eq!(state.branch_code.as_deref(), Some("00000"));
+        assert_eq!(state.identity_hash, Some(identity()));
     }
 }

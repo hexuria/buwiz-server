@@ -7,7 +7,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::domain::{
-    desktop_redirect_uri_allowed, DESKTOP_CLIENT_ID, DESKTOP_SCOPE,
+    desktop_redirect_uri_allowed, DesktopGrant, DesktopSessionCommand, DESKTOP_CLIENT_ID,
+    DESKTOP_SCOPE,
 };
 use crate::error::{AuthStackError, AuthStackResult};
 
@@ -257,7 +258,12 @@ async fn authorization_code_grant(
             "PKCE verification failed",
         );
     }
-    token_from_session(&stored.session_id).await
+    token_from_session(
+        &stored.session_id,
+        &stored.user_id,
+        DesktopGrant::PkceAuthorizationCode,
+    )
+    .await
 }
 
 async fn refresh_grant(
@@ -325,7 +331,10 @@ async fn device_grant(
     let session_id = consumed
         .session_id
         .ok_or(AuthStackError::InvalidToken)?;
-    token_from_session(&session_id).await
+    let user_id = consumed
+        .user_id
+        .ok_or(AuthStackError::InvalidToken)?;
+    token_from_session(&session_id, &user_id, DesktopGrant::DeviceCode).await
 }
 
 async fn device_code(req: RestRequest) -> AuthStackResult<RestResponse> {
@@ -354,6 +363,10 @@ async fn device_code(req: RestRequest) -> AuthStackResult<RestResponse> {
         DEVICE_TTL_SECONDS,
     )
     .await?;
+    record_desktop_session(DesktopSessionCommand::RegisterDevice {
+        client_id: client_id.clone(),
+        occurred_at: crate::store::rfc3339_now(),
+    });
     json_response(
         StatusCode::OK,
         &serde_json::json!({
@@ -445,13 +458,24 @@ async fn device_post(req: RestRequest) -> AuthStackResult<RestResponse> {
     )
 }
 
-async fn token_from_session(session_id: &str) -> AuthStackResult<RestResponse> {
+async fn token_from_session(
+    session_id: &str,
+    user_id: &str,
+    grant: DesktopGrant,
+) -> AuthStackResult<RestResponse> {
+    record_desktop_session(DesktopSessionCommand::IssueDesktopSession {
+        user_id: user_id.to_owned(),
+        session_id: session_id.to_owned(),
+        grant,
+        occurred_at: crate::store::rfc3339_now(),
+    });
     let session_id = wasi_auth::context::SessionId::new(session_id.to_owned())
         .map_err(|_| AuthStackError::AuthRequired)?;
     let (access_token, refresh_token, expires_in) =
         crate::auth_product::issue_tokens(&session_id).await?;
     // Access + refresh are issued together. Clients store refresh in the OS
-    // keychain. This handler never logs token values.
+    // keychain. This handler never logs token values. IssueDesktopSession never
+    // carries PIN/TOTP or refresh material.
     json_response(
         StatusCode::OK,
         &serde_json::json!({
@@ -682,6 +706,20 @@ fn redirect(location: &str) -> AuthStackResult<RestResponse> {
         .header(http::header::LOCATION, location)
         .body(body)
         .map_err(|error| AuthStackError::transport(error.to_string()))
+}
+
+fn record_desktop_session(command: DesktopSessionCommand) {
+    match command.handle() {
+        Ok(event) => {
+            tracing::info!(
+                event_type = event.event_type(),
+                "desktop session command"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "desktop session command rejected");
+        }
+    }
 }
 
 fn oauth_error(

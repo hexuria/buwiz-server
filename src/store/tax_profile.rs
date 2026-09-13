@@ -65,7 +65,8 @@ pub(crate) async fn load_tax_profile_by_identity_hash(
     initialize_schema_async().await?;
     let rows = execute_sql(
         "SELECT profile_id::text AS profile_id FROM buwiz_server.tax_profiles \
-         WHERE tin_identity_hash = ?1",
+         WHERE tin_hash = decode(?1, 'hex') \
+            OR (tin_hash IS NULL AND tin_identity_hash = ?1)",
         vec![json!(identity_hash.as_str())],
     )
     .await?;
@@ -105,13 +106,18 @@ async fn load_stream(stream_id: &str) -> AuthStackResult<LoadedTaxProfile> {
 
 async fn load_projection_fallback(profile_id: &str) -> AuthStackResult<Option<LoadedTaxProfile>> {
     let rows = execute_sql(
-        "SELECT profile_id::text AS profile_id, tin_identity_hash, tin_last4, display_name, \
+        "SELECT profile_id::text AS profile_id, \
+                COALESCE(encode(tin_hash, 'hex'), tin_identity_hash) AS tin_identity_hash, \
+                tin_last4, display_name, \
                 registered_name, rdo_code, line_of_business, registered_address, zip_code, \
                 phone, email, taxpayer_type, tax_classification, is_vat_registered, \
                 holder_kind, holder_user_id::text AS holder_user_id, \
                 holder_organization_id::text AS holder_organization_id, \
                 ownership_status, verification_status, \
                 verified_owner_user_id::text AS verified_owner_user_id, \
+                account_id::text AS account_id, branch_code, \
+                COALESCE(is_archived, false) AS is_archived, \
+                eopt_tier, business_start_date, birth_date, atc_codes, \
                 revision, updated_at::text AS updated_at \
          FROM buwiz_server.tax_profiles WHERE profile_id = ?1::uuid",
         vec![json!(profile_id)],
@@ -151,15 +157,21 @@ fn tax_profile_from_row(row: &Value) -> AuthStackResult<TaxProfile> {
             .map_err(map_tax_profile_error)?,
         tax_classification: row_string(row, "tax_classification").filter(|value| !value.is_empty()),
         is_vat_registered: row_bool(row, "is_vat_registered").unwrap_or(false),
+        eopt_tier: row_string(row, "eopt_tier").filter(|value| !value.is_empty()),
+        business_start_date: row_string(row, "business_start_date").filter(|value| !value.is_empty()),
+        birth_date: row_string(row, "birth_date").filter(|value| !value.is_empty()),
+        atc_codes: row_string_list(row, "atc_codes"),
     };
     Ok(TaxProfile {
         exists: true,
         profile_id: Some(required_string(row, "profile_id")?),
+        account_id: row_string(row, "account_id"),
         identity_hash: row_string(row, "tin_identity_hash")
             .map(|value| TinIdentityHash::parse(&value))
             .transpose()
             .map_err(AuthStackError::store)?,
         tin_last4: row_string(row, "tin_last4"),
+        branch_code: row_string(row, "branch_code"),
         display_name: row_string(row, "display_name")
             .or_else(|| row_string(row, "registered_name")),
         holder: Some(holder),
@@ -171,6 +183,7 @@ fn tax_profile_from_row(row: &Value) -> AuthStackResult<TaxProfile> {
             .map_err(map_tax_profile_error)?,
         facts: Some(facts),
         verified_owner_user_id: row_string(row, "verified_owner_user_id"),
+        is_archived: row_bool(row, "is_archived").unwrap_or(false),
         updated_at: row_string(row, "updated_at"),
     })
 }
@@ -260,6 +273,13 @@ fn projection_upsert_statement(
         .display_name
         .clone()
         .unwrap_or_else(|| facts.registered_name.clone());
+    let branch_code = state
+        .branch_code
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| crate::domain::BranchCode::HEAD_OFFICE.to_owned());
+    let account_id = state.account_id.clone().or_else(|| state.owner_user_id());
+    let full_name = facts.registered_name.clone();
     let (holder_kind, holder_user_id, holder_organization_id) = match &holder {
         AccountHolder::Personal { user_id } => ("personal", Some(user_id.clone()), None),
         AccountHolder::Organization { organization_id } => {
@@ -274,20 +294,35 @@ fn projection_upsert_statement(
     };
     Ok(AtomicSqlStatement::execute(
         "INSERT INTO buwiz_server.tax_profiles (\
-            profile_id, stream_id, tin_root, branch_code, tin_identity_hash, tin_last4, \
+            profile_id, stream_id, tin_root, branch_code, tin_identity_hash, tin_hash, tin_last4, \
+            account_id, full_name, is_archived, eopt_tier, business_start_date, birth_date, atc_codes, \
             display_name, claim_status, org_id, owner_user_id, registered_name, rdo_code, \
             line_of_business, registered_address, zip_code, phone, email, taxpayer_type, \
             tax_classification, is_vat_registered, holder_kind, holder_user_id, \
             holder_organization_id, ownership_status, verification_status, \
             verified_owner_user_id, revision, created_at, updated_at \
          ) VALUES (\
-            ?1::uuid, ?2, NULL, NULL, ?3, ?4, ?5, ?6, ?7::uuid, ?8::uuid, ?9, ?10, ?11, ?12, \
-            ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20::uuid, ?21::uuid, ?22, ?23, ?24::uuid, ?25, \
+            ?1::uuid, ?2, NULL, ?3, ?4, decode(?4, 'hex'), ?5, \
+            ?6::uuid, ?7, ?8, ?9, ?10, ?11, ?12::jsonb, \
+            ?13, ?14, ?15::uuid, ?16::uuid, ?17, ?18, \
+            ?19, ?20, ?21, ?22, ?23, ?24, \
+            ?25, ?26, ?27, ?28::uuid, \
+            ?29::uuid, ?30, ?31, \
+            ?32::uuid, ?33, \
             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP \
          ) \
          ON CONFLICT (profile_id) DO UPDATE SET \
             tin_identity_hash = EXCLUDED.tin_identity_hash, \
+            tin_hash = EXCLUDED.tin_hash, \
             tin_last4 = EXCLUDED.tin_last4, \
+            branch_code = EXCLUDED.branch_code, \
+            account_id = EXCLUDED.account_id, \
+            full_name = EXCLUDED.full_name, \
+            is_archived = EXCLUDED.is_archived, \
+            eopt_tier = EXCLUDED.eopt_tier, \
+            business_start_date = EXCLUDED.business_start_date, \
+            birth_date = EXCLUDED.birth_date, \
+            atc_codes = EXCLUDED.atc_codes, \
             display_name = EXCLUDED.display_name, \
             claim_status = EXCLUDED.claim_status, \
             org_id = EXCLUDED.org_id, \
@@ -310,13 +345,20 @@ fn projection_upsert_statement(
             verified_owner_user_id = EXCLUDED.verified_owner_user_id, \
             revision = EXCLUDED.revision, \
             updated_at = CURRENT_TIMESTAMP, \
-            tin_root = NULL, \
-            branch_code = NULL",
+            tin_root = NULL",
         vec![
             json!(profile_id),
             json!(profile_id),
+            json!(branch_code),
             json!(identity_hash.as_str()),
             json!(tin_last4),
+            json!(account_id),
+            json!(full_name),
+            json!(state.is_archived),
+            json!(facts.eopt_tier),
+            json!(facts.business_start_date),
+            json!(facts.birth_date),
+            json!(facts.atc_codes),
             json!(display_name),
             json!(claim_status.as_str()),
             json!(org_id),
@@ -344,6 +386,9 @@ fn projection_upsert_statement(
 
 const TAX_PROFILE_VIEW_COLUMNS: &str = "profile_id::text AS profile_id, tin_last4, display_name, claim_status, \
                     owner_user_id::text AS owner_user_id, org_id::text AS org_id, \
+                    account_id::text AS account_id, branch_code, \
+                    COALESCE(is_archived, false) AS is_archived, \
+                    COALESCE(full_name, registered_name) AS full_name, \
                     registered_name, rdo_code, line_of_business, registered_address, zip_code, \
                     phone, email, taxpayer_type, tax_classification, is_vat_registered, \
                     holder_kind, holder_user_id::text AS holder_user_id, \
@@ -378,36 +423,24 @@ pub(crate) async fn list_tax_profiles_for(
     initialize_schema_async().await?;
     let rows = if let Some(organization_id) = organization_id.filter(|id| !id.trim().is_empty()) {
         execute_sql(
-            "SELECT profile_id::text AS profile_id, tin_last4, display_name, claim_status, \
-                    owner_user_id::text AS owner_user_id, org_id::text AS org_id, \
-                    registered_name, rdo_code, line_of_business, registered_address, zip_code, \
-                    phone, email, taxpayer_type, tax_classification, is_vat_registered, \
-                    holder_kind, holder_user_id::text AS holder_user_id, \
-                    holder_organization_id::text AS holder_organization_id, \
-                    ownership_status, verification_status, \
-                    verified_owner_user_id::text AS verified_owner_user_id, \
-                    revision, created_at::text AS created_at, updated_at::text AS updated_at \
-             FROM buwiz_server.tax_profiles \
-             WHERE holder_user_id = ?1::uuid OR holder_organization_id = ?2::uuid \
-                OR org_id = ?2::uuid \
-             ORDER BY updated_at DESC",
+            &format!(
+                "SELECT {TAX_PROFILE_VIEW_COLUMNS} FROM buwiz_server.tax_profiles \
+                 WHERE COALESCE(is_archived, false) = FALSE \
+                   AND (account_id = ?1::uuid OR holder_user_id = ?1::uuid \
+                        OR holder_organization_id = ?2::uuid OR org_id = ?2::uuid) \
+                 ORDER BY updated_at DESC"
+            ),
             vec![json!(user_id), json!(organization_id)],
         )
         .await?
     } else {
         execute_sql(
-            "SELECT profile_id::text AS profile_id, tin_last4, display_name, claim_status, \
-                    owner_user_id::text AS owner_user_id, org_id::text AS org_id, \
-                    registered_name, rdo_code, line_of_business, registered_address, zip_code, \
-                    phone, email, taxpayer_type, tax_classification, is_vat_registered, \
-                    holder_kind, holder_user_id::text AS holder_user_id, \
-                    holder_organization_id::text AS holder_organization_id, \
-                    ownership_status, verification_status, \
-                    verified_owner_user_id::text AS verified_owner_user_id, \
-                    revision, created_at::text AS created_at, updated_at::text AS updated_at \
-             FROM buwiz_server.tax_profiles \
-             WHERE holder_user_id = ?1::uuid OR owner_user_id = ?1::uuid \
-             ORDER BY updated_at DESC",
+            &format!(
+                "SELECT {TAX_PROFILE_VIEW_COLUMNS} FROM buwiz_server.tax_profiles \
+                 WHERE COALESCE(is_archived, false) = FALSE \
+                   AND (account_id = ?1::uuid OR holder_user_id = ?1::uuid OR owner_user_id = ?1::uuid) \
+                 ORDER BY updated_at DESC"
+            ),
             vec![json!(user_id)],
         )
         .await?
@@ -462,6 +495,12 @@ pub(crate) fn tax_profile_view_from_state(
             .to_owned(),
         verification_status: state.verification.as_str().to_owned(),
         verified_owner_user_id: state.verified_owner_user_id.clone(),
+        account_id: state.account_id.clone(),
+        branch_code: state
+            .branch_code
+            .clone()
+            .unwrap_or_else(|| crate::domain::BranchCode::HEAD_OFFICE.to_owned()),
+        is_archived: state.is_archived,
         revision,
         created_at: None,
         updated_at: state.updated_at.clone(),
@@ -519,6 +558,11 @@ fn tax_profile_view_from_row(
         ownership_status: ownership.as_str().to_owned(),
         verification_status: required_string(row, "verification_status")?,
         verified_owner_user_id: verified_owner,
+        account_id: row_string(row, "account_id"),
+        branch_code: row_string(row, "branch_code").unwrap_or_else(|| {
+            crate::domain::BranchCode::HEAD_OFFICE.to_owned()
+        }),
+        is_archived: row_bool(row, "is_archived").unwrap_or(false),
         revision: row_i64(row, "revision").unwrap_or(1) as u64,
         created_at: row_string(row, "created_at"),
         updated_at: row_string(row, "updated_at"),
@@ -558,6 +602,10 @@ pub(crate) fn facts_from_create(
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned),
         is_vat_registered: request.is_vat_registered,
+        eopt_tier: None,
+        business_start_date: None,
+        birth_date: None,
+        atc_codes: Vec::new(),
     })
 }
 
@@ -588,6 +636,17 @@ pub(crate) fn new_uuid_v4() -> AuthStackResult<String> {
     ))
 }
 
+fn row_string_list(row: &Value, key: &str) -> Vec<String> {
+    match row.get(key) {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| item.as_str().map(ToOwned::to_owned))
+            .collect(),
+        Some(Value::String(raw)) => serde_json::from_str(raw).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
 pub(crate) fn map_tax_profile_error(error: TaxProfileError) -> AuthStackError {
     match error {
         TaxProfileError::InvalidFacts { reason } => AuthStackError::validation(reason),
@@ -600,6 +659,9 @@ pub(crate) fn map_tax_profile_error(error: TaxProfileError) -> AuthStackError {
         | TaxProfileError::ClaimRequiresCompanyHold
         | TaxProfileError::ReclaimDenied
         | TaxProfileError::ProofMismatch => AuthStackError::Forbidden,
+        TaxProfileError::AlreadyArchived | TaxProfileError::NotArchived => {
+            AuthStackError::conflict(error.to_string())
+        }
     }
 }
 

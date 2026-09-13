@@ -450,6 +450,20 @@ async fn dispatch(req: RestRequest) -> AuthStackResult<RestResponse> {
             let payload = parse_json::<TaxProfilePatchRequest>(req).await?;
             json_result(crate::application::patch_tax_profile(id, payload, request_auth).await)
         }
+        (Method::POST, path) if tax_profile_action_from_path(path, "archive").is_some() => {
+            validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+            let id = tax_profile_action_from_path(path, "archive")
+                .expect("checked")
+                .to_owned();
+            json_result(crate::application::archive_tax_profile(id, request_auth).await)
+        }
+        (Method::POST, path) if tax_profile_action_from_path(path, "restore").is_some() => {
+            validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+            let id = tax_profile_action_from_path(path, "restore")
+                .expect("checked")
+                .to_owned();
+            json_result(crate::application::restore_tax_profile(id, request_auth).await)
+        }
         (Method::POST, "/api/tax-profiles/claim") | (Method::POST, "/tax-profiles/claim") => {
             validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
             let payload = parse_json::<TaxProfileClaimRequest>(req).await?;
@@ -813,6 +827,20 @@ fn tax_profile_id_from_path(path: &str) -> Option<&str> {
     Some(rest)
 }
 
+fn tax_profile_action_from_path<'a>(path: &'a str, action: &str) -> Option<&'a str> {
+    let rest = path
+        .strip_prefix("/tax-profiles/")
+        .or_else(|| path.strip_prefix("/api/tax-profiles/"))?;
+    let (id, suffix) = rest.split_once('/')?;
+    if suffix != action || id.is_empty() || id.contains('/') {
+        return None;
+    }
+    if matches!(id, "claim" | "reclaim" | "transfer") {
+        return None;
+    }
+    Some(id)
+}
+
 fn known_rest_path(path: &str) -> bool {
     path == "/me"
         || path.starts_with("/api/organizations")
@@ -923,6 +951,26 @@ mod tests {
         );
         assert_eq!(tax_profile_id_from_path("/tax-profiles/claim"), None);
         assert_eq!(tax_profile_id_from_path("/tax-profiles"), None);
+        assert_eq!(
+            tax_profile_action_from_path(
+                "/tax-profiles/11111111-1111-4111-8111-111111111111/archive",
+                "archive"
+            ),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+        assert_eq!(
+            tax_profile_action_from_path(
+                "/api/tax-profiles/11111111-1111-4111-8111-111111111111/restore",
+                "restore"
+            ),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+        assert_eq!(
+            tax_profile_id_from_path(
+                "/tax-profiles/11111111-1111-4111-8111-111111111111/archive"
+            ),
+            None
+        );
     }
 
     #[test]

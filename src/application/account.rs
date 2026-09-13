@@ -68,6 +68,18 @@ pub async fn revoke_account_session(
     let (context, _) = verified_context_and_permissions(auth, false).await?;
     crate::auth_product::revoke_user_session(&request.session_id, context.session_id().as_str())
         .await?;
+    let command = crate::domain::DesktopSessionCommand::RevokeDevice {
+        session_id: request.session_id.clone(),
+        actor_user_id: context.principal().user_id().as_str().to_owned(),
+        occurred_at: crate::store::rfc3339_now(),
+    };
+    match command.handle() {
+        Ok(event) => tracing::info!(
+            event_type = event.event_type(),
+            "desktop session command"
+        ),
+        Err(error) => tracing::warn!(error = %error, "desktop session command rejected"),
+    }
     Ok(AcceptedResponse { accepted: true })
 }
 

@@ -34,6 +34,7 @@ pub async fn current_user_me(auth: RequestAuth) -> AuthStackResult<MeResponse> {
     })
 }
 
+/// ListTaxProfilesForAccount — active (non-archived) profiles for the caller.
 pub async fn list_tax_profiles(
     organization_id: Option<String>,
     auth: RequestAuth,
@@ -52,6 +53,7 @@ pub async fn list_tax_profiles(
     Ok(TaxProfileListResponse { profiles })
 }
 
+/// GetTaxProfile — load by UUID, then allow the owning account or current holder/org.
 pub async fn get_tax_profile(
     profile_id: String,
     auth: RequestAuth,
@@ -62,12 +64,13 @@ pub async fn get_tax_profile(
     if !loaded.state.exists {
         return Err(AuthStackError::not_found("tax profile not found"));
     }
+    let is_account = loaded.state.account_id.as_deref() == Some(user_id.as_str());
     let is_owner = loaded.state.owner_user_id().as_deref() == Some(user_id.as_str());
     let is_personal_holder = matches!(
         &loaded.state.holder,
         Some(AccountHolder::Personal { user_id: holder }) if holder == &user_id
     );
-    if !is_owner && !is_personal_holder {
+    if !is_account && !is_owner && !is_personal_holder {
         ensure_holder_or_org(&loaded.state, &user_id, session.session_id.as_deref()).await?;
     }
     crate::store::fetch_tax_profile_view(&profile_id, &user_id).await
@@ -112,13 +115,15 @@ pub async fn create_tax_profile(
         .to_owned();
     crate::store::commit_tax_profile_command(
         &profile_id,
-        TaxProfileCommand::Create {
+        TaxProfileCommand::RegisterTaxProfile {
             profile_id: profile_id.clone(),
+            account_id: user_id.clone(),
             holder,
             facts,
             display_name,
-            identity_hash,
+            tin_hash: identity_hash,
             tin_last4: tin_last4(&registration.tin_root),
+            branch_code: registration.branch_code.as_str().to_owned(),
             actor_user_id: user_id.clone(),
             occurred_at: crate::store::rfc3339_now(),
         },
@@ -133,12 +138,12 @@ pub async fn patch_tax_profile(
     request: TaxProfilePatchRequest,
     auth: RequestAuth,
 ) -> AuthStackResult<TaxProfileView> {
-    let (user_id, session_id) = require_verified_actor(auth).await?;
+    let (user_id, _) = require_verified_actor(auth).await?;
     let loaded = crate::store::load_tax_profile_by_id(&profile_id).await?;
     if !loaded.state.exists {
         return Err(AuthStackError::not_found("tax profile not found"));
     }
-    ensure_holder_or_org(&loaded.state, &user_id, session_id.as_deref()).await?;
+    require_account(&loaded.state, &user_id)?;
     if let (Some(tin_root), Some(branch_code)) = (
         request.tin_root.as_deref().filter(|value| !value.trim().is_empty()),
         request
@@ -176,10 +181,54 @@ pub async fn patch_tax_profile(
     let facts = merge_facts(loaded.state.facts.as_ref(), &request)?;
     crate::store::commit_tax_profile_command(
         &profile_id,
-        TaxProfileCommand::PatchMetadata {
+        TaxProfileCommand::UpdateTaxProfileIdentity {
             display_name: request.display_name.clone(),
             facts: Some(facts),
             expected_updated_at: None,
+            actor_user_id: user_id.clone(),
+            occurred_at: crate::store::rfc3339_now(),
+        },
+        loaded.revision,
+    )
+    .await?;
+    crate::store::fetch_tax_profile_view(&profile_id, &user_id).await
+}
+
+pub async fn archive_tax_profile(
+    profile_id: String,
+    auth: RequestAuth,
+) -> AuthStackResult<TaxProfileView> {
+    let (user_id, _) = require_verified_actor(auth).await?;
+    let loaded = crate::store::load_tax_profile_by_id(&profile_id).await?;
+    if !loaded.state.exists {
+        return Err(AuthStackError::not_found("tax profile not found"));
+    }
+    require_account(&loaded.state, &user_id)?;
+    crate::store::commit_tax_profile_command(
+        &profile_id,
+        TaxProfileCommand::ArchiveTaxProfile {
+            actor_user_id: user_id.clone(),
+            occurred_at: crate::store::rfc3339_now(),
+        },
+        loaded.revision,
+    )
+    .await?;
+    crate::store::fetch_tax_profile_view(&profile_id, &user_id).await
+}
+
+pub async fn restore_tax_profile(
+    profile_id: String,
+    auth: RequestAuth,
+) -> AuthStackResult<TaxProfileView> {
+    let (user_id, _) = require_verified_actor(auth).await?;
+    let loaded = crate::store::load_tax_profile_by_id(&profile_id).await?;
+    if !loaded.state.exists {
+        return Err(AuthStackError::not_found("tax profile not found"));
+    }
+    require_account(&loaded.state, &user_id)?;
+    crate::store::commit_tax_profile_command(
+        &profile_id,
+        TaxProfileCommand::RestoreTaxProfile {
             actor_user_id: user_id.clone(),
             occurred_at: crate::store::rfc3339_now(),
         },
@@ -318,6 +367,17 @@ async fn resolve_holder(
     })
 }
 
+fn require_account(
+    state: &crate::domain::TaxProfile,
+    user_id: &str,
+) -> AuthStackResult<()> {
+    if state.account_id.as_deref() == Some(user_id) {
+        Ok(())
+    } else {
+        Err(AuthStackError::Forbidden)
+    }
+}
+
 async fn ensure_holder_or_org(
     state: &crate::domain::TaxProfile,
     user_id: &str,
@@ -387,6 +447,10 @@ fn merge_facts(
         is_vat_registered: request
             .is_vat_registered
             .unwrap_or(current.is_vat_registered),
+        eopt_tier: current.eopt_tier.clone(),
+        business_start_date: current.business_start_date.clone(),
+        birth_date: current.birth_date.clone(),
+        atc_codes: current.atc_codes.clone(),
     })
 }
 

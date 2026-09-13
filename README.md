@@ -33,7 +33,7 @@ make dev transport=both
 | Target | Purpose |
 |--------|---------|
 | `make db-up` | Postgres + Redis |
-| `make db-migrate` | wasi-auth schema + Buwiz migrations (`0001`–`0003`) |
+| `make db-migrate` | wasi-auth schema + Buwiz migrations (`0001`–`0004`) |
 | `make dev` | Spin + outbox worker (register / verify) |
 | `make check` | `wasm32-wasip2` compile |
 | `make smoke` | REST + web route checks against `BASE_URL` |
@@ -115,11 +115,36 @@ curl -sS -X POST http://localhost:3008/auth/device/start \
 
 ## Tax profiles
 
-Cloud subset of the desktop taxpayer profile. **`id` (UUID) is the server source of truth.** Clients must not treat TIN as the local identity key.
+Cloud subset of the desktop taxpayer profile. **`id` (UUID) is the server source of truth.** Clients must not treat TIN as the local identity key. Every mutating command loads the profile by UUID and asserts `account_id` matches the caller.
 
-The server stores `tin_last4` for display and an HMAC of `{tin_root}|{branch_code}` (derived from `AUTH_ROOT_KEY_BASE64`) for exclusive uniqueness and claim matching. Raw TIN is attested at create/claim time and is **not** the primary key.
+`tax_profiles.account_id` maps to wasi-auth `auth_users.user_id` (the sketch `accounts` table is not duplicated). Refresh tokens stay in `auth_refresh_tokens`. Device codes live in `buwiz_server.oauth_device_codes`; sessions in `auth_sessions`. Do not add product `devices` or `refresh_tokens` tables.
+
+The server stores `tin_last4` for display, persisted `branch_code` (head office `00000`), and an HMAC of `{tin_root}|{branch_code}` as `tin_hash` (BYTEA; Spin binds hex via `decode(..., 'hex')`). Exclusive uniqueness is **only** on `RegisterTaxProfile` via that hash (`UNIQUE (tin_hash)` globally in V1, plus `UNIQUE (account_id, tin_hash)`). Drop the global unique later when `tax_profile_members` exists. Raw TIN is attested at register/claim time and is **not** the primary key.
 
 `claim_status`: `owned` | `pending_claim` | `read_only`.
+
+V1 commands (past-tense event mirrors). Keep them small.
+
+| Command | Event |
+|---------|--------|
+| `RegisterTaxProfile` | `TaxProfileRegistered` |
+| `UpdateTaxProfileIdentity` | `TaxProfileIdentityUpdated` |
+| `ArchiveTaxProfile` / `RestoreTaxProfile` | `TaxProfileArchived` / `TaxProfileRestored` |
+| `CloneProfileYear` | `ProfileYearCloned` (copy prior `per_year_forms` only if dest empty) |
+| `UpdateProfileYear` | `ProfileYearUpdated` (null = inherit) |
+| `SetYearForms` / `ActivateYearForm` / `DeactivateYearForm` | year-forms events |
+| `UpsertFormDraft` / `MarkDraftSaved` | `FormDraftUpserted` / `DraftSaved` |
+| `EnqueueFiling` | `FilingQueued` |
+| `MarkFilingSubmitted` / `ConfirmFilingFromReceipt` / `FailFiling` / `MarkFilingPaid` | filing events |
+| `RegisterDevice` / `RevokeDevice` / `IssueDesktopSession` | device-session events (no PIN/TOTP) |
+
+Queries: `GetTaxProfile`, `ListTaxProfilesForAccount`, `GetProfileYear`, `ListYearForms`, `GetFormDraft`, `ListDraftsForYear`, `ListFilings`, `GetFilingByPeriod`.
+
+Claim/reclaim/transfer remain as extra company-managed commands (TIN attestation + ORUS proof). They are not TIN-as-SoT.
+
+V1.1 stubs only: `SaveFormTemplate` / `ApplyFormTemplate`.
+
+Do **not** port COR/OCR/effective-date ledgers, inference flag updates, or IMAP/OAuth mailbox secrets.
 
 Rules:
 
@@ -127,19 +152,21 @@ Rules:
 2. Personal hold is exclusive to that user (and their agents).
 3. A company may hold it until the verified owner claims or reclaims (`pending_claim`).
 4. The verified owner can reclaim at any time.
-5. Multi-device metadata uses last-write-wins via `updated_at` (PATCH must echo the last seen `updated_at`). Never silent-merge two different TINs into one row.
-6. Concurrent creates of the same hashed identity fail with 409.
+5. Multi-device identity uses last-write-wins via `updated_at` (PATCH must echo the last seen `updated_at`). Never silent-merge two different TINs into one row.
+6. Concurrent registers of the same hashed identity fail with 409.
 
-Email must be **verified** before create/claim/reclaim/transfer/patch.
+Email must be **verified** before register/claim/reclaim/transfer/patch/archive.
 
 Cloud field subset for sync: `full_name`, `rdo_code`, `address`, `taxpayer_type`, plus contact/classification fields. **Never** sync `profile_pin_hash`, `totp_secret`, IMAP passwords, or mailbox OAuth tokens.
 
 | REST | |
 |------|--|
-| `GET /tax-profiles` | List held profiles (`GET /api/tax-profiles` alias) |
-| `POST /tax-profiles` | Create (TIN attested; UUID returned) |
-| `GET /tax-profiles/{id}` | Fetch by UUID |
-| `PATCH /tax-profiles/{id}` | Metadata LWW (`updated_at`) |
+| `GET /tax-profiles` | `ListTaxProfilesForAccount` (`GET /api/tax-profiles` alias) |
+| `POST /tax-profiles` | `RegisterTaxProfile` (TIN attested; UUID returned) |
+| `GET /tax-profiles/{id}` | `GetTaxProfile` |
+| `PATCH /tax-profiles/{id}` | `UpdateTaxProfileIdentity` (`updated_at` LWW) |
+| `POST /tax-profiles/{id}/archive` | `ArchiveTaxProfile` |
+| `POST /tax-profiles/{id}/restore` | `RestoreTaxProfile` |
 | `POST /tax-profiles/claim` | Claim from company hold (ORUS proof; TIN attested) |
 | `POST /tax-profiles/reclaim` | Take back control |
 | `POST /tax-profiles/transfer` | Transfer to an org you belong to (`{ id, organization_id }`) |
@@ -209,7 +236,7 @@ Rust **1.93.0**. Toolchain is gated by `scripts/verify_toolchain.sh`.
 ## What is stubbed (not in this slice)
 
 - Live **ORUS** TIN verification — trait + `FakeOrusVerifier` only
-- Full **form-draft sync** and filing-history protocol with headless-bir / Grok Bot — tables exist (`per_year_forms_sets`, `form_drafts`, `filing_jobs`); HTTP sync is not implemented. See [docs/sync-api.md](docs/sync-api.md)
+- Full HTTP for year forms / drafts / filings — canonical tables exist (`profile_years`, `per_year_forms`, `form_drafts`, `filings`); command names are typed. See [docs/sync-api.md](docs/sync-api.md)
 - BIR SFTP / **TSP submission relay** ([hexuria/buwiz-forms#44](https://github.com/hexuria/buwiz-forms/issues/44)) — not implemented on purpose
 - Copying desktop profile encryption / email OAuth secrets to cloud
 
@@ -218,11 +245,11 @@ Rust **1.93.0**. Toolchain is gated by `scripts/verify_toolchain.sh`.
 ## Layout
 
 ```
-src/domain/           tax profile aggregate, hashed TIN identity, ORUS port, desktop redirect policy
+src/domain/           tax profile aggregate, hashed TIN identity, V1 command stubs, ORUS port, desktop redirect policy
 src/application/       verified-email gate + commands
 src/store/            Postgres events/projection + Redis wake + OAuth codes
-src/desktop_oauth.rs  device flow + PKCE authorization server
+src/desktop_oauth.rs  device flow + PKCE (`RegisterDevice` / `IssueDesktopSession`)
 src/app/              Leptos UI (auth, tax profiles, WebMCP)
-migrations/postgres/  0001 app storage, 0002 tax profiles + OAuth, 0003 hashed TIN + sync stubs
+migrations/postgres/  0001 app storage, 0002 tax profiles + OAuth, 0003 hashed TIN, 0004 canonical V1 read models
 docs/                 webmcp, sync API, extensions
 ```

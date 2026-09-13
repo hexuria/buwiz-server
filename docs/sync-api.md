@@ -1,50 +1,53 @@
 # Sync entities (headless-bir / Grok Bot)
 
-v1 ships **stable server ids and stub tables**. The HTTP sync protocol is not implemented yet.
+v1 ships **stable server ids and canonical read-model tables**. Year / draft / filing HTTP is not implemented yet; command and event names are typed in `src/domain/v1_sync.rs`.
 
 Cloud never stores IMAP passwords, mailbox OAuth tokens, `profile_pin_hash`, or `totp_secret`.
 
 Effective-dated COR version ledgers are **not** modeled. Per-year forms are **Manual-only**.
 
+Identity mapping: `accounts` → `auth_users`; refresh tokens → `auth_refresh_tokens`; devices → `oauth_device_codes` + `auth_sessions`. `tax_profiles.account_id` is `auth_users.user_id`.
+
 ## 1. TaxProfile (implemented)
 
-UUID `id` is the source of truth. Exclusive uniqueness is the hashed TIN identity, not raw TIN.
+UUID `id` is the source of truth. Exclusive uniqueness is `tin_hash` on `RegisterTaxProfile` only, never raw TIN.
 
-| REST | |
-|------|--|
-| `GET/POST /tax-profiles` | list / create |
-| `GET/PATCH /tax-profiles/{id}` | fetch / metadata LWW |
+| REST | Command |
+|------|---------|
+| `GET /tax-profiles` | `ListTaxProfilesForAccount` |
+| `POST /tax-profiles` | `RegisterTaxProfile` |
+| `GET /tax-profiles/{id}` | `GetTaxProfile` |
+| `PATCH /tax-profiles/{id}` | `UpdateTaxProfileIdentity` |
+| `POST /tax-profiles/{id}/archive` | `ArchiveTaxProfile` |
+| `POST /tax-profiles/{id}/restore` | `RestoreTaxProfile` |
 
 See the product README. Redis may wake subscribers after a profile commit; clients then GET the projection.
 
-## 2. PerYearFormsSet (stub table)
+## 2. ProfileYear + per_year_forms (tables; commands stubbed)
 
-`buwiz_server.per_year_forms_sets`
+`buwiz_server.profile_years` (no effective_from/until) and `buwiz_server.per_year_forms`.
 
-```
-{
-  "id": "<uuid>",
-  "profile_id": "<tax profile uuid>",
-  "tax_year": 2026,
-  "entries": [
-    { "form_code": "2550Q", "frequency": "quarterly", "active": true, "source": "Manual" }
-  ]
-}
-```
+Commands: `CloneProfileYear` (copy prior year’s forms only if dest empty), `UpdateProfileYear` (null = inherit), `SetYearForms` (replace active set), `ActivateYearForm` / `DeactivateYearForm`.
+
+Queries: `GetProfileYear`, `ListYearForms`.
 
 `source` is Manual in v1. No HTTP routes yet.
 
-## 3. FormDraft (stub table)
+## 3. FormDraft (canonical table)
 
-`buwiz_server.form_drafts`
+`buwiz_server.form_drafts` — PK `id`. Fields: `form_code`, `tax_year`, `period_key`, `payload`, `rev`, `saved_once`.
 
-Stable `draft_id`. Fields: `form_code`, `period`, `status`, `payload_json`. Full draft sync is **not** implemented.
+Commands: `UpsertFormDraft` (bump rev; `saved_once=true` on success), `MarkDraftSaved`.
 
-## 4. Filing / submission job (stub tables)
+Queries: `GetFormDraft`, `ListDraftsForYear`.
 
-`buwiz_server.filing_jobs` + append-only `filing_job_events`.
+## 4. Filing (canonical table)
 
-Status path: **Draft → Queued → Submitted → Confirmed → Paid**, plus `receipt_match_keys`.
+`buwiz_server.filings`.
+
+Status path: **queued → submitted → confirmed → paid** (`EnqueueFiling` → `FilingQueued`, plus submit/confirm/fail/paid).
+
+Authz for enqueue: caller owns the profile (`account_id`); form is active in the year set.
 
 Metadata only. **Not** BIR credentials.
 
@@ -65,7 +68,7 @@ GET /api/sync/filing-history?profile_id=...&after=...
 
 ### Rules to encode later
 
-- Require verified email + tax-profile holder (or reclaim-capable verified owner).
+- Require verified email + tax-profile `account_id` match (UUID load, never raw TIN as SoT).
 - Key all sync by **profile UUID**, never raw TIN.
 - Idempotency per `(profile_id, source, checkpoint)`.
 - Reject payloads that include secrets (`imap_*`, `totp_*`, `pin`, mailbox tokens, `profile_pin_hash`).

@@ -825,7 +825,7 @@ branch_code="00000"
 create_tp="$(json_post /tax-profiles \
   "{\"tin_root\":\"$tin_root\",\"branch_code\":\"$branch_code\",\"registered_name\":\"Smoke Taxpayer\",\"rdo_code\":\"039\",\"line_of_business\":\"Software\",\"registered_address\":\"Makati\",\"zip_code\":\"1200\",\"phone\":\"\",\"email\":\"$email\",\"taxpayer_type\":\"individual\"}" \
   -H "$session_cookie" -H "x-csrf-token: $csrf_token")"
-jq -e '.id and .profile_id and .claim_status == "owned" and .tin_last4 == "6789" and (has("tin_root") | not)' \
+jq -e '.id and .profile_id and .claim_status == "owned" and .tin_last4 == "6789" and .branch_code == "00000" and .full_name == "Smoke Taxpayer" and .account_id and (has("tin_root") | not)' \
   <<<"$create_tp" >/dev/null
 profile_id="$(jq -r '.id' <<<"$create_tp")"
 updated_at="$(jq -r '.updated_at' <<<"$create_tp")"
@@ -835,12 +835,18 @@ curl -sS -f "$BASE_URL/tax-profiles" -H "$session_cookie" \
   -H 'accept: application/json' \
   | jq -e '.profiles | length >= 1' >/dev/null
 curl -sS -f "$BASE_URL/tax-profiles/$profile_id" -H "$session_cookie" \
-  | jq -e --arg id "$profile_id" '.id == $id and .tin_last4 == "6789"' >/dev/null
+  | jq -e --arg id "$profile_id" '.id == $id and .tin_last4 == "6789" and .branch_code == "00000" and .full_name' >/dev/null
 patch_tp="$(curl -sS -f -X PATCH "$BASE_URL/tax-profiles/$profile_id" \
   -H "$session_cookie" -H "x-csrf-token: $csrf_token" \
   -H 'content-type: application/json' \
   --data "{\"display_name\":\"Smoke Taxpayer Updated\",\"updated_at\":\"$updated_at\"}")"
 jq -e '.display_name == "Smoke Taxpayer Updated"' <<<"$patch_tp" >/dev/null
+archive_tp="$(curl -sS -f -X POST "$BASE_URL/tax-profiles/$profile_id/archive" \
+  -H "$session_cookie" -H "x-csrf-token: $csrf_token")"
+jq -e '.is_archived == true' <<<"$archive_tp" >/dev/null
+restore_tp="$(curl -sS -f -X POST "$BASE_URL/tax-profiles/$profile_id/restore" \
+  -H "$session_cookie" -H "x-csrf-token: $csrf_token")"
+jq -e '.is_archived == false' <<<"$restore_tp" >/dev/null
 assert_error 409 conflict POST "$BASE_URL/tax-profiles" \
   -H 'content-type: application/json' \
   -H "$session_cookie" \

@@ -29,6 +29,12 @@ pub struct TaxProfileView {
     pub ownership_status: String,
     pub verification_status: String,
     pub verified_owner_user_id: Option<String>,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub branch_code: String,
+    #[serde(default)]
+    pub is_archived: bool,
     pub revision: u64,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
