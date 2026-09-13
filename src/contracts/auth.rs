@@ -30,6 +30,12 @@ pub struct AuthCapabilities {
     pub oauth_enabled: bool,
     pub passkeys_enabled: bool,
     pub providers: Vec<AuthProviderSummary>,
+    /// Loopback + AUTH_DEV_TOOLS + not production.
+    #[serde(default)]
+    pub development_tools: bool,
+    /// Capture-mail UI (compiled mail-capture + AUTH_MAIL_TRANSPORT=capture).
+    #[serde(default)]
+    pub mail_capture: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

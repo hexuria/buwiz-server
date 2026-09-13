@@ -39,6 +39,8 @@ pub async fn auth_capabilities() -> AuthStackResult<AuthCapabilities> {
         oauth_enabled: oauth_enabled && !providers.is_empty(),
         passkeys_enabled,
         providers,
+        development_tools: crate::auth_product::development_auth_tools_enabled().await,
+        mail_capture: crate::auth_product::development_mail_capture_enabled().await,
     })
 }
 
@@ -383,13 +385,14 @@ pub async fn get_jwks() -> AuthStackResult<JwksDocument> {
     crate::auth_product::get_jwks().await
 }
 
-/// Reads any user's verification/reset link, so it is an account-takeover
-/// primitive: administrator-only, loopback-only, and compiled out of release
-/// builds (see `crate::auth_product::latest_captured_mail`).
+/// Reads the latest captured message for `recipient` in development.
+///
+/// Gated by `AUTH_DEV_TOOLS`, capture transport, loopback origin, and the
+/// `mail-capture` feature. Not available when `AUTH_PRODUCTION_MODE` is on.
 pub async fn latest_captured_mail(
     recipient: String,
     message_kind: String,
-    auth: RequestAuth,
+    _auth: RequestAuth,
 ) -> AuthStackResult<CapturedMailResponse> {
     validate_required_email(&recipient)?;
     if !matches!(
@@ -398,8 +401,16 @@ pub async fn latest_captured_mail(
     ) {
         return Err(AuthStackError::validation("message_kind is invalid"));
     }
-    require_step_up_permission_for("system.user.manage", auth).await?;
     crate::auth_product::latest_captured_mail(&recipient, &message_kind).await
+}
+
+/// Completes email verification from the captured outbox token (dev only).
+pub async fn skip_development_email_verification(
+    request: EmailVerificationResendRequest,
+) -> AuthStackResult<LoginCompletionResponse> {
+    validate_required_email(&request.email)?;
+    let redirect_url = safe_redirect_or_default(request.redirect_url);
+    crate::auth_product::skip_development_email_verification(&request.email, &redirect_url).await
 }
 
 pub(crate) async fn list_credentialed_auth_providers() -> AuthStackResult<Vec<AuthProviderSummary>>

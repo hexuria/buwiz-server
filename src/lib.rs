@@ -4,6 +4,7 @@
 compile_error!("the fullstack server requires the PostgreSQL storage feature");
 
 mod domain;
+mod dev_auth;
 
 // ddd:product-domain
 // ddd:product-domain:end

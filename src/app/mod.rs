@@ -896,7 +896,7 @@ pub fn HomePage() -> impl IntoView {
         view! {
             <section class=HOME_INTRO>
                 <p class=HOME_KICKER>"Buwiz cloud control plane"</p>
-                <h2 class=HOME_TITLE>"One verified session for web and desktop."</h2>
+                <h2 class=HOME_TITLE data-testid="home-heading">"One verified session for web and desktop."</h2>
                 <p class=HOME_COPY>
                     "Register, verify your email, then hold tax profiles as a personal account or a company workspace. Desktop IMAP secrets and local PIN/TOTP stay on the device."
                 </p>

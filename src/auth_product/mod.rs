@@ -3,6 +3,7 @@
 
 mod admin;
 mod config;
+mod dev;
 mod errors;
 mod flows;
 mod infra;
@@ -14,6 +15,7 @@ mod session;
 
 pub(crate) use admin::*;
 pub(crate) use config::*;
+pub(crate) use dev::*;
 pub(crate) use errors::*;
 pub(crate) use flows::*;
 pub(crate) use infra::*;

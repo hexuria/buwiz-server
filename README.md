@@ -41,20 +41,39 @@ make dev transport=both
 
 Password minimum length is **15** (wasi-auth default in this stack).
 
+### Development authentication (cloud / local default)
+
+`make dev` defaults to **capture mail** so you can register and sign in without Resend.
+
+| Flag | Default | Role |
+|------|---------|------|
+| `AUTH_MAIL_TRANSPORT` | `capture` | Local outbox. The worker acks mail without calling a provider. |
+| `AUTH_DEV_TOOLS` | `true` | Shows **Verify now**, **Copy link**, and **Skip verification (dev)** after register / on pending login. |
+| `AUTH_DEV_AUTO_VERIFY` | `false` | If `true`, register consumes the captured token and signs you in. |
+| `AUTH_PRODUCTION_MODE` | `false` | When `true`, Spin refuses `AUTH_DEV_TOOLS`, `AUTH_DEV_AUTO_VERIFY`, and capture mail. `spin.production.toml.example` keeps these off and uses `mail-http`. |
+
+After register the success panel is **not** “check your real inbox” as the only path. **Verify now** opens the captured token on **this host** (same-origin `/verify-email?token=…`), so a Cloud Agent / remote client is not sent to `http://localhost:3008` from an email app.
+
+Production-shaped builds compile without `mail-capture` (`AUTH_MAIL_TRANSPORT=http` / `resend` → `mail-http`) and the capture/skip controls are absent.
+
 ### Email: capture vs Resend
 
 | Mode | When |
 |------|--------|
-| **capture** (default) | Local. Outbox stores the message. After register, open `/verify-email` / resend and use **Open captured verification link** when `AUTH_DEV_TOOLS=true`. |
-| **resend** | Set `AUTH_MAIL_TRANSPORT=resend`, `AUTH_RESEND_API_KEY`, and `AUTH_RESEND_FROM` (verified domain). The API key stays on the **native worker**, never in Spin. |
+| **capture** (default) | Local and Cloud Agent. Outbox stores the message. Use **Verify now** / **Skip verification (dev)** when `AUTH_DEV_TOOLS=true`. |
+| **resend** | Real inbox. Set `AUTH_MAIL_TRANSPORT=resend`, `AUTH_RESEND_API_KEY`, and `AUTH_RESEND_FROM` (verified domain). The API key stays on the **native worker**, never in Spin. |
+| **http** | Production worker + HTTP mailer (`spin.production.toml.example`). |
 
 ```bash
-# Real inbox
+# Real inbox — AUTH_PUBLIC_BASE_URL must be reachable from the mail client
 AUTH_MAIL_TRANSPORT=resend \
+AUTH_PUBLIC_BASE_URL='https://your-tunnel.example' \
 AUTH_RESEND_API_KEY=re_... \
 AUTH_RESEND_FROM='Buwiz <auth@your-verified-domain.example>' \
-make dev transport=both
+make dev transport=both listen=0.0.0.0:3008
 ```
+
+Never assume `http://localhost:3008` in a Resend message will open this VM. Use a tunnel or public origin. Never commit Resend API keys.
 
 The worker uses `AUTH_MAIL_PRODUCT_NAME=Buwiz` in templates.
 
@@ -209,14 +228,15 @@ Copy `.env.example`. Secrets stay out of git (`.env`, `.auth-root-key`, `.auth-o
 | `AUTH_OUTBOX_KEY_BASE64` | Native worker mail sealing |
 | `AUTH_MAIL_TRANSPORT` | `capture` \| `resend` \| `http` |
 | `AUTH_RESEND_API_KEY` / `AUTH_RESEND_FROM` | Resend (worker only) |
-| `AUTH_PUBLIC_BASE_URL` | Derived from `make … listen=` unless set |
+| `AUTH_PUBLIC_BASE_URL` | Derived from `make … listen=` unless set. For Resend, this **must** be a URL the inbox can open (tunnel/public). Localhost only works on the same machine. |
+| `AUTH_DEV_TOOLS` | Capture-mail UI + skip-verify (default `true` locally; forbidden in production) |
+| `AUTH_DEV_AUTO_VERIFY` | Auto-complete verification after register (default `false`; forbidden in production) |
 | `POSTGRES_URL` | Default `postgres://wasi_auth:wasi_auth_dev@127.0.0.1:54329/wasi_auth` |
 | `REDIS_URL` | Empty skips wake publishes |
 | `REDIS_CHANNEL` | Default `buwiz-tax-profiles` |
 | `ORUS_FAKE_VERIFIER` | Local TIN proof |
 | `WEBMCP_ENABLED` | Imperative WebMCP registration |
 | `DESKTOP_OAUTH_REDIRECT_URIS` | Extra native redirect URIs |
-| `AUTH_DEV_TOOLS` | Capture-mail UI helpers |
 
 ---
 

@@ -4,6 +4,7 @@
 #![allow(unused_imports)]
 
 use crate::contracts::{LoginCompletionResponse, SessionView};
+pub(crate) use crate::dev_auth::login_error_is_unverified;
 use leptos::prelude::*;
 use server_fn::ServerFnError;
 #[cfg(feature = "hydrate")]
@@ -473,6 +474,28 @@ pub(crate) fn hex_nibble(byte: u8) -> Option<u8> {
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
+}
+
+pub(crate) fn query_value_from_url(name: &str) -> Option<String> {
+    #[cfg(feature = "hydrate")]
+    {
+        if let Some(window) = window()
+            && let Ok(search) = window.location().search()
+        {
+            let prefix = format!("{name}=");
+            return search
+                .trim_start_matches('?')
+                .split('&')
+                .find_map(|part| part.strip_prefix(prefix.as_str()))
+                .map(percent_decode_component)
+                .filter(|value| !value.trim().is_empty());
+        }
+    }
+    #[cfg(not(feature = "hydrate"))]
+    {
+        let _ = name;
+    }
+    None
 }
 
 pub(crate) fn one_time_token_from_url() -> Option<String> {

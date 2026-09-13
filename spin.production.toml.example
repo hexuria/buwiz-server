@@ -43,6 +43,7 @@ auth_outbox_key_version = { default = "development-v1" }
 auth_recovery_code_pepper_base64 = { default = "" }
 auth_mfa_issuer = { default = "Buwiz" }
 auth_dev_tools = { default = "false" }
+auth_dev_auto_verify = { default = "false" }
 auth_mail_transport = { default = "http" }
 auth_spicedb_enabled = { default = "false" }
 auth_spicedb_check_url = { default = "" }
@@ -166,6 +167,7 @@ auth_outbox_key_version = "{{ auth_outbox_key_version }}"
 auth_recovery_code_pepper_base64 = "{{ auth_recovery_code_pepper_base64 }}"
 auth_mfa_issuer = "{{ auth_mfa_issuer }}"
 auth_dev_tools = "{{ auth_dev_tools }}"
+auth_dev_auto_verify = "{{ auth_dev_auto_verify }}"
 auth_mail_transport = "{{ auth_mail_transport }}"
 auth_spicedb_enabled = "{{ auth_spicedb_enabled }}"
 auth_spicedb_check_url = "{{ auth_spicedb_check_url }}"
@@ -271,6 +273,7 @@ auth_outbox_key_version = "{{ auth_outbox_key_version }}"
 auth_recovery_code_pepper_base64 = "{{ auth_recovery_code_pepper_base64 }}"
 auth_mfa_issuer = "{{ auth_mfa_issuer }}"
 auth_dev_tools = "{{ auth_dev_tools }}"
+auth_dev_auto_verify = "{{ auth_dev_auto_verify }}"
 auth_mail_transport = "{{ auth_mail_transport }}"
 auth_spicedb_enabled = "{{ auth_spicedb_enabled }}"
 auth_spicedb_check_url = "{{ auth_spicedb_check_url }}"
@@ -382,6 +385,7 @@ auth_outbox_key_version = "{{ auth_outbox_key_version }}"
 auth_recovery_code_pepper_base64 = "{{ auth_recovery_code_pepper_base64 }}"
 auth_mfa_issuer = "{{ auth_mfa_issuer }}"
 auth_dev_tools = "{{ auth_dev_tools }}"
+auth_dev_auto_verify = "{{ auth_dev_auto_verify }}"
 auth_mail_transport = "{{ auth_mail_transport }}"
 auth_spicedb_enabled = "{{ auth_spicedb_enabled }}"
 auth_spicedb_check_url = "{{ auth_spicedb_check_url }}"

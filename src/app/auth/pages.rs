@@ -4,6 +4,9 @@
 #![allow(clippy::unused_unit)]
 #![allow(clippy::unit_arg)]
 
+use super::dev_verify::{
+    DevelopmentPendingEmailField, DevelopmentVerificationActions, pending_email_from_browser,
+};
 use super::forms::{
     EmailPasswordAuthForm, EmailVerificationForm, ForgotPasswordForm, InvitationAcceptForm,
     LogoutForm, OAuthCallbackStatus, OAuthProviderList, OptionalPasskeyRegistration,
@@ -12,7 +15,7 @@ use super::forms::{
 use crate::app::helpers::{next_url, percent_encode_component, redirect_browser, set_page_status};
 use crate::app::{browser_load, get_current_session};
 use crate::ui::classes::{
-    AUTH_CARD, AUTH_PAGE, BANNER_SUCCESS, BTN_SECONDARY, BUTTON_ROW, CLIENT_DATA_SLOT, SECTION_LABEL,
+    AUTH_CARD, AUTH_PAGE, BTN_SECONDARY, BUTTON_ROW, CLIENT_DATA_SLOT, SECTION_LABEL,
 };
 use crate::ui::{AuthBrand, error_page_shell, page_shell};
 use leptos::prelude::*;
@@ -103,21 +106,32 @@ pub fn VerificationPendingPage() -> impl IntoView {
         <div class=AUTH_PAGE data-testid="auth-page">
             <section class=AUTH_CARD data-testid="auth-card">
                 <AuthBrand />
-                <section class="grid gap-7">
-                    <div>
-                        <p class=SECTION_LABEL>"Email verification"</p>
-                        <h1 class="mt-3 mb-0 text-[32px] font-semibold leading-[1.05] tracking-tight">"Check your inbox"</h1>
-                        <p class="mt-3 mb-0 max-w-[34ch] text-[15px] leading-relaxed text-secondary">
-                            "Your account is pending. Open the one-time verification link before signing in."
-                        </p>
-                    </div>
-                    <p class=BANNER_SUCCESS>
-                        "Local capture mode keeps messages on this machine. Start the app with `make dev` to run delivery automatically."
-                    </p>
-                    <a class="inline-flex justify-center no-underline text-primary" href="/verify-email/resend">"Send another verification link"</a>
-                </section>
+                <VerificationPendingPanel />
             </section>
         </div>
+    }
+}
+
+#[island]
+pub fn VerificationPendingPanel() -> impl IntoView {
+    let email = RwSignal::new(pending_email_from_browser());
+    view! {
+        <section class="grid gap-7">
+            <div>
+                <p class=SECTION_LABEL>"Email verification"</p>
+                <h1 class="mt-3 mb-0 text-[32px] font-semibold leading-[1.05] tracking-tight">
+                    "Verify this host"
+                </h1>
+                <p class="mt-3 mb-0 max-w-[34ch] text-[15px] leading-relaxed text-secondary">
+                    "Your account is pending. In development, verification mail is captured locally — do not wait on a real inbox."
+                </p>
+            </div>
+            <DevelopmentPendingEmailField email=email />
+            <DevelopmentVerificationActions email=email />
+            <a class="inline-flex justify-center no-underline text-primary" href="/verify-email/resend">
+                "Send another verification link"
+            </a>
+        </section>
     }
 }
 

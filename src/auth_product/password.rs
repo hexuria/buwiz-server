@@ -111,22 +111,15 @@ pub async fn register_email_password(
         ))
         .await
         .map_err(map_registration_error)?;
-    Ok(LoginCompletionResponse {
+    let pending = LoginCompletionResponse {
         authenticated: false,
         redirect_url: "/verify-email/pending".to_owned(),
         session_id: None,
         access_token: None,
         refresh_token: None,
         expires_in_seconds: 0,
-    })
-}
-
-pub async fn development_mail_capture_enabled() -> bool {
-    cfg!(all(feature = "mail-capture", debug_assertions))
-        && !config_bool("AUTH_PRODUCTION_MODE", false).await
-        && config_bool("AUTH_DEV_TOOLS", false).await
-        && crate::application::loopback_public_base_url().await
-        && runtime_config_value("AUTH_MAIL_TRANSPORT").await.as_deref() == Some("capture")
+    };
+    maybe_auto_verify_after_register(request, pending, redirect_uri).await
 }
 
 pub async fn enforce_account_rate_limit(
@@ -148,94 +141,11 @@ pub async fn enforce_account_rate_limit(
     }
 }
 
-pub async fn latest_captured_mail(
-    recipient: &str,
-    message_kind: &str,
-) -> AuthStackResult<CapturedMailResponse> {
-    if config_bool("AUTH_PRODUCTION_MODE", false).await
-        || !config_bool("AUTH_DEV_TOOLS", false).await
-    {
-        return Err(AuthStackError::Forbidden);
-    }
-    crate::application::require_loopback_public_base_url("captured mail").await?;
-    // Reading anyone's verification link is a takeover primitive, so the code
-    // is compiled out of release builds rather than merely gated at runtime.
-    #[cfg(all(feature = "mail-capture", debug_assertions))]
-    {
-        let expected_kind = match message_kind {
-            "email-verification" => EmailKind::Verification,
-            "password-reset" => EmailKind::PasswordReset,
-            "invitation" => EmailKind::Invitation,
-            _ => return Err(AuthStackError::validation("message_kind is invalid")),
-        };
-        let recipient = Recipient::new(recipient.to_owned())
-            .map_err(|_| AuthStackError::validation("recipient is invalid"))?;
-        let public_base_url = runtime_config_value("AUTH_PUBLIC_BASE_URL")
-            .await
-            .unwrap_or_else(|| crate::application::DEFAULT_PUBLIC_BASE_URL.to_owned());
-        let worker = MailOutboxWorker::new(
-            store().await?,
-            RuntimeClock,
-            RuntimeRandom,
-            outbox_key().await?,
-            PublicBaseUrl::new(&public_base_url)
-                .map_err(|_| AuthStackError::configuration("AUTH_PUBLIC_BASE_URL is invalid"))?,
-        );
-        let captured = worker
-            .latest_delivered_for_development(&recipient, expected_kind)
-            .await
-            .map_err(|_| AuthStackError::store("captured mail is unavailable"))?
-            .ok_or_else(|| AuthStackError::not_found("captured mail was not found"))?;
-        Ok(CapturedMailResponse {
-            message_kind: message_kind.to_owned(),
-            recipient: captured.recipient().as_str().to_owned(),
-            subject: captured.subject().to_owned(),
-            body_text: captured.text_body().to_owned(),
-            body_html: captured.html_body().map(ToOwned::to_owned),
-            action_url: captured.action_url().map(ToOwned::to_owned),
-        })
-    }
-    #[cfg(not(all(feature = "mail-capture", debug_assertions)))]
-    {
-        let _ = (recipient, message_kind);
-        Err(AuthStackError::configuration(
-            "captured mail requires a debug build with the mail-capture feature",
-        ))
-    }
-}
-
 pub async fn login_email_password(
     request: &EmailPasswordLoginRequest,
     redirect_uri: &str,
 ) -> AuthStackResult<LoginCompletionResponse> {
-    let service = PasswordLoginService::new(
-        store().await?,
-        RuntimeClock,
-        RuntimeRandom,
-        argon2_policy().await?,
-    )
-    .with_session_ttl_seconds(session_ttl_seconds().await?)
-    .map_err(map_login_error)?;
-    let receipt = service
-        .login(PasswordLoginRequest::new(
-            request.email.clone(),
-            request.password.clone(),
-            request_id("login")?,
-            redirect_uri,
-        ))
-        .await
-        .map_err(map_login_error)?;
-    let session_id = receipt.session_id;
-    let (access_token, refresh_token, expires_in_seconds) =
-        finalize_new_session(&session_id).await?;
-    Ok(LoginCompletionResponse {
-        authenticated: true,
-        redirect_url: receipt.redirect_uri,
-        session_id: Some(session_id.into_string()),
-        access_token: Some(access_token),
-        refresh_token: Some(refresh_token),
-        expires_in_seconds,
-    })
+    login_email_password_with_dev_pending(request, redirect_uri).await
 }
 
 pub async fn complete_email_verification(

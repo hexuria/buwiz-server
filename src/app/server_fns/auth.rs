@@ -117,6 +117,31 @@ pub async fn latest_development_mail(
 }
 
 #[server(prefix = "/api/ui")]
+pub async fn skip_development_email_verification(
+    email: String,
+    redirect_url: Option<String>,
+) -> Result<LoginCompletionResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        let response = crate::application::skip_development_email_verification(
+            EmailVerificationResendRequest {
+                email,
+                redirect_url,
+            },
+        )
+        .await
+        .map_err(server_fn_error)?;
+        set_session_cookie(&response).await;
+        Ok(browser_login_response(response))
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (email, redirect_url);
+        unreachable!()
+    }
+}
+
+#[server(prefix = "/api/ui")]
 pub async fn login_email_password(
     email: String,
     password: String,

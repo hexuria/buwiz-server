@@ -259,7 +259,7 @@ async fn dispatch(req: RestRequest) -> AuthStackResult<RestResponse> {
         (Method::GET, "/api/auth/.well-known/jwks.json") => {
             json_result(crate::application::get_jwks().await)
         }
-        #[cfg(all(feature = "mail-capture", debug_assertions))]
+        #[cfg(feature = "mail-capture")]
         (Method::GET, "/api/auth/dev/mail/latest") => {
             let recipient = query_value(&uri, "recipient").unwrap_or_default();
             let message_kind = query_value(&uri, "kind").unwrap_or_default();
@@ -267,6 +267,11 @@ async fn dispatch(req: RestRequest) -> AuthStackResult<RestResponse> {
                 crate::application::latest_captured_mail(recipient, message_kind, request_auth)
                     .await,
             )
+        }
+        #[cfg(feature = "mail-capture")]
+        (Method::POST, "/api/auth/dev/verify/skip") => {
+            let payload = parse_json::<EmailVerificationResendRequest>(req).await?;
+            json_result(crate::application::skip_development_email_verification(payload).await)
         }
         #[cfg(feature = "mail-capture")]
         (Method::POST, "/api/auth/dev/storage/rollback-probe") => {
@@ -885,9 +890,13 @@ fn known_rest_path(path: &str) -> bool {
         )
         || (path.starts_with("/api/auth/oauth/")
             && (path.ends_with("/start") || path.ends_with("/callback")))
-        || (cfg!(all(feature = "mail-capture", debug_assertions))
-            && path == "/api/auth/dev/mail/latest")
-        || (cfg!(feature = "mail-capture") && path == "/api/auth/dev/storage/rollback-probe")
+        || (cfg!(feature = "mail-capture")
+            && matches!(
+                path,
+                "/api/auth/dev/mail/latest"
+                    | "/api/auth/dev/verify/skip"
+                    | "/api/auth/dev/storage/rollback-probe"
+            ))
 }
 
 fn log_rest_error(error: &AuthStackError, status: StatusCode) {
@@ -929,6 +938,19 @@ mod tests {
             query_value(&uri, "session_id").as_deref(),
             Some("session_1")
         );
+    }
+
+    #[test]
+    fn known_rest_lists_dev_capture_routes_only_with_mail_capture() {
+        assert_eq!(
+            known_rest_path("/api/auth/dev/mail/latest"),
+            cfg!(feature = "mail-capture")
+        );
+        assert_eq!(
+            known_rest_path("/api/auth/dev/verify/skip"),
+            cfg!(feature = "mail-capture")
+        );
+        assert!(!known_rest_path("/api/auth/dev/not-a-real-route"));
     }
 
     #[test]

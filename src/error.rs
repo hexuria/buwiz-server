@@ -13,6 +13,8 @@ pub enum AuthStackError {
     AuthRequired,
     #[error("credentials are invalid")]
     InvalidCredentials,
+    #[error("email is not verified")]
+    EmailUnverified,
     #[error("token is invalid")]
     InvalidToken,
     #[error("session expired")]
@@ -102,6 +104,7 @@ impl AuthStackError {
             | Self::InvalidCredentials
             | Self::InvalidToken
             | Self::SessionExpired => StatusCode::UNAUTHORIZED,
+            Self::EmailUnverified => StatusCode::FORBIDDEN,
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound { .. } => StatusCode::NOT_FOUND,
             Self::Conflict { .. } => StatusCode::CONFLICT,
@@ -118,6 +121,7 @@ impl AuthStackError {
             Self::Validation { .. } => "validation",
             Self::AuthRequired => "auth_required",
             Self::InvalidCredentials => "invalid_credentials",
+            Self::EmailUnverified => "email_unverified",
             Self::InvalidToken => "invalid_token",
             Self::SessionExpired => "session_expired",
             Self::Forbidden => "forbidden",
@@ -141,6 +145,9 @@ impl AuthStackError {
             } => format!("too many requests; retry after {retry_after_seconds} seconds"),
             Self::AuthRequired => "authentication is required".to_string(),
             Self::InvalidCredentials => "Email or password is incorrect".to_string(),
+            Self::EmailUnverified => {
+                crate::dev_auth::EMAIL_UNVERIFIED_PUBLIC_MESSAGE.to_string()
+            }
             Self::InvalidToken => "access token is invalid".to_string(),
             Self::SessionExpired => "the session has expired".to_string(),
             Self::Forbidden => "the current account cannot access this resource".to_string(),
@@ -160,6 +167,7 @@ impl AuthStackError {
             Self::Validation { .. }
                 | Self::AuthRequired
                 | Self::InvalidCredentials
+                | Self::EmailUnverified
                 | Self::InvalidToken
                 | Self::SessionExpired
                 | Self::Forbidden
@@ -195,6 +203,7 @@ impl AuthStackError {
             | Self::InvalidCredentials
             | Self::InvalidToken
             | Self::SessionExpired => tonic::Code::Unauthenticated,
+            Self::EmailUnverified => tonic::Code::PermissionDenied,
             Self::Forbidden => tonic::Code::PermissionDenied,
             Self::NotFound { .. } => tonic::Code::NotFound,
             Self::Conflict { .. } => tonic::Code::Aborted,
@@ -224,5 +233,22 @@ mod tests {
             AuthStackError::Forbidden.http_status(),
             StatusCode::FORBIDDEN
         );
+    }
+
+    #[test]
+    fn unverified_email_is_a_forbidden_client_error() {
+        assert_eq!(
+            AuthStackError::EmailUnverified.http_status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            AuthStackError::EmailUnverified.public_code(),
+            "email_unverified"
+        );
+        assert_eq!(
+            AuthStackError::EmailUnverified.public_message(),
+            crate::dev_auth::EMAIL_UNVERIFIED_PUBLIC_MESSAGE
+        );
+        assert!(AuthStackError::EmailUnverified.is_client_error());
     }
 }

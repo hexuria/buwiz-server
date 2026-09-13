@@ -23,7 +23,8 @@ use crate::app::{
     ReclaimTaxProfile, ResendWorkspaceInvitation, ResolveWorkspaceVaultTarget, RevealDashboardSecret,
     RevokeAccountSession, RevokeWorkspaceInvitation, RotateSigningKey, RunDashboardQuery,
     SaveAuthProvider, SaveDashboardLayout, SaveRedirectAllowlist, SeedDashboardDemos,
-    SelectOrganization, StartOauthLogin, StartPasskeyLogin, StartPasskeyRegistration,
+    SelectOrganization, SkipDevelopmentEmailVerification, StartOauthLogin, StartPasskeyLogin,
+    StartPasskeyRegistration,
     StartPasswordReset, StartTotpEnrollment, TestDashboardHttpSource, TransferTaxProfile,
     PatchTaxProfile,
     TransferWorkspaceOwnership,
@@ -280,6 +281,7 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
             .with_server_fn::<RunDashboardQuery>()
             .with_server_fn::<DevelopmentMailCaptureEnabled>()
             .with_server_fn::<LatestDevelopmentMail>()
+            .with_server_fn::<SkipDevelopmentEmailVerification>()
             .with_server_fn::<RequireAuthenticatedRoute>()
             .with_server_fn::<RequireAuthorizedRoute>()
             .with_server_fn::<StartPasskeyRegistration>()
@@ -517,6 +519,8 @@ fn public_authentication_route(path: &str) -> bool {
                 | "/api/auth/password/login"
                 | "/api/auth/email/verify"
                 | "/api/auth/email/verify/resend"
+                | "/api/auth/dev/mail/latest"
+                | "/api/auth/dev/verify/skip"
                 | "/api/auth/password/reset/start"
                 | "/api/auth/password/reset/complete"
                 | "/api/auth/passkeys/login/options"

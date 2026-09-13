@@ -176,6 +176,10 @@ pub(crate) async fn validate_runtime_security_config_uncached() -> AuthStackResu
         for (enabled, surface) in [
             (config_bool("AUTH_DEV_TOOLS", false).await, "AUTH_DEV_TOOLS"),
             (
+                config_bool("AUTH_DEV_AUTO_VERIFY", false).await,
+                "AUTH_DEV_AUTO_VERIFY",
+            ),
+            (
                 config_bool("AUTH_OAUTH_DEVELOPMENT_CALLBACK_BYPASS", false).await,
                 "AUTH_OAUTH_DEVELOPMENT_CALLBACK_BYPASS",
             ),
@@ -202,6 +206,11 @@ pub(crate) async fn validate_runtime_security_config_uncached() -> AuthStackResu
     if config_bool("AUTH_DEV_TOOLS", false).await {
         return Err(AuthStackError::configuration(
             "production forbids AUTH_DEV_TOOLS",
+        ));
+    }
+    if config_bool("AUTH_DEV_AUTO_VERIFY", false).await {
+        return Err(AuthStackError::configuration(
+            "production forbids AUTH_DEV_AUTO_VERIFY",
         ));
     }
     if config_bool("AUTH_OAUTH_DEVELOPMENT_CALLBACK_BYPASS", false).await {

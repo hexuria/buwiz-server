@@ -71,7 +71,8 @@ AUTH_OUTBOX_RELATIONSHIP_BATCH_SIZE ?= 100
 AUTH_OUTBOX_POLL_INTERVAL_MS ?= 500
 AUTH_RECOVERY_CODE_PEPPER_BASE64 ?=
 AUTH_MFA_ISSUER ?= Buwiz
-AUTH_DEV_TOOLS ?= false
+AUTH_DEV_TOOLS ?= true
+AUTH_DEV_AUTO_VERIFY ?= false
 AUTH_MAIL_TRANSPORT ?= capture
 AUTH_MAIL_HTTP_URL ?=
 AUTH_MAIL_HTTP_TOKEN ?=
@@ -203,6 +204,7 @@ SPIN_VARIABLE_ARGS = \
 	--variable auth_cookie_secure=$(AUTH_COOKIE_SECURE) \
 	--variable auth_public_base_url=$(AUTH_PUBLIC_BASE_URL) \
 	--variable auth_dev_tools=$(AUTH_DEV_TOOLS) \
+	--variable auth_dev_auto_verify=$(AUTH_DEV_AUTO_VERIFY) \
 	--variable auth_mail_transport=$(AUTH_MAIL_TRANSPORT) \
 	--variable auth_spicedb_enabled=$(AUTH_SPICEDB_ENABLED) \
 	--variable auth_spicedb_check_url='$(AUTH_SPICEDB_CHECK_URL)' \
@@ -276,8 +278,9 @@ help:
 	@echo "  make trusted-ingress       Run native ingress on $(listen) in a second terminal"
 	@echo "  make outbox-worker         Native mail/SpiceDB delivery (required beside spin for email)"
 	@echo ""
-	@echo "Mail note: spin.toml is the app only. AUTH_MAIL_TRANSPORT (capture|resend) is used by"
-	@echo "  the outbox worker, not by Spin. Prefer 'make dev' so verification email works."
+	@echo "Mail note: default is AUTH_MAIL_TRANSPORT=capture + AUTH_DEV_TOOLS=true."
+	@echo "  After register, use Verify now / Skip verification (dev) on this host."
+	@echo "  Resend needs a reachable AUTH_PUBLIC_BASE_URL (not localhost from a remote inbox)."
 	@echo "  make fresh db=postgres     Erase PostgreSQL data using POSTGRES_URL"
 	@echo "  make smoke                 Run REST/web route smoke checks against BASE_URL=$(BASE_URL)"
 	@echo "  make oauth-credentials     Check required live OAuth credential variables"

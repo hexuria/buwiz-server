@@ -14,9 +14,8 @@
  *    a loopback AUTH_PUBLIC_BASE_URL):
  *      node scripts/agent_dev_login.mjs --register
  *
- *    Reading captured mail requires `system.user.manage`, so supply a bootstrap
- *    administrator (AUTH_BOOTSTRAP_ADMIN_EMAILS) via AGENT_ADMIN_EMAIL +
- *    AGENT_ADMIN_PASSWORD, or an existing session id via AGENT_ADMIN_SESSION_ID.
+ *    Captured mail is available without an admin session when AUTH_DEV_TOOLS=true
+ *    and AUTH_MAIL_TRANSPORT=capture on a loopback origin.
  *
  * Output (stdout JSON):
  *   { "email", "session_id", "cookie_header", "storage_state_path?", "action_url?" }
@@ -56,39 +55,13 @@ function url(path) {
   return new URL(path, baseUrl).toString();
 }
 
-let adminCookiePromise = null;
-
-// Captured mail exposes anyone's verification link, so the endpoint requires an
-// administrator session (`system.user.manage`).
-function adminCookie() {
-  adminCookiePromise ??= (async () => {
-    if (process.env.AGENT_ADMIN_SESSION_ID) {
-      return cookieHeader(process.env.AGENT_ADMIN_SESSION_ID);
-    }
-    const email = process.env.AGENT_ADMIN_EMAIL || existingEmail;
-    const password = process.env.AGENT_ADMIN_PASSWORD || existingPassword;
-    if (!email) {
-      throw new Error(
-        "Reading captured mail requires an administrator. Set AGENT_ADMIN_EMAIL + " +
-          "AGENT_ADMIN_PASSWORD (an address listed in AUTH_BOOTSTRAP_ADMIN_EMAILS) " +
-          "or AGENT_ADMIN_SESSION_ID.",
-      );
-    }
-    const session = await passwordLogin(email, password);
-    return cookieHeader(session.sessionId);
-  })();
-  return adminCookiePromise;
-}
-
 async function capturedMail(email, kind) {
-  const cookie = await adminCookie();
   let lastStatus = 0;
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const response = await fetch(
       url(
         `/api/auth/dev/mail/latest?recipient=${encodeURIComponent(email)}&kind=${encodeURIComponent(kind)}`,
       ),
-      { headers: { cookie } },
     );
     lastStatus = response.status;
     if (response.ok) return response.json();
