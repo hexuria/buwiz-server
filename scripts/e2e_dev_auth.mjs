@@ -135,12 +135,6 @@ async function main() {
     const verifyPageShot = page
       .waitForURL((u) => u.pathname.includes("/verify-email"), { timeout: 25000 })
       .then(async () => {
-        await page
-          .waitForSelector(
-            '[data-testid="verify-email-heading"], [data-testid="verify-email-form"], h1',
-            { timeout: 4000 },
-          )
-          .catch(() => {});
         shots.push(await shot(page, "04_verify_dev_path"));
       });
 
