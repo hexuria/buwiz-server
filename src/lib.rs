@@ -54,5 +54,16 @@ mod store;
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn hydrate() {
     console_error_panic_hook::set_once();
-    leptos::mount::hydrate_islands();
+    // Document GET/HEAD no longer streams SSR HTML (wasip3 waitable trap).
+    // The server sends a CSR shell; mount the app unless islands were SSR'd.
+    let has_islands = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.query_selector("leptos-island").ok())
+        .flatten()
+        .is_some();
+    if has_islands {
+        leptos::mount::hydrate_islands();
+    } else {
+        leptos::mount::mount_to_body(crate::app::App);
+    }
 }

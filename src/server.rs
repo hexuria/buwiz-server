@@ -216,6 +216,18 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
             return redirect_response(&location);
         }
 
+        // Streaming SSR via leptos-wasi Handler traps on current wasip3 /
+        // wit-bindgen (`waitable cannot be used synchronously while added to a
+        // waitable set`) and returns HTTP 500 with an empty body. Serve a
+        // static CSR document for browser navigations; keep Handler for /pkg
+        // and /api/ui server functions.
+        if is_browser_navigation
+            && !request_path.starts_with("/pkg/")
+            && !request_path.starts_with("/api/")
+        {
+            return csr_document_response();
+        }
+
         let conf = get_configuration(None).map_err(|error| {
             tracing::error!(
                 error = ?error,
@@ -618,6 +630,56 @@ fn grpc_enabled(transport_mode: &str) -> bool {
     matches!(transport_mode, "grpc" | "both")
 }
 
+fn csr_document_html() -> &'static str {
+    concat!(
+        "<!DOCTYPE html>\n",
+        "<html lang=\"en\">\n",
+        "<head>\n",
+        "<meta charset=\"utf-8\" />\n",
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n",
+        "<title>Buwiz</title>\n",
+        "<script>",
+        r#"(function(){try{var m=localStorage.getItem("workspace-sidebar-mode");if(m==="mini"||m==="hidden"||m==="full"){document.documentElement.setAttribute("data-sidebar-pref",m);}var t=localStorage.getItem("app-theme");if(t==="light"||t==="dark"||t==="system"){document.documentElement.setAttribute("data-theme",t);}else{document.documentElement.setAttribute("data-theme","system");}}catch(e){try{document.documentElement.setAttribute("data-theme","system");}catch(_){}}})();"#,
+        "</script>\n",
+        "<link rel=\"stylesheet\" id=\"leptos\" href=\"/pkg/buwiz_server.css\" />\n",
+        "<link rel=\"icon\" type=\"image/svg+xml\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230d0d0d'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='system-ui,sans-serif' font-size='16' font-weight='700' fill='%23fff'%3EB%3C/text%3E%3C/svg%3E\" />\n",
+        "<meta name=\"description\" content=\"Buwiz Philippine tax SaaS: verified sessions, exclusive tax-profile ownership, desktop OAuth, and Spin + Leptos.\" />\n",
+        "</head>\n",
+        "<body>\n",
+        "<script type=\"module\">",
+        "import init, { hydrate } from \"/pkg/buwiz_server.js\";",
+        "init().then(hydrate);",
+        "</script>\n",
+        "</body>\n",
+        "</html>\n",
+    )
+}
+
+fn csr_document_response() -> Result<Response, ErrorCode> {
+    use http_body_util::BodyExt;
+
+    let html = csr_document_html();
+    let stream = futures::stream::once(async move {
+        Ok::<_, std::io::Error>(http_body::Frame::data(bytes::Bytes::from_static(
+            html.as_bytes(),
+        )))
+    });
+    let body = http_body_util::StreamBody::new(stream).boxed_unsync();
+    let mut response = http::Response::builder()
+        .status(http::StatusCode::OK)
+        .header(http::header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(body)
+        .map_err(|error| {
+            tracing::error!(
+                error = %error,
+                "failed to build CSR document response"
+            );
+            ErrorCode::InternalError(None)
+        })?;
+    apply_browser_security_headers(response.headers_mut());
+    wasip3::http_compat::http_into_wasi_response(response)
+}
+
 fn apply_browser_security_headers(headers: &mut http::HeaderMap) {
     headers.insert(
         http::header::CACHE_CONTROL,
@@ -769,6 +831,20 @@ fn loopback_ip_to_localhost_redirect(
 fn internal_error(error: impl std::fmt::Display) -> ErrorCode {
     tracing::error!(error = %error, "fullstack WASI request failed");
     ErrorCode::InternalError(None)
+}
+
+#[cfg(test)]
+mod csr_document_tests {
+    use super::csr_document_html;
+
+    #[test]
+    fn csr_shell_bootstraps_hydrate_wasm() {
+        let html = csr_document_html();
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("/pkg/buwiz_server.js"));
+        assert!(html.contains("/pkg/buwiz_server.css"));
+        assert!(html.contains("hydrate"));
+    }
 }
 
 #[cfg(test)]

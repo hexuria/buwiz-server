@@ -102,6 +102,25 @@ assert_redirect() {
   fi
 }
 
+# Document GET/HEAD is a CSR shell (SSR streaming traps on wasip3). Auth
+# redirects still happen on the server; page copy is painted in the browser.
+assert_csr_document() {
+  local url="$1"
+  shift
+  local body
+  body="$(curl -sS -f "$url" "$@")"
+  if ! grep -q '/pkg/buwiz_server.js' <<<"$body"; then
+    echo "Expected CSR hydrate bootstrap at $url" >&2
+    printf '%s\n' "$body" >&2
+    exit 1
+  fi
+  if ! grep -q 'hydrate' <<<"$body"; then
+    echo "Expected hydrate() bootstrap at $url" >&2
+    printf '%s\n' "$body" >&2
+    exit 1
+  fi
+}
+
 json_post() {
   local path="$1"
   local body="$2"
@@ -443,7 +462,7 @@ run_passkey_check() {
       --data "$expiry_body"
   fi
 
-  curl -sS -f "$BASE_URL/auth/passkey-unsupported" | grep -q "Passkey unavailable"
+  assert_csr_document "$BASE_URL/auth/passkey-unsupported"
 
   echo "buwiz-server smoke: passkey challenge validation passed"
 }
@@ -690,16 +709,14 @@ jq -e '.access_token != null and .refresh_token != null and .expires_in_seconds 
 access_token="$(jq -r '.access_token' <<<"$refresh_response")"
 refresh_token="$next_refresh_token"
 
-curl -sS -f "$BASE_URL/" -H "$session_cookie" | grep -q "Production fullstack Rust"
+assert_csr_document "$BASE_URL/" -H "$session_cookie"
 for path in /login /register /forgot-password /reset-password; do
   assert_redirect "$BASE_URL$path" "/dashboard" -H "$session_cookie"
 done
 # Tokenized password-reset must not bounce authenticated browsers away.
-reset_body="$(curl -sS -f "$BASE_URL/reset-password?token=browser-smoke-token" -H "$session_cookie")"
-grep -q "Choose a new password" <<<"$reset_body"
+assert_csr_document "$BASE_URL/reset-password?token=browser-smoke-token" -H "$session_cookie"
 # Invitation accept is authenticated and must render with token preserved.
-invite_body="$(curl -sS -f "$BASE_URL/invitations/accept?token=browser-smoke-invite" -H "$session_cookie")"
-grep -q "Accept invitation" <<<"$invite_body"
+assert_csr_document "$BASE_URL/invitations/accept?token=browser-smoke-invite" -H "$session_cookie"
 # Unauthenticated invite links must send users through auth with next preserved.
 assert_redirect \
   "$BASE_URL/invitations/accept?token=browser-smoke-invite" \

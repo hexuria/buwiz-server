@@ -25,6 +25,9 @@ use leptos_router::{components::*, path};
 
 #[cfg(feature = "ssr")]
 pub fn shell(options: LeptosOptions) -> impl IntoView {
+    // Document GET/HEAD uses `csr_document_html` in server.rs. Streaming this
+    // shell through leptos-wasi traps on wasip3 (`waitable cannot be used
+    // synchronously`). Handler still calls `shell` for leftover SSR routes.
     view! {
         <!DOCTYPE html>
         <html lang="en">
