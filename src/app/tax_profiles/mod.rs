@@ -138,13 +138,21 @@ pub fn TaxProfilesHome() -> impl IntoView {
         if id.is_empty() {
             year_state.set(None);
             year_history.set(Vec::new());
+            applied_year_key.set(String::new());
             return;
         }
         let year = selected_year.get();
+        applied_year_key.set(String::new());
         spawn_local(async move {
-            year_state.set(Some(get_profile_year(id.clone(), year).await));
+            let loaded = get_profile_year(id.clone(), year).await;
+            if selected_id.get_untracked() != id || selected_year.get_untracked() != year {
+                return;
+            }
+            year_state.set(Some(loaded));
             if let Ok(list) = list_profile_years(id).await {
-                year_history.set(list.years);
+                if selected_id.get_untracked() == id {
+                    year_history.set(list.years);
+                }
             }
         });
     });
