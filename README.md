@@ -157,6 +157,8 @@ V1 commands (past-tense event mirrors). Keep them small.
 | `MarkFilingSubmitted` / `ConfirmFilingFromReceipt` / `FailFiling` / `MarkFilingPaid` | filing events |
 | `RegisterDevice` / `RevokeDevice` / `IssueDesktopSession` | device-session events (no PIN/TOTP) |
 
+The workspace UI groups **branches under a TIN** (`•••-•••-last4`). A personal account holds **one TIN** and many branches (`00000`, `00001`, …). A firm workspace can hold many TINs; each TIN works like the personal case. Identity unit is TIN + branch — `000-000-000-00000` is not `000-000-000-00001` (RDO, office, and forms can differ). Each branch has its own year: name, VAT, and attached BIR forms can change (non-VAT → VAT). Clone a year only when the destination has no forms yet. TIN is attested at create/claim and never stored as the key.
+
 Queries: `GetTaxProfile`, `ListTaxProfilesForAccount`, `GetProfileYear`, `ListYearForms`, `GetFormDraft`, `ListDraftsForYear`, `ListFilings`, `GetFilingByPeriod`.
 
 Claim/reclaim/transfer remain as extra company-managed commands (TIN attestation + ORUS proof). They are not TIN-as-SoT.

@@ -1,12 +1,15 @@
 //! Tax-profile application services (verified-email gate + exclusive ownership).
 
 use crate::contracts::{
-    MeOrg, MeResponse, TaxProfileClaimRequest, TaxProfileCreateRequest, TaxProfileListResponse,
-    TaxProfilePatchRequest, TaxProfileTransferRequest, TaxProfileView,
+    bir_form_frequency, CloneProfileYearRequest, MeOrg, MeResponse, ProfileYearListResponse,
+    ProfileYearView, SaveProfileYearRequest, SetYearFormsRequest, TaxProfileClaimRequest,
+    TaxProfileCreateRequest, TaxProfileListResponse, TaxProfilePatchRequest,
+    TaxProfileTransferRequest, TaxProfileView,
 };
 use crate::domain::{
-    tin_last4, AccountHolder, CloudTaxProfileFacts, FakeOrusVerifier, TaxProfileCommand,
-    TaxpayerType, TinIdentityHash, TinOwnershipVerifier, UnconfiguredOrusVerifier,
+    same_personal_tin, tin_last4, AccountHolder, CloudTaxProfileFacts, FakeOrusVerifier,
+    TaxProfileCommand, TaxpayerType, TinIdentityHash, TinOwnershipVerifier,
+    UnconfiguredOrusVerifier,
 };
 use crate::domain::tin::RegistrationKey;
 use crate::error::{AuthStackError, AuthStackResult};
@@ -105,6 +108,9 @@ pub async fn create_tax_profile(
         .as_deref()
         .or(request.org_id.as_deref());
     let holder = resolve_holder(&user_id, session_id.as_deref(), org_id).await?;
+    if matches!(holder, AccountHolder::Personal { .. }) {
+        ensure_personal_single_tin(&user_id, &registration).await?;
+    }
     let profile_id = crate::store::new_uuid_v4()?;
     let display_name = request
         .display_name
@@ -311,6 +317,215 @@ pub async fn transfer_tax_profile(
     crate::store::fetch_tax_profile_view(&request.id, &user_id).await
 }
 
+pub async fn get_profile_year(
+    profile_id: String,
+    tax_year: i16,
+    auth: RequestAuth,
+) -> AuthStackResult<ProfileYearView> {
+    let year = validate_tax_year(tax_year)?;
+    let (_user_id, _) = require_profile_access(&profile_id, auth).await?;
+    crate::store::load_or_create_profile_year(&profile_id, year).await
+}
+
+pub async fn list_profile_years(
+    profile_id: String,
+    auth: RequestAuth,
+) -> AuthStackResult<ProfileYearListResponse> {
+    let (_user_id, _) = require_profile_access(&profile_id, auth).await?;
+    Ok(ProfileYearListResponse {
+        tax_profile_id: profile_id.clone(),
+        years: crate::store::list_profile_years(&profile_id).await?,
+    })
+}
+
+pub async fn save_profile_year(
+    profile_id: String,
+    request: SaveProfileYearRequest,
+    auth: RequestAuth,
+) -> AuthStackResult<ProfileYearView> {
+    let year = validate_tax_year(request.tax_year)?;
+    let (user_id, session_id) = require_verified_actor(auth).await?;
+    let loaded = crate::store::load_tax_profile_by_id(&profile_id).await?;
+    if !loaded.state.exists {
+        return Err(AuthStackError::not_found("tax profile not found"));
+    }
+    require_manage(&loaded.state, &user_id, session_id.as_deref()).await?;
+    if let Some(expected) = request.updated_at.as_deref().filter(|value| !value.is_empty()) {
+        let current_view = crate::store::fetch_tax_profile_view(&profile_id, &user_id).await?;
+        if current_view.updated_at.as_deref() != Some(expected) {
+            return Err(crate::store::map_tax_profile_error(
+                crate::domain::TaxProfileError::StaleWrite,
+            ));
+        }
+    }
+    let year_view = crate::store::update_profile_year(
+        &profile_id,
+        year,
+        request.registered_name.clone(),
+        request.rdo_code.clone(),
+        request.line_of_business.clone(),
+        request.registered_address.clone(),
+        request.zip_code.clone(),
+        request.phone.clone(),
+        request.email.clone(),
+        request.tax_classification.clone(),
+        request.is_vat_registered,
+    )
+    .await?;
+    let facts = merge_facts(
+        loaded.state.facts.as_ref(),
+        &TaxProfilePatchRequest {
+            display_name: request.display_name.clone(),
+            registered_name: request.registered_name.clone(),
+            rdo_code: request.rdo_code.clone(),
+            line_of_business: request.line_of_business.clone(),
+            registered_address: request.registered_address.clone(),
+            zip_code: request.zip_code.clone(),
+            phone: request.phone.clone(),
+            email: request.email.clone(),
+            taxpayer_type: request.taxpayer_type.clone(),
+            tax_classification: request.tax_classification.clone(),
+            is_vat_registered: request.is_vat_registered,
+            business_start_date: request.business_start_date.clone(),
+            updated_at: None,
+            tin_root: None,
+            branch_code: None,
+        },
+    )?;
+    crate::store::commit_tax_profile_command(
+        &profile_id,
+        TaxProfileCommand::UpdateTaxProfileIdentity {
+            display_name: request
+                .display_name
+                .or_else(|| request.registered_name.clone()),
+            facts: Some(facts),
+            expected_updated_at: None,
+            actor_user_id: user_id,
+            occurred_at: crate::store::rfc3339_now(),
+        },
+        loaded.revision,
+    )
+    .await?;
+    Ok(year_view)
+}
+
+pub async fn set_year_forms(
+    profile_id: String,
+    request: SetYearFormsRequest,
+    auth: RequestAuth,
+) -> AuthStackResult<ProfileYearView> {
+    let year = validate_tax_year(request.tax_year)?;
+    let (user_id, session_id) = require_verified_actor(auth).await?;
+    let loaded = crate::store::load_tax_profile_by_id(&profile_id).await?;
+    if !loaded.state.exists {
+        return Err(AuthStackError::not_found("tax profile not found"));
+    }
+    require_manage(&loaded.state, &user_id, session_id.as_deref()).await?;
+    let mut seen = std::collections::BTreeSet::new();
+    let entries = request
+        .form_codes
+        .into_iter()
+        .filter_map(|code| {
+            let code = code.trim().to_ascii_uppercase();
+            if code.is_empty() || !seen.insert(code.clone()) {
+                return None;
+            }
+            let frequency = bir_form_frequency(&code).to_owned();
+            Some((code, frequency))
+        })
+        .collect::<Vec<_>>();
+    crate::store::set_year_forms(&profile_id, year, &entries).await
+}
+
+pub async fn clone_profile_year(
+    profile_id: String,
+    request: CloneProfileYearRequest,
+    auth: RequestAuth,
+) -> AuthStackResult<ProfileYearView> {
+    let from_year = validate_tax_year(request.from_year)?;
+    let to_year = validate_tax_year(request.to_year)?;
+    let (user_id, session_id) = require_verified_actor(auth).await?;
+    let loaded = crate::store::load_tax_profile_by_id(&profile_id).await?;
+    if !loaded.state.exists {
+        return Err(AuthStackError::not_found("tax profile not found"));
+    }
+    require_manage(&loaded.state, &user_id, session_id.as_deref()).await?;
+    crate::store::clone_profile_year(&profile_id, from_year, to_year).await
+}
+
+async fn require_profile_access(
+    profile_id: &str,
+    auth: RequestAuth,
+) -> AuthStackResult<(String, Option<String>)> {
+    let session = authenticated_session_view(auth).await?;
+    let user_id = session.user_id.ok_or(AuthStackError::AuthRequired)?;
+    let loaded = crate::store::load_tax_profile_by_id(profile_id).await?;
+    if !loaded.state.exists {
+        return Err(AuthStackError::not_found("tax profile not found"));
+    }
+    let is_account = loaded.state.account_id.as_deref() == Some(user_id.as_str());
+    let is_owner = loaded.state.owner_user_id().as_deref() == Some(user_id.as_str());
+    let is_personal_holder = matches!(
+        &loaded.state.holder,
+        Some(AccountHolder::Personal { user_id: holder }) if holder == &user_id
+    );
+    if !is_account && !is_owner && !is_personal_holder {
+        ensure_holder_or_org(&loaded.state, &user_id, session.session_id.as_deref()).await?;
+    }
+    Ok((user_id, session.session_id))
+}
+
+async fn require_manage(
+    state: &crate::domain::TaxProfile,
+    user_id: &str,
+    session_id: Option<&str>,
+) -> AuthStackResult<()> {
+    if state.account_id.as_deref() == Some(user_id) {
+        return Ok(());
+    }
+    ensure_holder_or_org(state, user_id, session_id).await
+}
+
+async fn ensure_personal_single_tin(
+    user_id: &str,
+    incoming: &RegistrationKey,
+) -> AuthStackResult<()> {
+    let existing = crate::store::list_tax_profiles_for(user_id, None).await?;
+    let Some(anchor) = existing
+        .into_iter()
+        .find(|profile| profile.holder_kind == "personal" && !profile.is_archived)
+    else {
+        return Ok(());
+    };
+    let loaded = crate::store::load_tax_profile_by_id(&anchor.profile_id).await?;
+    let existing_hash = loaded.state.identity_hash.ok_or_else(|| {
+        AuthStackError::store("personal tax profile is missing an identity hash")
+    })?;
+    let existing_branch = crate::domain::BranchCode::parse(
+        loaded
+            .state
+            .branch_code
+            .as_deref()
+            .unwrap_or(crate::domain::BranchCode::HEAD_OFFICE),
+    )
+    .map_err(AuthStackError::validation)?;
+    let pepper = crate::store::tin_identity_pepper().await?;
+    if !same_personal_tin(&pepper, &existing_branch, &existing_hash, &incoming.tin_root) {
+        return Err(AuthStackError::validation(
+            "This personal account already holds a TIN. Add a branch under that TIN, or manage another TIN from a firm workspace.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_tax_year(tax_year: i16) -> AuthStackResult<i16> {
+    if (1990..=2100).contains(&tax_year) {
+        Ok(tax_year)
+    } else {
+        Err(AuthStackError::validation("tax year is out of range"))
+    }
+}
+
 async fn attested_existing(
     request: &TaxProfileClaimRequest,
     user_id: &str,
@@ -448,7 +663,17 @@ fn merge_facts(
             .is_vat_registered
             .unwrap_or(current.is_vat_registered),
         eopt_tier: current.eopt_tier.clone(),
-        business_start_date: current.business_start_date.clone(),
+        business_start_date: match request.business_start_date.as_deref() {
+            None => current.business_start_date.clone(),
+            Some(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_owned())
+                }
+            }
+        },
         birth_date: current.birth_date.clone(),
         atc_codes: current.atc_codes.clone(),
     })

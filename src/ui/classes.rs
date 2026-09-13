@@ -1205,6 +1205,76 @@ pub const WSS_TOPBAR_TITLE: &str =
 pub const WSS_CONTENT: &str =
     "mx-auto w-full max-w-[820px] px-6 pb-16 pt-7 has-[[data-settings-wide]]:max-w-[min(1120px,100%)] settings-mobile:px-4 settings-mobile:pb-14 settings-mobile:pt-5";
 
+// ── Tax profiles (TIN → branch → year) ─────────────────────────────────────
+
+/// Two-pane workspace: TIN rail + yearly editor.
+pub const TAX_WORKSPACE: &str =
+    "grid min-w-0 items-start gap-5 grid-cols-1 min-[961px]:grid-cols-[minmax(240px,280px)_minmax(0,1fr)]";
+pub const TAX_RAIL: &str =
+    "grid min-w-0 content-start gap-3 rounded-[14px] border border-border-subtle bg-surface p-4";
+pub const TAX_RAIL_ACTIONS: &str = "grid grid-cols-2 gap-2";
+pub const TAX_TIN_GROUP: &str = "grid gap-1.5";
+pub const TAX_TIN_HEAD: &str =
+    "flex items-baseline justify-between gap-2 px-1 pt-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-tertiary";
+pub const TAX_BRANCH: &str =
+    "grid w-full cursor-pointer appearance-none gap-0.5 rounded-[10px] border border-transparent bg-transparent px-2.5 py-2 text-left hover:bg-surface-hover";
+pub const TAX_BRANCH_ACTIVE: &str =
+    "grid w-full cursor-pointer appearance-none gap-0.5 rounded-[10px] border border-border-subtle bg-surface-active px-2.5 py-2 text-left";
+pub const TAX_BRANCH_NAME: &str = "text-[13px] font-semibold tracking-tight text-primary";
+pub const TAX_BRANCH_META: &str = "font-mono text-[11px] text-secondary";
+pub const TAX_MAIN: &str =
+    "grid min-w-0 content-start gap-4 rounded-[14px] border border-border-subtle bg-surface p-6 max-[720px]:p-4";
+pub const TAX_YEAR_BAR: &str =
+    "flex flex-wrap items-end justify-between gap-3 border-b border-border-subtle pb-4";
+pub const TAX_YEAR_BAR_FIELDS: &str = "flex flex-wrap items-end gap-3";
+pub const TAX_TABS: &str =
+    "flex flex-wrap gap-1 rounded-[10px] border border-border-subtle bg-surface-subtle p-1";
+pub const TAX_TAB: &str =
+    "min-h-9 cursor-pointer appearance-none rounded-lg border-0 bg-transparent px-3 text-[13px] font-semibold text-secondary hover:text-primary";
+pub const TAX_TAB_ACTIVE: &str =
+    "min-h-9 cursor-pointer appearance-none rounded-lg border-0 bg-surface px-3 text-[13px] font-semibold text-primary shadow-soft";
+pub const TAX_TIN_SEGMENTS: &str =
+    "grid grid-cols-4 gap-2 max-[720px]:grid-cols-2";
+pub const TAX_TIN_SEGMENT: &str =
+    "min-h-11 rounded-[10px] border border-border-subtle bg-surface-subtle px-3 py-2.5 text-center font-mono text-sm tracking-wide text-secondary";
+pub const TAX_FORM_TOOLBAR: &str =
+    "flex flex-wrap items-center justify-between gap-3";
+pub const TAX_FORM_LIST: &str =
+    "m-0 grid max-h-[min(28rem,60vh)] list-none gap-0 overflow-auto rounded-[10px] border border-border-subtle p-0";
+pub const TAX_FORM_ROW: &str =
+    "grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-border-subtle px-3 py-2.5 last:border-b-0 hover:bg-surface-subtle";
+pub const TAX_FORM_ROW_ON: &str =
+    "grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-border-subtle bg-surface-subtle px-3 py-2.5 last:border-b-0";
+pub const TAX_FORM_CODE: &str = "font-mono text-[13px] font-semibold tracking-tight";
+pub const TAX_FORM_TITLE: &str = "text-[13px] text-secondary";
+pub const TAX_FORM_FREQ: &str =
+    "rounded-full border border-border-subtle px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-tertiary";
+pub const TAX_EMPTY: &str = "grid justify-items-start gap-2.5 text-secondary";
+
+pub fn tax_branch_class(active: bool) -> &'static str {
+    if active {
+        TAX_BRANCH_ACTIVE
+    } else {
+        TAX_BRANCH
+    }
+}
+
+pub fn tax_tab_class(active: bool) -> &'static str {
+    if active {
+        TAX_TAB_ACTIVE
+    } else {
+        TAX_TAB
+    }
+}
+
+pub fn tax_form_row_class(selected: bool) -> &'static str {
+    if selected {
+        TAX_FORM_ROW_ON
+    } else {
+        TAX_FORM_ROW
+    }
+}
+
 /// Settings avatar with deterministic tone background (0–5).
 pub fn settings_avatar_class(tone: u8) -> String {
     let bg = match tone % 6 {

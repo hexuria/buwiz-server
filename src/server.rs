@@ -6,23 +6,25 @@ use wasip3::http::types::{ErrorCode, Request, Response};
 use crate::app::{
     AcceptOrganizationInvitation, App, AssignWorkspaceMemberRole, ChangePassword,
     CompleteEmailVerification, CompleteOauthCallback, CompletePasswordReset, ClaimTaxProfile,
+    CloneProfileYear,
     ConfirmTotpEnrollment,
     CreateDashboardSecret, CreateOrganization, CreateTaxProfile, DeactivateWorkspace, DeleteDashboardQuery,
     DeleteDashboardResource, DeleteDashboardSecret, DeleteDashboardSource, DeleteWorkspaceRole,
     DevelopmentMailCaptureEnabled, DismissDashboardNotification, GetAccountProfile, GetAdminHealth,
     GetAuthCapabilities, GetAuthorizationCapabilities, GetCurrentSession, GetDashboardSnapshot,
-    GetMfaStatus, GetPublicProfile, GetWorkspaceSettingsContext, InviteCurrentOrganizationMember,
+    GetMfaStatus, GetProfileYear, GetPublicProfile, GetWorkspaceSettingsContext, InviteCurrentOrganizationMember,
     InviteWorkspaceMember, LatestDevelopmentMail, LeaveWorkspace, ListAccountSessions,
     ListAdminUsers, ListAuthProviders, ListCurrentOrganizationAudit,
     ListCurrentOrganizationInvitations, ListCurrentOrganizationMembers,
     ListCurrentOrganizationRoles, ListDashboardSecrets, ListOrganizations, ListPolicyVersions,
-    ListSigningKeys, ListTaxProfiles, ListWorkspaceAudit, ListWorkspaceInvitations, ListWorkspaceMembers,
+    ListProfileYears, ListSigningKeys, ListTaxProfiles, ListWorkspaceAudit, ListWorkspaceInvitations, ListWorkspaceMembers,
     ListWorkspacePermissions, ListWorkspaceRoles, LoginEmailPassword, LogoutCurrentSession,
     MigrateWorkspaceLegacyData, PublishPolicyVersion, RegisterEmailPassword, RemoveWorkspaceMember,
     RequireAuthenticatedRoute, RequireAuthorizedRoute, ResendEmailVerification,
     ReclaimTaxProfile, ResendWorkspaceInvitation, ResolveWorkspaceVaultTarget, RevealDashboardSecret,
     RevokeAccountSession, RevokeWorkspaceInvitation, RotateSigningKey, RunDashboardQuery,
-    SaveAuthProvider, SaveDashboardLayout, SaveRedirectAllowlist, SeedDashboardDemos,
+    SaveAuthProvider, SaveDashboardLayout, SaveProfileYear, SaveRedirectAllowlist, SeedDashboardDemos,
+    SetYearForms,
     SelectOrganization, SkipDevelopmentEmailVerification, StartOauthLogin, StartPasskeyLogin,
     StartPasskeyRegistration,
     StartPasswordReset, StartTotpEnrollment, TestDashboardHttpSource, TransferTaxProfile,
@@ -303,6 +305,11 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
             .with_server_fn::<ClaimTaxProfile>()
             .with_server_fn::<ReclaimTaxProfile>()
             .with_server_fn::<TransferTaxProfile>()
+            .with_server_fn::<GetProfileYear>()
+            .with_server_fn::<ListProfileYears>()
+            .with_server_fn::<SaveProfileYear>()
+            .with_server_fn::<SetYearForms>()
+            .with_server_fn::<CloneProfileYear>()
             .with_server_fn::<WebmcpEnabled>()
             .with_server_fn::<ListAccountSessions>()
             .with_server_fn::<RevokeAccountSession>()

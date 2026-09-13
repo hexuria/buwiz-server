@@ -38,6 +38,19 @@ impl TinIdentityHash {
     }
 }
 
+/// True when `incoming_root` hashes to the same TIN as an existing personal branch.
+///
+/// Personal accounts hold one TIN and many branches. We never store raw TIN, so
+/// the probe re-hashes the attested root with an existing branch code.
+pub fn same_personal_tin(
+    pepper: &[u8],
+    existing_branch: &BranchCode,
+    existing_hash: &TinIdentityHash,
+    incoming_root: &TinRoot,
+) -> bool {
+    &TinIdentityHash::compute(pepper, incoming_root, existing_branch) == existing_hash
+}
+
 /// Last four digits of the 9-digit TIN root, for display only.
 pub fn tin_last4(tin_root: &TinRoot) -> String {
     let digits = tin_root.as_str();
@@ -73,5 +86,20 @@ mod tests {
         assert!(!hash.0.contains("123456789"));
         assert_eq!(hash, TinIdentityHash::compute(b"pepper", &root, &branch));
         assert_ne!(hash, TinIdentityHash::compute(b"other", &root, &branch));
+    }
+
+    #[test]
+    fn personal_tin_probe_matches_existing_branch_hash() {
+        let root = TinRoot::parse("123456789").unwrap();
+        let other = TinRoot::parse("987654321").unwrap();
+        let head = BranchCode::parse("00000").unwrap();
+        let annex = BranchCode::parse("00001").unwrap();
+        let hash = TinIdentityHash::compute(b"pepper", &root, &head);
+        assert!(same_personal_tin(b"pepper", &head, &hash, &root));
+        assert!(!same_personal_tin(b"pepper", &head, &hash, &other));
+        assert_ne!(
+            TinIdentityHash::compute(b"pepper", &root, &head),
+            TinIdentityHash::compute(b"pepper", &root, &annex)
+        );
     }
 }

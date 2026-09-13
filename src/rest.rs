@@ -12,8 +12,8 @@ use crate::contracts::{
     OrganizationUpdateRequest, PasskeyStartRequest, PasskeyVerifyRequest, PasswordChangeRequest,
     PasswordResetCompleteRequest, PasswordResetStartRequest, PolicyPublishRequest,
     RoleUpsertRequest, SessionRevokeRequest, SigningKeyRotateRequest, TokenRefreshRequest,
-    TokenVerifyRequest, TaxProfileClaimRequest, TaxProfileCreateRequest, TaxProfilePatchRequest,
-    TaxProfileTransferRequest,
+    TokenVerifyRequest,     CloneProfileYearRequest, SaveProfileYearRequest, SetYearFormsRequest, TaxProfileClaimRequest,
+    TaxProfileCreateRequest, TaxProfilePatchRequest, TaxProfileTransferRequest,
 };
 use crate::error::{AuthStackError, AuthStackResult};
 
@@ -484,6 +484,43 @@ async fn dispatch(req: RestRequest) -> AuthStackResult<RestResponse> {
             let payload = parse_json::<TaxProfileTransferRequest>(req).await?;
             json_result(crate::application::transfer_tax_profile(payload, request_auth).await)
         }
+        (Method::GET, path) if tax_profile_years_list_from_path(path).is_some() => {
+            let id = tax_profile_years_list_from_path(path)
+                .expect("checked")
+                .to_owned();
+            json_result(crate::application::list_profile_years(id, request_auth).await)
+        }
+        (Method::GET, path) if tax_profile_year_from_path(path).is_some() => {
+            let (id, year) = tax_profile_year_from_path(path).expect("checked");
+            json_result(
+                crate::application::get_profile_year(id.to_owned(), year, request_auth).await,
+            )
+        }
+        (Method::PATCH, path) if tax_profile_year_from_path(path).is_some() => {
+            validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+            let (id, year) = tax_profile_year_from_path(path).expect("checked");
+            let mut payload = parse_json::<SaveProfileYearRequest>(req).await?;
+            payload.tax_year = year;
+            json_result(
+                crate::application::save_profile_year(id.to_owned(), payload, request_auth).await,
+            )
+        }
+        (Method::POST, path) if tax_profile_year_action_from_path(path, "forms").is_some() => {
+            validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+            let (id, year) = tax_profile_year_action_from_path(path, "forms").expect("checked");
+            let mut payload = parse_json::<SetYearFormsRequest>(req).await?;
+            payload.tax_year = year;
+            json_result(crate::application::set_year_forms(id.to_owned(), payload, request_auth).await)
+        }
+        (Method::POST, path) if tax_profile_year_action_from_path(path, "clone").is_some() => {
+            validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+            let (id, to_year) = tax_profile_year_action_from_path(path, "clone").expect("checked");
+            let mut payload = parse_json::<CloneProfileYearRequest>(req).await?;
+            payload.to_year = to_year;
+            json_result(
+                crate::application::clone_profile_year(id.to_owned(), payload, request_auth).await,
+            )
+        }
         (_, known_path) if known_rest_path(known_path) => validation_error_response(
             StatusCode::METHOD_NOT_ALLOWED,
             "method is not allowed for this auth API route",
@@ -836,6 +873,44 @@ fn tax_profile_id_from_path(path: &str) -> Option<&str> {
     Some(rest)
 }
 
+fn strip_tax_profile_prefix(path: &str) -> Option<&str> {
+    path.strip_prefix("/api/tax-profiles/")
+        .or_else(|| path.strip_prefix("/tax-profiles/"))
+}
+
+fn tax_profile_years_list_from_path(path: &str) -> Option<&str> {
+    let rest = strip_tax_profile_prefix(path)?;
+    let (id, after) = rest.split_once('/')?;
+    if after == "years" && !id.is_empty() && !matches!(id, "claim" | "reclaim" | "transfer") {
+        Some(id)
+    } else {
+        None
+    }
+}
+
+fn tax_profile_year_from_path(path: &str) -> Option<(&str, i16)> {
+    let rest = strip_tax_profile_prefix(path)?;
+    let (id, after) = rest.split_once('/')?;
+    let year_part = after.strip_prefix("years/")?;
+    if year_part.contains('/') || id.is_empty() {
+        return None;
+    }
+    let year = year_part.parse().ok()?;
+    Some((id, year))
+}
+
+fn tax_profile_year_action_from_path<'a>(path: &'a str, action: &str) -> Option<(&'a str, i16)> {
+    let rest = strip_tax_profile_prefix(path)?;
+    let (id, after) = rest.split_once('/')?;
+    let after = after.strip_prefix("years/")?;
+    let (year_str, suffix) = after.split_once('/')?;
+    if suffix != action || id.is_empty() {
+        return None;
+    }
+    let year = year_str.parse().ok()?;
+    Some((id, year))
+}
+
 fn tax_profile_action_from_path<'a>(path: &'a str, action: &str) -> Option<&'a str> {
     let rest = path
         .strip_prefix("/tax-profiles/")
@@ -994,6 +1069,31 @@ mod tests {
         assert_eq!(
             tax_profile_id_from_path(
                 "/tax-profiles/11111111-1111-4111-8111-111111111111/archive"
+            ),
+            None
+        );
+        assert_eq!(
+            tax_profile_years_list_from_path(
+                "/api/tax-profiles/11111111-1111-4111-8111-111111111111/years"
+            ),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+        assert_eq!(
+            tax_profile_year_from_path(
+                "/tax-profiles/11111111-1111-4111-8111-111111111111/years/2026"
+            ),
+            Some(("11111111-1111-4111-8111-111111111111", 2026))
+        );
+        assert_eq!(
+            tax_profile_year_action_from_path(
+                "/api/tax-profiles/11111111-1111-4111-8111-111111111111/years/2026/forms",
+                "forms"
+            ),
+            Some(("11111111-1111-4111-8111-111111111111", 2026))
+        );
+        assert_eq!(
+            tax_profile_year_from_path(
+                "/tax-profiles/11111111-1111-4111-8111-111111111111/years/2026/forms"
             ),
             None
         );

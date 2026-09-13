@@ -603,7 +603,12 @@ pub(crate) fn facts_from_create(
             .map(ToOwned::to_owned),
         is_vat_registered: request.is_vat_registered,
         eopt_tier: None,
-        business_start_date: None,
+        business_start_date: request
+            .business_start_date
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
         birth_date: None,
         atc_codes: Vec::new(),
     })

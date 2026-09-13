@@ -31,5 +31,5 @@ pub use oauth_client::{
     DESKTOP_LEGACY_CUSTOM_SCHEME_REDIRECT, DESKTOP_SCOPE,
 };
 pub use tin::{BranchCode, RegistrationKey, TinRoot};
-pub use tin_identity::{tin_last4, TinIdentityHash};
+pub use tin_identity::{same_personal_tin, tin_last4, TinIdentityHash};
 pub use v1_sync::{SyncCommand, SyncError, SyncEvent, YearFormEntry};
