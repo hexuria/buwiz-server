@@ -45,7 +45,6 @@ pub(crate) fn is_workspace_path(path: &str) -> bool {
         || path.starts_with("/org/")
         || path.starts_with("/admin")
         || path.starts_with("/invitations")
-        || path.starts_with("/auth/callback")
 }
 
 #[cfg(test)]
@@ -60,6 +59,8 @@ mod tests {
         assert!(is_workspace_path("/organizations"));
         assert!(is_workspace_path("/tax-profiles"));
         assert!(!is_workspace_path("/login"));
+        assert!(!is_workspace_path("/auth/callback/google"));
+        assert!(!is_workspace_path("/auth/callback/google/error"));
     }
 
     #[test]

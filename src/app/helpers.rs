@@ -243,6 +243,9 @@ pub(crate) fn server_error_text(error: ServerFnError) -> String {
     }
 
     let text = error.to_string();
+    if text.contains(r#"missing delimiter in """#) {
+        return "The server failed to complete this request.".to_owned();
+    }
     const PREFIXES: &[&str] = &[
         "error running server function: ",
         "error reaching server to call server function: ",
@@ -277,6 +280,17 @@ mod server_error_text_tests {
         assert_eq!(
             server_error_text(error),
             r#"workspace URL “goldcoders-corp” is already taken"#
+        );
+    }
+
+    #[test]
+    fn empty_server_fn_body_is_readable() {
+        let error = ServerFnError::Deserialization(
+            r#"Invalid format: missing delimiter in """#.into(),
+        );
+        assert_eq!(
+            server_error_text(error),
+            "The server failed to complete this request."
         );
     }
 }
