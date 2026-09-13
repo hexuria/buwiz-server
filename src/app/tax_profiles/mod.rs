@@ -7,7 +7,7 @@
 use crate::app::{
     ClaimTaxProfile, CreateTaxProfile, ReclaimTaxProfile, browser_load, clone_profile_year,
     get_current_session, get_profile_year, list_organizations, list_profile_years,
-    list_tax_profiles, save_profile_year, set_year_forms,
+    list_tax_profiles, save_profile_year, server_error_text, set_year_forms,
 };
 use crate::contracts::{
     group_tax_profiles_by_tin, masked_tin_label, year_choices, BirFormSpec, BIR_FORM_CATALOG,
@@ -112,7 +112,10 @@ pub fn TaxProfilesHome() -> impl IntoView {
             composer.set(Composer::Closed);
             reload_profiles();
         } else if let Some(Err(error)) = create_value.get() {
-            notice.set(Some(Err(error.to_string())));
+            notice.set(Some(Err(server_error_text(error))));
+            // Commit can succeed and the HTTP worker still trap (Redis wake).
+            // Reload so a landed branch appears even when the client body is empty.
+            reload_profiles();
         }
     });
     Effect::new(move |_| {

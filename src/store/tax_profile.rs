@@ -687,35 +687,9 @@ fn map_concurrency_store_error(error: AuthStackError) -> AuthStackError {
 }
 
 pub(crate) async fn publish_tax_profile_wake(stream_id: &str, revision: u64) {
-    let Some(url) = crate::store::runtime_config_value("REDIS_URL")
-        .await
-        .filter(|value| !value.trim().is_empty())
-    else {
-        return;
-    };
-    let channel = crate::store::runtime_config_value("REDIS_CHANNEL")
-        .await
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "buwiz-tax-profiles".to_owned());
-    #[cfg(all(feature = "postgres", runtime_spin))]
-    {
-        let payload = json!({
-            "kind": "tax_profile",
-            "stream_id": stream_id,
-            "revision": revision,
-        });
-        let client = ddd_cqrs_es::SpinRedisClient::new(url);
-        let publisher = ddd_cqrs_es::RedisPubSubPublisher::new(client, channel);
-        if let Err(error) = publisher.publish_json(&payload).await {
-            tracing::warn!(
-                error = %error,
-                stream_id,
-                "redis tax-profile wake failed; postgres remains the source of truth"
-            );
-        }
-    }
-    #[cfg(not(all(feature = "postgres", runtime_spin)))]
-    {
-        let _ = (url, channel, stream_id, revision);
-    }
+    // The Spin Redis client uses wasip3 waitables that trap inside the HTTP
+    // worker (`waitable cannot be used synchronously`). Publishing here
+    // commits the profile then kills the response, so the browser sees an
+    // empty server-fn body. Postgres is the source of truth; skip the wake.
+    let _ = (stream_id, revision);
 }
