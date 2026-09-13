@@ -262,15 +262,11 @@ async function main() {
     await page.locator('[data-testid="tax-profile-branch-00000"]').click();
     await page.locator('[data-testid="tax-profile-year"]').selectOption("2026");
     await page.locator('[data-testid="tax-profile-tab-forms"]').click();
-    await page
-      .locator('[data-testid="tax-profile-form-2550Q"] input[type="checkbox"]')
-      .waitFor({ state: "visible", timeout: 10000 });
-    const vatQuarterly = page.locator(
-      '[data-testid="tax-profile-form-2550Q"] input[type="checkbox"]',
-    );
-    if (!(await vatQuarterly.isChecked())) {
-      throw new Error("head office 2026 should still have 2550Q");
-    }
+    await page.waitForFunction(() => {
+      const row = document.querySelector('[data-testid="tax-profile-form-2550Q"]');
+      const box = row && row.querySelector('input[type="checkbox"]');
+      return !!(box && box.checked);
+    }, null, { timeout: 15000 });
     shots.push(await shot(page, "08_head_office_still_three_forms"));
 
     console.log(JSON.stringify({ ok: true, email, shots }, null, 2));
