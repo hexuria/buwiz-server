@@ -203,7 +203,10 @@ async function main() {
       "login form",
     );
     await page.locator('input[name="email"]').fill(email);
-    await page.getByRole("button", { name: /Continue|Sign in/ }).first().click();
+    // Do not match the "Sign in" mode tab — submit is Continue, then Sign in.
+    await page
+      .locator('form[data-testid="auth-credentials-form"] button[type="submit"]')
+      .click();
     await page.locator('input[name="password"]').waitFor({ state: "visible" });
     await page.locator('input[name="password"]').fill(password);
     await page
