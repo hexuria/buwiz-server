@@ -174,7 +174,8 @@ async function main() {
         '[data-testid="onboarding-workspace"], input[placeholder="Acme Inc"]',
         "onboarding form",
       );
-      await page.locator('input[placeholder="Acme Inc"]').fill("Dev Auth Workspace");
+      const workspaceName = `Dev Auth ${Date.now()}`;
+      await page.locator('input[placeholder="Acme Inc"]').fill(workspaceName);
       await page.getByRole("button", { name: "Create workspace" }).click();
       await page.waitForURL((u) => u.pathname.includes("/dashboard"), {
         timeout: 20000,
@@ -186,6 +187,9 @@ async function main() {
       '[data-testid="workspace-shell"]',
       "workspace chrome",
     );
+    await page
+      .locator('[data-testid="workspace-user-menu"] details summary')
+      .waitFor({ state: "visible", timeout: 20000 });
     shots.push(await shot(page, "06_dashboard_chrome"));
 
     const userMenu = page.locator('[data-testid="workspace-user-menu"]');
@@ -208,6 +212,8 @@ async function main() {
       .locator('form[data-testid="auth-credentials-form"] button[type="submit"]')
       .click();
     await page.locator('input[name="password"]').waitFor({ state: "visible" });
+    await waitHeading(page, "Welcome back");
+    shots.push(await shot(page, "07_login_password"));
     await page.locator('input[name="password"]').fill(password);
     await page
       .locator('form[data-testid="auth-credentials-form"] button[type="submit"]')
