@@ -149,7 +149,7 @@ pub fn TaxProfilesHome() -> impl IntoView {
                 return;
             }
             year_state.set(Some(loaded));
-            if let Ok(list) = list_profile_years(id).await {
+            if let Ok(list) = list_profile_years(id.clone()).await {
                 if selected_id.get_untracked() == id {
                     year_history.set(list.years);
                 }
