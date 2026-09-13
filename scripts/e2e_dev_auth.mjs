@@ -132,8 +132,20 @@ async function main() {
     );
     shots.push(await shot(page, "03_register_success_capture"));
 
-    let verified = false;
-    for (let attempt = 0; attempt < 12 && !verified; attempt += 1) {
+    const verifyPageShot = page
+      .waitForURL((u) => u.pathname.includes("/verify-email"), { timeout: 25000 })
+      .then(async () => {
+        await page
+          .waitForSelector(
+            '[data-testid="verify-email-heading"], [data-testid="verify-email-form"], h1',
+            { timeout: 4000 },
+          )
+          .catch(() => {});
+        shots.push(await shot(page, "04_verify_dev_path"));
+      });
+
+    let leftRegister = false;
+    for (let attempt = 0; attempt < 12 && !leftRegister; attempt += 1) {
       await page.locator('[data-testid="dev-verify-now"]').click();
       try {
         await page.waitForURL(
@@ -143,23 +155,15 @@ async function main() {
             u.pathname.includes("/dashboard"),
           { timeout: 4000 },
         );
-        verified = true;
+        leftRegister = true;
       } catch {
         await page.waitForTimeout(500);
       }
     }
-    if (!verified) {
+    if (!leftRegister) {
       throw new Error("Verify now did not leave the register success panel");
     }
-    if (page.url().includes("/verify-email")) {
-      await page
-        .waitForSelector(
-          '[data-testid="verify-email-form"], [data-testid="verify-email-heading"]',
-          { timeout: 8000 },
-        )
-        .catch(() => {});
-    }
-    shots.push(await shot(page, "04_verify_dev_path"));
+    await verifyPageShot;
 
     await page.waitForURL(
       (u) =>
@@ -228,6 +232,13 @@ async function main() {
       '[data-testid="workspace-shell"]',
       "workspace chrome after re-login",
     );
+    await page
+      .waitForFunction(
+        () => (document.body.innerText || "").includes("Good to see you"),
+        null,
+        { timeout: 15000 },
+      )
+      .catch(() => {});
     shots.push(await shot(page, "07_login_again"));
 
     const device = await fetch(url("/auth/device/start"), {
