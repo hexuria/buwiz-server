@@ -46,7 +46,7 @@ pub(crate) async fn insert_auth_code(
         "INSERT INTO buwiz_server.oauth_auth_codes (\
             code_hash, client_id, user_id, session_id, redirect_uri, code_challenge, \
             code_challenge_method, scope, expires_at \
-         ) VALUES (?1, ?2, ?3::uuid, ?4, ?5, ?6, 'S256', ?7, to_timestamp(?8))",
+         ) VALUES (?1, ?2, ?3::uuid, ?4, ?5, ?6, 'S256', ?7, to_timestamp(?8::bigint))",
         vec![
             json!(code_hash),
             json!(client_id),
@@ -99,7 +99,7 @@ pub(crate) async fn insert_device_code(
     execute_sql(
         "INSERT INTO buwiz_server.oauth_device_codes (\
             device_code_hash, user_code, client_id, verification_uri, interval_seconds, expires_at \
-         ) VALUES (?1, ?2, ?3, ?4, ?5::bigint, to_timestamp(?6))",
+         ) VALUES (?1, ?2, ?3, ?4, ?5::bigint, to_timestamp(?6::bigint))",
         vec![
             json!(device_code_hash),
             json!(user_code),
