@@ -388,8 +388,12 @@ pub fn TaxProfilesHome() -> impl IntoView {
                                 </label>
                             </div>
                             <label class=INLINE_FIELD>
-                                <input type="checkbox" prop:checked=move || hold_org.get()
-                                    on:change=move |ev| hold_org.set(event_target_checked(&ev)) />
+                                <input
+                                    type="checkbox"
+                                    prop:checked=move || hold_org.get()
+                                    on:change=move |ev| hold_org.set(event_target_checked(&ev))
+                                    data-testid="tax-profile-hold-org"
+                                />
                                 <span>"Hold on a firm workspace"</span>
                             </label>
                             <Show when=move || hold_org.get()>

@@ -212,9 +212,38 @@ async function main() {
     await saveYearForms(page, ["0605", "1701"]);
     shots.push(await shot(page, "06_annex_fewer_forms"));
 
+    // Onboarding creates a firm workspace, so Add TIN stays available for
+    // firm-held TINs. A second *personal* TIN must still be rejected.
     const addTin = page.locator('[data-testid="tax-profile-add-tin"]');
     if (await addTin.isEnabled()) {
-      throw new Error("personal account should not add a second TIN");
+      await addTin.click();
+      await assertVisible(
+        page,
+        '[data-testid="tax-profile-composer"]',
+        "second TIN composer",
+      );
+      await page.locator('input[name="tin_root"]').fill("987654321");
+      await page.locator('input[name="branch_code"]').fill("00000");
+      await page.locator('input[name="registered_name"]').fill("Other person");
+      await page.locator('input[name="rdo_code"]').fill("001");
+      const holdOrg = page.locator('[data-testid="tax-profile-hold-org"]');
+      if (await holdOrg.isChecked()) {
+        await holdOrg.uncheck();
+      }
+      await page
+        .locator('[data-testid="tax-profile-composer"] button[type="submit"]')
+        .click();
+      await page
+        .locator('[data-testid="tax-profile-error"]')
+        .waitFor({ state: "visible", timeout: 20000 });
+      const lockCopy = await page
+        .locator('[data-testid="tax-profile-error"]')
+        .innerText();
+      if (!/already holds a TIN|firm workspace/i.test(lockCopy)) {
+        throw new Error(`expected personal TIN lock, got: ${lockCopy}`);
+      }
+      shots.push(await shot(page, "06b_personal_tin_locked"));
+      await page.getByRole("button", { name: "Cancel" }).click();
     }
 
     await page.locator('[data-testid="tax-profile-year"]').selectOption("2027");

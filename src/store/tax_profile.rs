@@ -220,7 +220,7 @@ pub(crate) async fn commit_tax_profile_command(
         statements.push(AtomicSqlStatement::guard(
             "INSERT INTO buwiz_server.tax_profile_events \
              (stream_id, revision, event_type, payload) \
-             SELECT ?1, ?2, ?3, ?4::jsonb \
+             SELECT ?1, ?2::bigint, ?3, ?4::text::jsonb \
              WHERE NOT EXISTS ( \
                  SELECT 1 FROM buwiz_server.tax_profile_events \
                  WHERE stream_id = ?1 AND revision >= ?2 \
@@ -303,7 +303,7 @@ fn projection_upsert_statement(
             verified_owner_user_id, revision, created_at, updated_at \
          ) VALUES (\
             ?1::text::uuid, ?2, NULL, ?3, ?4, decode(?4, 'hex'), ?5, \
-            ?6::text::uuid, ?7, ?8, ?9, ?10, ?11, ?12::jsonb, \
+            ?6::text::uuid, ?7, ?8, ?9, ?10, ?11, ?12::text::jsonb, \
             ?13, ?14, ?15::text::uuid, ?16::text::uuid, ?17, ?18, \
             ?19, ?20, ?21, ?22, ?23, ?24, \
             ?25, ?26, ?27, ?28::text::uuid, \
