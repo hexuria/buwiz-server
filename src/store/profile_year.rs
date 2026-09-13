@@ -21,7 +21,7 @@ pub(crate) async fn load_or_create_profile_year(
     let inherited = execute_sql(
         "SELECT registered_name, rdo_code, line_of_business, registered_address, zip_code, \
                 phone, email, tax_classification, is_vat_registered \
-         FROM buwiz_server.tax_profiles WHERE profile_id = ?1::uuid",
+         FROM buwiz_server.tax_profiles WHERE profile_id = ?1::text::uuid",
         vec![json!(profile_id)],
     )
     .await?;
@@ -33,7 +33,7 @@ pub(crate) async fn load_or_create_profile_year(
         "INSERT INTO buwiz_server.profile_years (\
             id, tax_profile_id, tax_year, registered_name, rdo_code, line_of_business, \
             registered_address, zip_code, phone, email, tax_classification, is_vat_registered \
-         ) VALUES (?1::uuid, ?2::uuid, ?3::bigint, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         ) VALUES (?1::text::uuid, ?2::text::uuid, ?3::bigint, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         vec![
             json!(year_id),
             json!(profile_id),
@@ -81,7 +81,7 @@ pub(crate) async fn update_profile_year(
             tax_classification = COALESCE(?9, tax_classification), \
             is_vat_registered = COALESCE(?10, is_vat_registered), \
             updated_at = CURRENT_TIMESTAMP \
-         WHERE id = ?1::uuid",
+         WHERE id = ?1::text::uuid",
         vec![
             json!(current.id),
             json!(registered_name),
@@ -108,7 +108,7 @@ pub(crate) async fn set_year_forms(
 ) -> AuthStackResult<ProfileYearView> {
     let current = load_or_create_profile_year(profile_id, tax_year).await?;
     execute_sql(
-        "DELETE FROM buwiz_server.per_year_forms WHERE profile_year_id = ?1::uuid",
+        "DELETE FROM buwiz_server.per_year_forms WHERE profile_year_id = ?1::text::uuid",
         vec![json!(current.id)],
     )
     .await?;
@@ -119,7 +119,7 @@ pub(crate) async fn set_year_forms(
         let form_id = new_uuid_v4()?;
         execute_sql(
             "INSERT INTO buwiz_server.per_year_forms (id, profile_year_id, form_code, frequency, active) \
-             VALUES (?1::uuid, ?2::uuid, ?3, ?4, TRUE)",
+             VALUES (?1::text::uuid, ?2::text::uuid, ?3, ?4, TRUE)",
             vec![
                 json!(form_id),
                 json!(current.id),
@@ -160,7 +160,7 @@ pub(crate) async fn clone_profile_year(
             registered_name = ?2, rdo_code = ?3, line_of_business = ?4, \
             registered_address = ?5, zip_code = ?6, phone = ?7, email = ?8, \
             tax_classification = ?9, is_vat_registered = ?10, updated_at = CURRENT_TIMESTAMP \
-         WHERE id = ?1::uuid",
+         WHERE id = ?1::text::uuid",
         vec![
             json!(dest.id),
             json!(source.registered_name),
@@ -193,7 +193,7 @@ async fn load_profile_year(
                 registered_name, rdo_code, line_of_business, registered_address, \
                 zip_code, phone, email, tax_classification, is_vat_registered \
          FROM buwiz_server.profile_years \
-         WHERE tax_profile_id = ?1::uuid AND tax_year = ?2::bigint",
+         WHERE tax_profile_id = ?1::text::uuid AND tax_year = ?2::bigint",
         vec![json!(profile_id), json!(i64::from(tax_year))],
     )
     .await?;
@@ -203,7 +203,7 @@ async fn load_profile_year(
     let year_id = required_string(row, "id")?;
     let form_rows = execute_sql(
         "SELECT form_code, frequency, active FROM buwiz_server.per_year_forms \
-         WHERE profile_year_id = ?1::uuid ORDER BY form_code",
+         WHERE profile_year_id = ?1::text::uuid ORDER BY form_code",
         vec![json!(year_id)],
     )
     .await?;
@@ -214,7 +214,7 @@ pub(crate) async fn list_profile_years(profile_id: &str) -> AuthStackResult<Vec<
     initialize_schema_async().await?;
     let rows = execute_sql(
         "SELECT tax_year FROM buwiz_server.profile_years \
-         WHERE tax_profile_id = ?1::uuid ORDER BY tax_year DESC",
+         WHERE tax_profile_id = ?1::text::uuid ORDER BY tax_year DESC",
         vec![json!(profile_id)],
     )
     .await?;

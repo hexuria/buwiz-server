@@ -76,6 +76,10 @@ mod tests {
             ),
             "INSERT INTO buwiz_server.oauth_device_codes (interval_seconds) VALUES ($5::bigint)"
         );
+        assert_eq!(
+            postgres_sql("SELECT * FROM buwiz_server.tax_profiles WHERE account_id = ?1::text::uuid"),
+            "SELECT * FROM buwiz_server.tax_profiles WHERE account_id = $1::text::uuid"
+        );
     }
 
     #[test]

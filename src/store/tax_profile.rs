@@ -119,7 +119,7 @@ async fn load_projection_fallback(profile_id: &str) -> AuthStackResult<Option<Lo
                 COALESCE(is_archived, false) AS is_archived, \
                 eopt_tier, business_start_date, birth_date, atc_codes, \
                 revision, updated_at::text AS updated_at \
-         FROM buwiz_server.tax_profiles WHERE profile_id = ?1::uuid",
+         FROM buwiz_server.tax_profiles WHERE profile_id = ?1::text::uuid",
         vec![json!(profile_id)],
     )
     .await?;
@@ -302,13 +302,13 @@ fn projection_upsert_statement(
             holder_organization_id, ownership_status, verification_status, \
             verified_owner_user_id, revision, created_at, updated_at \
          ) VALUES (\
-            ?1::uuid, ?2, NULL, ?3, ?4, decode(?4, 'hex'), ?5, \
-            ?6::uuid, ?7, ?8, ?9, ?10, ?11, ?12::jsonb, \
-            ?13, ?14, ?15::uuid, ?16::uuid, ?17, ?18, \
+            ?1::text::uuid, ?2, NULL, ?3, ?4, decode(?4, 'hex'), ?5, \
+            ?6::text::uuid, ?7, ?8, ?9, ?10, ?11, ?12::jsonb, \
+            ?13, ?14, ?15::text::uuid, ?16::text::uuid, ?17, ?18, \
             ?19, ?20, ?21, ?22, ?23, ?24, \
-            ?25, ?26, ?27, ?28::uuid, \
-            ?29::uuid, ?30, ?31, \
-            ?32::uuid, ?33, \
+            ?25, ?26, ?27, ?28::text::uuid, \
+            ?29::text::uuid, ?30, ?31, \
+            ?32::text::uuid, ?33, \
             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP \
          ) \
          ON CONFLICT (profile_id) DO UPDATE SET \
@@ -405,7 +405,7 @@ pub(crate) async fn fetch_tax_profile_view(
     let rows = execute_sql(
         &format!(
             "SELECT {TAX_PROFILE_VIEW_COLUMNS} FROM buwiz_server.tax_profiles \
-             WHERE profile_id = ?1::uuid"
+             WHERE profile_id = ?1::text::uuid"
         ),
         vec![json!(profile_id)],
     )
@@ -426,8 +426,8 @@ pub(crate) async fn list_tax_profiles_for(
             &format!(
                 "SELECT {TAX_PROFILE_VIEW_COLUMNS} FROM buwiz_server.tax_profiles \
                  WHERE COALESCE(is_archived, false) = FALSE \
-                   AND (account_id = ?1::uuid OR holder_user_id = ?1::uuid \
-                        OR holder_organization_id = ?2::uuid OR org_id = ?2::uuid) \
+                   AND (account_id = ?1::text::uuid OR holder_user_id = ?1::text::uuid \
+                        OR holder_organization_id = ?2::text::uuid OR org_id = ?2::text::uuid) \
                  ORDER BY updated_at DESC"
             ),
             vec![json!(user_id), json!(organization_id)],
@@ -438,7 +438,7 @@ pub(crate) async fn list_tax_profiles_for(
             &format!(
                 "SELECT {TAX_PROFILE_VIEW_COLUMNS} FROM buwiz_server.tax_profiles \
                  WHERE COALESCE(is_archived, false) = FALSE \
-                   AND (account_id = ?1::uuid OR holder_user_id = ?1::uuid OR owner_user_id = ?1::uuid) \
+                   AND (account_id = ?1::text::uuid OR holder_user_id = ?1::text::uuid OR owner_user_id = ?1::text::uuid) \
                  ORDER BY updated_at DESC"
             ),
             vec![json!(user_id)],
@@ -572,7 +572,7 @@ fn tax_profile_view_from_row(
 pub(crate) async fn user_status(user_id: &str) -> AuthStackResult<String> {
     initialize_schema_async().await?;
     let rows = execute_sql(
-        "SELECT status FROM auth_users WHERE user_id = ?1::uuid",
+        "SELECT status FROM auth_users WHERE user_id = ?1::text::uuid",
         vec![json!(user_id)],
     )
     .await?;
