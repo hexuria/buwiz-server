@@ -344,10 +344,9 @@ impl std::fmt::Display for TaxProfileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidFacts { reason } => write!(f, "{reason}"),
-            Self::AlreadyHeld { holder } => write!(
+            Self::AlreadyHeld { holder: _ } => write!(
                 f,
-                "registration unit is already held exclusively by {}",
-                holder.id()
+                "This TIN and branch is already held. Add a different branch, or claim it if you are the owner."
             ),
             Self::NotFound => write!(f, "tax profile not found"),
             Self::NotHolder => write!(f, "caller is not the current holder"),

@@ -272,6 +272,8 @@ pub fn TaxProfilesHome() -> impl IntoView {
                                         hold_org.set(personal_locked && has_orgs);
                                         tin_root.set(String::new());
                                         branch_code.set("00000".into());
+                                        registered_name.set(String::new());
+                                        rdo_code.set(String::new());
                                         composer.set(Composer::Tin);
                                     }
                                 >"Add TIN"</button>
@@ -284,6 +286,8 @@ pub fn TaxProfilesHome() -> impl IntoView {
                                         hold_org.set(false);
                                         tin_root.set(String::new());
                                         branch_code.set(String::new());
+                                        registered_name.set(String::new());
+                                        rdo_code.set(String::new());
                                         composer.set(Composer::Branch);
                                     }
                                 >"Add branch"</button>
@@ -343,7 +347,7 @@ pub fn TaxProfilesHome() -> impl IntoView {
                                     }),
                                     taxpayer_type: taxpayer_type.get_untracked(),
                                     tax_classification: None,
-                                    is_vat_registered: is_vat.get_untracked(),
+                                    is_vat_registered: false,
                                     business_start_date: optional_text(business_start_date.get_untracked()),
                                     organization_id,
                                 });

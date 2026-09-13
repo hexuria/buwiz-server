@@ -23,7 +23,8 @@ mkdirSync(artifactDir, { recursive: true });
 
 const email = `tax-year-${Date.now()}@example.test`;
 const password = "Dev-auth-password-15";
-const tinRoot = "123456789";
+// TIN identity is globally exclusive. Do not reuse a fixed demo TIN.
+const tinRoot = String(Date.now()).slice(-9).padStart(9, "1");
 
 function url(path) {
   return new URL(path, `${baseUrl}/`).toString();
@@ -207,6 +208,7 @@ async function main() {
 
     await createBranch(page, "00001", "Annex", "041");
     await page.locator('[data-testid="tax-profile-branch-00001"]').click();
+    await page.locator('[data-testid="tax-profile-tab-profile"]').click();
     await assertVisible(page, '[data-testid="tax-profile-editor"]', "annex editor");
     shots.push(await shot(page, "05_annex_profile"));
     await saveYearForms(page, ["0605", "1701"]);
@@ -222,7 +224,11 @@ async function main() {
         '[data-testid="tax-profile-composer"]',
         "second TIN composer",
       );
-      await page.locator('input[name="tin_root"]').fill("987654321");
+      const otherTin = String((Number(tinRoot) + 1) % 1_000_000_000).padStart(
+        9,
+        "1",
+      );
+      await page.locator('input[name="tin_root"]').fill(otherTin);
       await page.locator('input[name="branch_code"]').fill("00000");
       await page.locator('input[name="registered_name"]').fill("Other person");
       await page.locator('input[name="rdo_code"]').fill("001");
@@ -254,8 +260,17 @@ async function main() {
     shots.push(await shot(page, "07_cloned_year"));
 
     await page.locator('[data-testid="tax-profile-branch-00000"]').click();
+    await page.locator('[data-testid="tax-profile-year"]').selectOption("2026");
     await page.locator('[data-testid="tax-profile-tab-forms"]').click();
-    await page.waitForTimeout(500);
+    await page
+      .locator('[data-testid="tax-profile-form-2550Q"] input[type="checkbox"]')
+      .waitFor({ state: "visible", timeout: 10000 });
+    const vatQuarterly = page.locator(
+      '[data-testid="tax-profile-form-2550Q"] input[type="checkbox"]',
+    );
+    if (!(await vatQuarterly.isChecked())) {
+      throw new Error("head office 2026 should still have 2550Q");
+    }
     shots.push(await shot(page, "08_head_office_still_three_forms"));
 
     console.log(JSON.stringify({ ok: true, email, shots }, null, 2));
