@@ -296,6 +296,8 @@ pub async fn transfer_tax_profile(
     if !loaded.state.exists {
         return Err(AuthStackError::not_found("tax profile not found"));
     }
+    let actor_controls_org =
+        controlled_holding_org(&loaded.state, session_id.as_deref()).await?;
     let expected = request.expected_revision.unwrap_or(loaded.revision);
     crate::store::commit_tax_profile_command(
         &request.id,
@@ -304,11 +306,40 @@ pub async fn transfer_tax_profile(
                 organization_id: request.organization_id,
             },
             actor_user_id: user_id.clone(),
+            actor_controls_org,
         },
         expected,
     )
     .await?;
     crate::store::fetch_tax_profile_view(&request.id, &user_id).await
+}
+
+/// The holding organization the caller may move profiles out of: the
+/// profile's current holder is that organization, and the caller holds
+/// `ownership.transfer` in it. `None` for a personal holder, and for anyone
+/// without that right (the domain then refuses the transfer). Membership of
+/// the *destination* organization is checked separately and proves nothing
+/// about the current holder.
+async fn controlled_holding_org(
+    state: &crate::domain::TaxProfile,
+    session_id: Option<&str>,
+) -> AuthStackResult<Option<String>> {
+    let Some(AccountHolder::Organization { organization_id }) = &state.holder else {
+        return Ok(None);
+    };
+    let Some(session_id) = session_id else {
+        return Ok(None);
+    };
+    let Ok(summary) =
+        crate::auth_product::organization_for_session(session_id, organization_id).await
+    else {
+        return Ok(None);
+    };
+    let may_move = summary
+        .permissions
+        .iter()
+        .any(|p| p == crate::access::PermissionId::OWNERSHIP_TRANSFER.as_str());
+    Ok(may_move.then(|| organization_id.clone()))
 }
 
 async fn attested_existing(
