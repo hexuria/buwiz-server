@@ -134,7 +134,7 @@ curl -sS -X POST http://localhost:3008/auth/device/start \
 
 ## Tax profiles
 
-Cloud subset of the desktop taxpayer profile. **`id` (UUID) is the server source of truth.** Clients must not treat TIN as the local identity key. Every mutating command loads the profile by UUID and asserts `account_id` matches the caller.
+Cloud subset of the desktop taxpayer profile. **`id` (UUID) is the server source of truth.** Clients must not treat TIN as the local identity key. Every read and write loads the profile by UUID and goes through one gatekeeper (`authorize` in `src/application/tax_profile.rs`, re-checked by `TaxProfile::access_for` in the domain). See **Who may do what** below.
 
 `tax_profiles.account_id` maps to wasi-auth `auth_users.user_id` (the sketch `accounts` table is not duplicated). Refresh tokens stay in `auth_refresh_tokens`. Device codes live in `buwiz_server.oauth_device_codes`; sessions in `auth_sessions`. Do not add product `devices` or `refresh_tokens` tables.
 
@@ -172,6 +172,21 @@ Rules:
 3. A company may hold it until the verified owner claims or reclaims (`pending_claim`).
 4. The verified owner can reclaim at any time.
 5. Multi-device identity uses last-write-wins via `updated_at` (PATCH must echo the last seen `updated_at`). Never silent-merge two different TINs into one row.
+
+### Who may do what
+
+Control follows the **holder**, never the account that registered the profile (`account_id` is history only).
+
+| Caller | View | Edit / archive / restore | Transfer |
+|---|---|---|---|
+| Personal holder | yes | yes | yes |
+| Member of the holding organization | yes | yes | needs `ownership.transfer` in that organization |
+| Verified owner while an organization holds it | yes | no (reclaim first) | no |
+| Anyone else, including the original registrant after a claim or transfer | no | no | no |
+
+Membership of the *destination* organization never counts as control of the current holder.
+
+The server is for backup, multi-device sync and sharing access. It never submits returns to BIR: publishing goes through the installed buwiz-forms app, which owns the tunnel / egress reroute.
 6. Concurrent registers of the same hashed identity fail with 409.
 
 Email must be **verified** before register/claim/reclaim/transfer/patch/archive.

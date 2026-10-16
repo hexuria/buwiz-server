@@ -26,4 +26,4 @@ The getter moved from `navigator.modelContext` to `document.modelContext` (tools
 4. Fill via the agent, then click **Sign in** / **Create workspace** yourself.
 5. With the flag off or in Firefox/Safari, the page still works; registration is a no-op.
 
-Later tax-profile actions can add the same attributes. Do not add a Spin MCP endpoint for this.
+Later tax-profile actions can add the same attributes. WebMCP is separate from the planned server MCP endpoint (`POST /mcp`, JSON-RPC with JSON responses, OAuth bearer tokens) that lets agents such as Claude Code or Codex work on a tax profile they were given access to; that endpoint does not replace these page tools.

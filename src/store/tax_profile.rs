@@ -426,8 +426,8 @@ pub(crate) async fn list_tax_profiles_for(
             &format!(
                 "SELECT {TAX_PROFILE_VIEW_COLUMNS} FROM buwiz_server.tax_profiles \
                  WHERE COALESCE(is_archived, false) = FALSE \
-                   AND (account_id = ?1::uuid OR holder_user_id = ?1::uuid \
-                        OR holder_organization_id = ?2::uuid OR org_id = ?2::uuid) \
+                   AND (holder_user_id = ?1::uuid OR owner_user_id = ?1::uuid \
+                        OR holder_organization_id = ?2::uuid) \
                  ORDER BY updated_at DESC"
             ),
             vec![json!(user_id), json!(organization_id)],
@@ -438,7 +438,7 @@ pub(crate) async fn list_tax_profiles_for(
             &format!(
                 "SELECT {TAX_PROFILE_VIEW_COLUMNS} FROM buwiz_server.tax_profiles \
                  WHERE COALESCE(is_archived, false) = FALSE \
-                   AND (account_id = ?1::uuid OR holder_user_id = ?1::uuid OR owner_user_id = ?1::uuid) \
+                   AND (holder_user_id = ?1::uuid OR owner_user_id = ?1::uuid) \
                  ORDER BY updated_at DESC"
             ),
             vec![json!(user_id)],
