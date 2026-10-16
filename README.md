@@ -152,7 +152,8 @@ V1 commands (past-tense event mirrors). Keep them small.
 | `CloneProfileYear` | `ProfileYearCloned` (copy prior `per_year_forms` only if dest empty) |
 | `UpdateProfileYear` | `ProfileYearUpdated` (null = inherit) |
 | `SetYearForms` / `ActivateYearForm` / `DeactivateYearForm` | year-forms events |
-| `UpsertFormDraft` / `MarkDraftSaved` | `FormDraftUpserted` / `DraftSaved` |
+| `UpsertFormDraft` / `MarkDraftSaved` / `MarkDraftReviewed` | `FormDraftUpserted` / `DraftSaved` / `DraftReviewed` |
+| `OfferPass` / `RequestPass` / `AcceptPass` / `ApprovePass` / `ChangePass` / `EndPass` | `PassOffered` / `PassRequested` / `PassActivated` / `PassChanged` / `PassEnded` |
 | `EnqueueFiling` | `FilingQueued` |
 | `MarkFilingSubmitted` / `ConfirmFilingFromReceipt` / `FailFiling` / `MarkFilingPaid` | filing events |
 | `RegisterDevice` / `RevokeDevice` / `IssueDesktopSession` | device-session events (no PIN/TOTP) |
@@ -175,16 +176,30 @@ Rules:
 
 ### Who may do what
 
-Control follows the **holder**, never the account that registered the profile (`account_id` is history only).
+Control follows the **holder**, never the account that registered the profile (`account_id` is history only). The owner can lend access with an **access pass**.
 
-| Caller | View | Edit / archive / restore | Transfer |
-|---|---|---|---|
-| Personal holder | yes | yes | yes |
-| Member of the holding organization | yes | yes | needs `ownership.transfer` in that organization |
-| Verified owner while an organization holds it | yes | no (reclaim first) | no |
-| Anyone else, including the original registrant after a claim or transfer | no | no | no |
+| Caller | View | Edit | Archive / restore | Share (passes) | Transfer |
+|---|---|---|---|---|---|
+| Personal holder (the owner) | yes | yes | yes | yes | yes |
+| Member of the holding organization | yes | yes | yes | no | needs `ownership.transfer` there |
+| Verified owner while an organization holds it | yes | no (reclaim first) | no | no | no |
+| Member of a workspace with an active pass | `profile.view` | `profile.edit` | no | no | no |
+| Anyone else, including the original registrant after a claim or transfer | no | no | no | no | no |
 
 Membership of the *destination* organization never counts as control of the current holder.
+
+#### Access passes
+
+A pass lets a firm's workspace work on someone else's profile. Any member of that workspace can use it.
+
+- **Start:** the owner offers one (the workspace's owner or admin, i.e. `organization.update`, accepts), or the workspace asks with the TIN and branch and the owner approves.
+- **Permissions:** `profile.view`, `profile.edit`, `years.view`, `years.manage`, `drafts.view`, `drafts.save`, `drafts.update`, `drafts.review`, `filings.view`. Write permissions bring their read permission with them.
+- **Presets:** Read-only (the four `*.view`), **Safe** (Read-only + save, update and review drafts; selected when the screen opens), Full (all nine).
+- **`filings.publish`** is never in a preset and never in the permission list: only `allow_publish: true` turns it on, and the screen asks "Are you sure?" first. The server only records it; the grantee's installed buwiz-forms app checks it before sending to BIR.
+- **End date:** none unless the owner sets one (`ends_on`, the last day in Philippine time).
+- **Ending:** the owner revokes or declines; the workspace declines an offer, withdraws a request, or gives the pass back. A claim, reclaim or transfer ends every open pass.
+- Sharing, ending passes, archiving and deleting stay with the owner; no pass grants them.
+- Notices are in-app (the Tax profiles page, "Waiting for you"); there is no grant email.
 
 The server is for backup, multi-device sync and sharing access. It never submits returns to BIR: publishing goes through the installed buwiz-forms app, which owns the tunnel / egress reroute.
 6. Concurrent registers of the same hashed identity fail with 409.
@@ -204,6 +219,13 @@ Cloud field subset for sync: `full_name`, `rdo_code`, `address`, `taxpayer_type`
 | `POST /tax-profiles/claim` | Claim from company hold (ORUS proof; TIN attested) |
 | `POST /tax-profiles/reclaim` | Take back control |
 | `POST /tax-profiles/transfer` | Transfer to an org you belong to (`{ id, organization_id }`) |
+| `GET /tax-profiles/passes` | Open passes on your profiles or held by your workspaces, plus the permission catalog and presets |
+| `POST /tax-profiles/{id}/passes` | `OfferPass` (`{ organization_slug, preset \| permissions, allow_publish, ends_on }`) |
+| `POST /tax-profiles/passes/request` | `RequestPass` (`{ organization_id, tin_root, branch_code, preset }`) |
+| `POST /tax-profiles/{id}/passes/{pass}/accept` | `AcceptPass` (workspace, `organization.update`) |
+| `POST /tax-profiles/{id}/passes/{pass}/approve` | `ApprovePass` (owner; `{}` keeps what was asked for) |
+| `PATCH /tax-profiles/{id}/passes/{pass}` | `ChangePass` (owner; publishing stays on only while `allow_publish` is sent) |
+| `POST /tax-profiles/{id}/passes/{pass}/end` | `EndPass` (either side) |
 
 UI: `/tax-profiles` (HTML). Desktop `GET /tax-profiles` should send `Authorization: Bearer` or `Accept: application/json` so it is not treated as the page. `GET /api/tax-profiles` is always JSON.
 

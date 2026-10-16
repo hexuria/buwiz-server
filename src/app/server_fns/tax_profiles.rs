@@ -209,3 +209,116 @@ pub async fn webmcp_enabled() -> Result<bool, ServerFnError> {
     #[cfg(not(feature = "ssr"))]
     unreachable!()
 }
+
+#[server(prefix = "/api/ui")]
+pub async fn list_passes() -> Result<PassListResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::list_passes(server_fn_request_auth())
+            .await
+            .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        unreachable!()
+    }
+}
+
+/// The owner offers a pass. `permissions` excludes publishing, which only
+/// `allow_publish` switches on.
+#[server(prefix = "/api/ui", input = Json)]
+pub async fn offer_pass(
+    profile_id: String,
+    organization_slug: String,
+    permissions: Vec<String>,
+    allow_publish: bool,
+    ends_on: Option<String>,
+) -> Result<PassListResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::offer_pass(
+            profile_id,
+            PassOfferRequest {
+                organization_slug: Some(organization_slug),
+                organization_id: None,
+                choice: PassChoice {
+                    preset: None,
+                    permissions: Some(permissions),
+                    allow_publish,
+                    ends_on,
+                },
+            },
+            server_fn_request_auth(),
+        )
+        .await
+        .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (profile_id, organization_slug, permissions, allow_publish, ends_on);
+        unreachable!()
+    }
+}
+
+#[server(prefix = "/api/ui")]
+pub async fn ask_for_pass(
+    organization_id: String,
+    tin_root: String,
+    branch_code: String,
+    preset: String,
+) -> Result<PassListResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::ask_for_pass(
+            PassAskRequest {
+                organization_id,
+                tin_root,
+                branch_code,
+                preset: Some(preset),
+                permissions: None,
+            },
+            server_fn_request_auth(),
+        )
+        .await
+        .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (organization_id, tin_root, branch_code, preset);
+        unreachable!()
+    }
+}
+
+/// One step on an existing pass: `accept` (workspace), `approve` (owner,
+/// as asked) or `end` (either side).
+#[server(prefix = "/api/ui")]
+pub async fn pass_step(
+    profile_id: String,
+    pass_id: String,
+    step: String,
+) -> Result<PassListResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        let auth = server_fn_request_auth();
+        match step.as_str() {
+            "accept" => crate::application::accept_pass(profile_id, pass_id, auth).await,
+            "approve" => {
+                crate::application::approve_pass(
+                    profile_id,
+                    pass_id,
+                    PassUpdateRequest::default(),
+                    auth,
+                )
+                .await
+            }
+            "end" => crate::application::end_pass(profile_id, pass_id, auth).await,
+            _ => Err(crate::error::AuthStackError::validation("unknown pass step")),
+        }
+        .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (profile_id, pass_id, step);
+        unreachable!()
+    }
+}

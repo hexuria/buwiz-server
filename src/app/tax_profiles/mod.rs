@@ -4,6 +4,10 @@
 #![allow(clippy::unused_unit)]
 #![allow(clippy::unit_arg)]
 
+mod passes;
+
+pub use passes::PassesPanel;
+
 use crate::app::{
     ClaimTaxProfile, CreateTaxProfile, ListTaxProfiles, ReclaimTaxProfile,
     browser_load, get_current_session, list_organizations, list_tax_profiles,
@@ -24,7 +28,10 @@ pub fn TaxProfilesPage() -> impl IntoView {
     page_shell(
         "Tax profiles",
         "Exclusive cloud control of a BIR registration unit. Server identity is a UUID; TIN is attested and hashed. Desktop secrets stay on the device.",
-        view! { <TaxProfilesHome /> },
+        view! {
+            <TaxProfilesHome />
+            <PassesPanel />
+        },
     )
 }
 
@@ -251,6 +258,7 @@ pub fn TaxProfilesHome() -> impl IntoView {
                             view! {
                                 <li class="mb-4 rounded-xl border border-border-subtle p-4">
                                     <strong>{profile.display_name}</strong>
+                                    <p class=RESULT_LINE>{access_line(&profile.access, &profile.permissions)}</p>
                                     <p class=RESULT_LINE>
                                         {format!(
                                             "····{} · {} · {} · {} · {}",
@@ -274,5 +282,20 @@ pub fn TaxProfilesHome() -> impl IntoView {
                 </Show>
             </section>
         </div>
+    }
+}
+
+fn access_line(access: &str, permissions: &[String]) -> String {
+    let publish = if permissions.iter().any(|p| p == "filings.publish") {
+        "can publish to BIR"
+    } else {
+        "cannot publish to BIR"
+    };
+    match access {
+        "owner" => "You own this profile".to_owned(),
+        "holding_org" => "Held by your workspace".to_owned(),
+        "owner_read_only" => "Yours, held by a workspace: read-only".to_owned(),
+        "pass" => format!("Access pass: {} permissions · {publish}", permissions.len()),
+        _ => String::new(),
     }
 }

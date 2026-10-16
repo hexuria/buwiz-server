@@ -18,7 +18,7 @@ One gatekeeper: `authorize` in `src/application/tax_profile.rs`, re-checked in t
 
 1. Only the current holder can transfer (takeover fix).
 2. One gatekeeper for every read and write; docs match the code.
-3. Owner keeps the profile; firms and agents get revocable passes with fine-grained permissions (presets Read-only / Safe / Full; publish-to-BIR is a separate permission).
+3. Owner keeps the profile; firms get revocable passes with fine-grained permissions (presets Read-only / Safe / Full; publish-to-BIR is a separate permission). Done: `src/domain/pass.rs`, pass commands in `src/domain/tax_profile.rs`, migration `0006`, REST + Tax profiles page, `scripts/verify_passes.sh`.
 4. Agent login: OAuth dynamic client registration + Allow screen; each agent gets its own revocable session.
 5. `POST /mcp` with read-only tools first.
 
@@ -29,4 +29,5 @@ cargo test --lib      # domain rules, no Spin needed
 make check            # wasm32-wasip2 build
 make grpc-check
 make db-up && make db-migrate && make smoke   # needs Docker
+bash scripts/verify_passes.sh                 # passes end to end; needs `make dev` (Spin + outbox worker, captured mail)
 ```

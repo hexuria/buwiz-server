@@ -8,9 +8,9 @@ use serde_json::{json, Value};
 use getrandom::getrandom;
 
 use crate::domain::{
-    AccountHolder, ClaimStatus, CloudTaxProfileFacts, OwnershipStatus, TaxProfile,
-    TaxProfileCommand, TaxProfileError, TaxProfileEvent, TaxpayerType, TinIdentityHash,
-    VerificationStatus,
+    AccountHolder, ClaimStatus, CloudTaxProfileFacts, OwnershipStatus, Pass, PassPermissions,
+    TaxProfile, TaxProfileCommand, TaxProfileError, TaxProfileEvent, TaxpayerType,
+    TinIdentityHash, VerificationStatus,
 };
 use crate::error::{AuthStackError, AuthStackResult};
 
@@ -185,6 +185,8 @@ fn tax_profile_from_row(row: &Value) -> AuthStackResult<TaxProfile> {
         verified_owner_user_id: row_string(row, "verified_owner_user_id"),
         is_archived: row_bool(row, "is_archived").unwrap_or(false),
         updated_at: row_string(row, "updated_at"),
+        // Rows without an event stream predate passes.
+        passes: Vec::new(),
     })
 }
 
@@ -235,6 +237,9 @@ pub(crate) async fn commit_tax_profile_command(
         ));
     }
     statements.push(projection_upsert_statement(&next, revision)?);
+    for pass in &next.passes {
+        statements.push(pass_upsert_statement(profile_id, pass));
+    }
     execute_sql_atomic(statements)
         .await
         .map_err(map_concurrency_store_error)?;
@@ -384,6 +389,121 @@ fn projection_upsert_statement(
     ))
 }
 
+/// Pass read model. Ended passes are kept (status `declined` / `revoked`).
+fn pass_upsert_statement(profile_id: &str, pass: &Pass) -> AtomicSqlStatement {
+    AtomicSqlStatement::execute(
+        "INSERT INTO buwiz_server.tax_profile_grants (\
+            grant_id, profile_id, grantee_kind, grantee_id, permissions, status, expires_at, \
+            created_by, ended_by, created_at, updated_at \
+         ) VALUES (\
+            ?1::uuid, ?2::uuid, ?3, ?4, ?5::jsonb, ?6, ?7::timestamptz, \
+            ?8::uuid, ?9::uuid, ?10::timestamptz, ?11::timestamptz \
+         ) \
+         ON CONFLICT (grant_id) DO UPDATE SET \
+            permissions = EXCLUDED.permissions, \
+            status = EXCLUDED.status, \
+            expires_at = EXCLUDED.expires_at, \
+            ended_by = EXCLUDED.ended_by, \
+            updated_at = EXCLUDED.updated_at",
+        vec![
+            json!(pass.pass_id),
+            json!(profile_id),
+            json!(pass.grantee.kind()),
+            json!(pass.grantee.id()),
+            json!(pass.permissions.ids()),
+            json!(pass.status.as_str()),
+            json!(pass.expires_at),
+            json!(pass.created_by),
+            json!(pass.ended_by),
+            json!(pass.created_at),
+            json!(pass.updated_at),
+        ],
+    )
+}
+
+/// `organization_id` if it names an active organization.
+pub(crate) async fn active_organization_id(organization_id: &str) -> AuthStackResult<Option<String>> {
+    initialize_schema_async().await?;
+    if organization_id.len() != 36 {
+        return Ok(None);
+    }
+    let rows = execute_sql(
+        "SELECT organization_id::text AS organization_id FROM auth_organizations \
+         WHERE organization_id::text = ?1 AND status = 'active'",
+        vec![json!(organization_id)],
+    )
+    .await?;
+    Ok(rows.first().and_then(|row| row_string(row, "organization_id")))
+}
+
+/// Open passes on profiles `user_id` holds, or held by one of `org_ids`.
+pub(crate) async fn list_passes_for(
+    user_id: &str,
+    org_ids: &[String],
+) -> AuthStackResult<Vec<crate::contracts::PassView>> {
+    initialize_schema_async().await?;
+    let rows = execute_sql(
+        "SELECT g.grant_id::text AS pass_id, g.profile_id::text AS profile_id, \
+                g.grantee_kind, g.grantee_id, g.permissions, g.status, \
+                to_char(g.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS expires_at, \
+                (g.expires_at IS NOT NULL AND g.expires_at <= now()) AS expired, \
+                to_char(g.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS created_at, \
+                to_char(g.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS updated_at, \
+                COALESCE(p.display_name, p.registered_name) AS profile_name, p.tin_last4, \
+                (p.holder_user_id = ?1::uuid) AS i_own_it, \
+                o.name AS grantee_name, o.slug AS grantee_slug \
+         FROM buwiz_server.tax_profile_grants g \
+         JOIN buwiz_server.tax_profiles p ON p.profile_id = g.profile_id \
+         LEFT JOIN auth_organizations o \
+                ON g.grantee_kind = 'organization' AND o.organization_id::text = g.grantee_id \
+         WHERE g.status IN ('requested', 'offered', 'active') \
+           AND COALESCE(p.is_archived, false) = FALSE \
+           AND (p.holder_user_id = ?1::uuid \
+                OR (g.grantee_kind = 'organization' \
+                    AND g.grantee_id IN (SELECT jsonb_array_elements_text(?2::jsonb)))) \
+         ORDER BY g.updated_at DESC",
+        vec![json!(user_id), json!(org_ids)],
+    )
+    .await?;
+    rows.iter().map(pass_view_from_row).collect()
+}
+
+fn pass_view_from_row(row: &Value) -> AuthStackResult<crate::contracts::PassView> {
+    let permissions = PassPermissions::from_stored(&row_string_list(row, "permissions"));
+    let stored = required_string(row, "status")?;
+    let expired = row_bool(row, "expired").unwrap_or(false);
+    let status = if stored == "active" && expired {
+        "expired".to_owned()
+    } else {
+        stored.clone()
+    };
+    let i_own_it = row_bool(row, "i_own_it").unwrap_or(false);
+    let waiting_on_me = if i_own_it {
+        stored == "requested"
+    } else {
+        stored == "offered"
+    };
+    Ok(crate::contracts::PassView {
+        pass_id: required_string(row, "pass_id")?,
+        profile_id: required_string(row, "profile_id")?,
+        profile_name: row_string(row, "profile_name").unwrap_or_default(),
+        tin_last4: row_string(row, "tin_last4").unwrap_or_default(),
+        grantee_kind: required_string(row, "grantee_kind")?,
+        grantee_id: required_string(row, "grantee_id")?,
+        grantee_name: row_string(row, "grantee_name"),
+        grantee_slug: row_string(row, "grantee_slug"),
+        permissions: permissions.ids(),
+        preset: permissions.preset().map(|preset| preset.as_str().to_owned()),
+        can_publish: permissions.contains(crate::domain::PassPermission::FilingsPublish),
+        status,
+        expires_at: row_string(row, "expires_at"),
+        created_at: row_string(row, "created_at").unwrap_or_default(),
+        updated_at: row_string(row, "updated_at").unwrap_or_default(),
+        my_side: if i_own_it { "owner" } else { "grantee" }.to_owned(),
+        waiting_on_me,
+    })
+}
+
 const TAX_PROFILE_VIEW_COLUMNS: &str = "profile_id::text AS profile_id, tin_last4, display_name, claim_status, \
                     owner_user_id::text AS owner_user_id, org_id::text AS org_id, \
                     account_id::text AS account_id, branch_code, \
@@ -424,10 +544,24 @@ pub(crate) async fn list_tax_profiles_for(
     let rows = if let Some(organization_id) = organization_id.filter(|id| !id.trim().is_empty()) {
         execute_sql(
             &format!(
-                "SELECT {TAX_PROFILE_VIEW_COLUMNS} FROM buwiz_server.tax_profiles \
+                "SELECT {TAX_PROFILE_VIEW_COLUMNS}, \
+                        (SELECT g.permissions FROM buwiz_server.tax_profile_grants g \
+                          WHERE g.profile_id = tax_profiles.profile_id \
+                            AND g.grantee_kind = 'organization' AND g.grantee_id = ?2 \
+                            AND g.status = 'active' \
+                            AND (g.expires_at IS NULL OR g.expires_at > now()) \
+                          LIMIT 1) AS pass_permissions \
+                 FROM buwiz_server.tax_profiles \
                  WHERE COALESCE(is_archived, false) = FALSE \
                    AND (holder_user_id = ?1::uuid OR owner_user_id = ?1::uuid \
-                        OR holder_organization_id = ?2::uuid) \
+                        OR holder_organization_id = ?2::uuid \
+                        OR EXISTS ( \
+                            SELECT 1 FROM buwiz_server.tax_profile_grants g \
+                             WHERE g.profile_id = tax_profiles.profile_id \
+                               AND g.grantee_kind = 'organization' AND g.grantee_id = ?2 \
+                               AND g.status = 'active' \
+                               AND (g.expires_at IS NULL OR g.expires_at > now()) \
+                               AND g.permissions @> '[\"profile.view\"]'::jsonb)) \
                  ORDER BY updated_at DESC"
             ),
             vec![json!(user_id), json!(organization_id)],
@@ -446,8 +580,47 @@ pub(crate) async fn list_tax_profiles_for(
         .await?
     };
     rows.iter()
-        .map(|row| tax_profile_view_from_row(row, user_id))
+        .map(|row| {
+            let mut view = tax_profile_view_from_row(row, user_id)?;
+            set_list_access(&mut view, row, user_id, organization_id);
+            Ok(view)
+        })
         .collect()
+}
+
+/// The caller's standing on a listed row (the list query has no pass state,
+/// so this mirrors `TaxProfile::access_for` from the projected columns).
+fn set_list_access(
+    view: &mut crate::contracts::TaxProfileView,
+    row: &Value,
+    user_id: &str,
+    organization_id: Option<&str>,
+) {
+    let holder_user = row_string(row, "holder_user_id");
+    let holder_org = row_string(row, "holder_organization_id");
+    let access = if holder_user.as_deref() == Some(user_id) {
+        crate::domain::ProfileAccess::Owner
+    } else if holder_org.is_some() && holder_org.as_deref() == organization_id {
+        crate::domain::ProfileAccess::HoldingOrg
+    } else if view.verified_owner_user_id.as_deref() == Some(user_id) {
+        crate::domain::ProfileAccess::OwnerReadOnly
+    } else {
+        let permissions = PassPermissions::from_stored(&row_string_list(row, "pass_permissions"));
+        if permissions.is_empty() {
+            crate::domain::ProfileAccess::None
+        } else {
+            crate::domain::ProfileAccess::Pass(permissions)
+        }
+    };
+    set_access(view, access);
+}
+
+pub(crate) fn set_access(
+    view: &mut crate::contracts::TaxProfileView,
+    access: crate::domain::ProfileAccess,
+) {
+    view.access = access.as_str().to_owned();
+    view.permissions = access.permissions().ids();
 }
 
 pub(crate) fn tax_profile_view_from_state(
@@ -504,6 +677,8 @@ pub(crate) fn tax_profile_view_from_state(
         revision,
         created_at: None,
         updated_at: state.updated_at.clone(),
+        access: String::new(),
+        permissions: Vec::new(),
     })
 }
 
@@ -566,6 +741,8 @@ fn tax_profile_view_from_row(
         revision: row_i64(row, "revision").unwrap_or(1) as u64,
         created_at: row_string(row, "created_at"),
         updated_at: row_string(row, "updated_at"),
+        access: String::new(),
+        permissions: Vec::new(),
     })
 }
 
@@ -660,6 +837,11 @@ pub(crate) fn map_tax_profile_error(error: TaxProfileError) -> AuthStackError {
         | TaxProfileError::ReclaimDenied
         | TaxProfileError::ProofMismatch => AuthStackError::Forbidden,
         TaxProfileError::AlreadyArchived | TaxProfileError::NotArchived => {
+            AuthStackError::conflict(error.to_string())
+        }
+        TaxProfileError::OwnerOnly => AuthStackError::Forbidden,
+        TaxProfileError::PassNotFound => AuthStackError::not_found(error.to_string()),
+        TaxProfileError::PassAlreadyOpen | TaxProfileError::PassState { .. } => {
             AuthStackError::conflict(error.to_string())
         }
     }

@@ -47,7 +47,7 @@ Queries: `GetFormDraft`, `ListDraftsForYear`.
 
 Status path: **queued → submitted → confirmed → paid** (`EnqueueFiling` → `FilingQueued`, plus submit/confirm/fail/paid).
 
-Authz for enqueue: the caller controls the profile (see "Who may do what" in the README); form is active in the year set. The stub in `src/domain/v1_sync.rs` still checks `account_id` and must move to the same rule when these commands get routes.
+Authz: the application resolves the caller's standing on the profile (owner, holding workspace, or an access pass; see "Who may do what" in the README) and each command in `src/domain/v1_sync.rs` checks one permission: years commands need `years.manage`; a new draft `drafts.save`, changing an existing one `drafts.update`, `MarkDraftReviewed` `drafts.review`; enqueue and every filing-status command `filings.publish` (and the form must be active in the year set). The server never sends to BIR; the installed buwiz-forms app does, after checking `permissions` on `GET /tax-profiles/{id}` includes `filings.publish`.
 
 Metadata only. **Not** BIR credentials.
 
