@@ -249,6 +249,10 @@ pub enum TaxProfileCommand {
     Transfer {
         new_holder: AccountHolder,
         actor_user_id: String,
+        /// The holding organization the application verified the actor may
+        /// move profiles out of (`ownership.transfer` there). `None` when the
+        /// actor holds no such right; a personal holder needs none.
+        actor_controls_org: Option<String>,
     },
 }
 
@@ -522,7 +526,8 @@ impl TaxProfile {
             TaxProfileCommand::Transfer {
                 new_holder,
                 actor_user_id,
-            } => self.handle_transfer(new_holder, actor_user_id),
+                actor_controls_org,
+            } => self.handle_transfer(new_holder, actor_user_id, actor_controls_org),
         }
     }
 
@@ -747,6 +752,7 @@ impl TaxProfile {
         &self,
         new_holder: AccountHolder,
         actor_user_id: String,
+        actor_controls_org: Option<String>,
     ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
         if !self.exists {
             return Err(TaxProfileError::NotFound);
@@ -754,9 +760,14 @@ impl TaxProfile {
         let Some(current) = &self.holder else {
             return Err(TaxProfileError::NotFound);
         };
+        // Only whoever controls the profile now may move it: the personal
+        // holder, or someone the application verified may move profiles out
+        // of the holding organization. Membership elsewhere proves nothing.
         let actor_is_holder = match current {
             AccountHolder::Personal { user_id } => user_id == &actor_user_id,
-            AccountHolder::Organization { .. } => true,
+            AccountHolder::Organization { organization_id } => {
+                actor_controls_org.as_deref() == Some(organization_id.as_str())
+            }
         };
         if !actor_is_holder {
             return Err(TaxProfileError::NotHolder);
@@ -1082,6 +1093,7 @@ mod tests {
                 TaxProfileCommand::Transfer {
                     new_holder: org("firm-2"),
                     actor_user_id: "alice".into(),
+                    actor_controls_org: None,
                 },
                 2,
             )
@@ -1099,6 +1111,58 @@ mod tests {
             .unwrap();
         assert_eq!(state.holder, Some(personal("alice")));
         assert_eq!(state.ownership, Some(OwnershipStatus::PersonalExclusive));
+    }
+
+    fn transfer(to: AccountHolder, actor: &str, controls: Option<&str>) -> TaxProfileCommand {
+        TaxProfileCommand::Transfer {
+            new_holder: to,
+            actor_user_id: actor.into(),
+            actor_controls_org: controls.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn outsider_cannot_take_an_organization_held_profile() {
+        let mut store = InMemoryTaxProfileStore::default();
+        store
+            .execute("tp-1", create("tp-1", org("firm-1"), "bookkeeper", "Client Co"), 0)
+            .unwrap();
+        // A member of another firm, with no right in firm-1.
+        let err = store
+            .execute("tp-1", transfer(org("firm-x"), "mallory", None), 1)
+            .unwrap_err();
+        assert_eq!(err, TaxProfileError::NotHolder);
+        // Rights in some other organization do not count either.
+        let err = store
+            .execute("tp-1", transfer(org("firm-x"), "mallory", Some("firm-x")), 1)
+            .unwrap_err();
+        assert_eq!(err, TaxProfileError::NotHolder);
+        let (state, _) = store.load("tp-1");
+        assert_eq!(state.holder, Some(org("firm-1")));
+    }
+
+    #[test]
+    fn holding_organization_can_move_its_profile() {
+        let mut store = InMemoryTaxProfileStore::default();
+        store
+            .execute("tp-1", create("tp-1", org("firm-1"), "bookkeeper", "Client Co"), 0)
+            .unwrap();
+        let (state, _) = store
+            .execute("tp-1", transfer(org("firm-2"), "bookkeeper", Some("firm-1")), 1)
+            .unwrap();
+        assert_eq!(state.holder, Some(org("firm-2")));
+    }
+
+    #[test]
+    fn only_the_personal_holder_can_move_a_personal_profile() {
+        let mut store = InMemoryTaxProfileStore::default();
+        store
+            .execute("tp-1", create("tp-1", personal("alice"), "alice", "Alice"), 0)
+            .unwrap();
+        let err = store
+            .execute("tp-1", transfer(org("firm-x"), "mallory", Some("firm-x")), 1)
+            .unwrap_err();
+        assert_eq!(err, TaxProfileError::NotHolder);
     }
 
     #[test]
