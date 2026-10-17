@@ -264,6 +264,41 @@ pub async fn ask_for_pass(
     }
 }
 
+/// The owner changes an offered or active pass. `ends_on` is the last day
+/// (`YYYY-MM-DD`); empty removes the end date.
+#[server(prefix = "/api/ui", input = Json)]
+pub async fn change_pass(
+    profile_id: String,
+    pass_id: String,
+    permissions: Vec<String>,
+    allow_publish: bool,
+    ends_on: String,
+) -> Result<PassListResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::change_pass(
+            profile_id,
+            pass_id,
+            PassUpdateRequest {
+                choice: PassChoice {
+                    preset: None,
+                    permissions: Some(permissions),
+                    allow_publish,
+                    ends_on: Some(ends_on.trim().to_owned()),
+                },
+            },
+            server_fn_request_auth(),
+        )
+        .await
+        .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (profile_id, pass_id, permissions, allow_publish, ends_on);
+        unreachable!()
+    }
+}
+
 /// One step on an existing pass: `accept` (workspace), `approve` (owner,
 /// as asked) or `end` (either side).
 #[server(prefix = "/api/ui")]

@@ -190,13 +190,18 @@ Claude Code, Codex, Grok and other MCP clients sign in with standard OAuth and g
 
 1. The client finds the server: `GET /.well-known/oauth-protected-resource` (RFC 9728; also `/.well-known/oauth-protected-resource/mcp`) names the resource (`{base}/mcp`) and this server as its authorization server. `GET /.well-known/oauth-authorization-server` lists `registration_endpoint`.
 2. It registers itself: `POST /oauth/register` (RFC 7591), public clients only (`token_endpoint_auth_method: none`). The answer carries a `client_id` starting with `agent_`. Registering grants nothing. Redirect URIs: `https://`, loopback `http://` (`127.0.0.1`, `localhost`, `[::1]`; any port at use time), or an app's own scheme; never `javascript:`, `data:`, `file:` or a fragment. Registrations are capped at 500 an hour, and apps never allowed are dropped after 7 days.
-3. It opens `GET /oauth/authorize?response_type=code&client_id=agent_…&redirect_uri=…&code_challenge=…&code_challenge_method=S256&state=…[&resource={base}/mcp]`. The signed-in taxpayer sees the **Allow** screen:
-   - which of **their own** profiles it may reach (held personally, or verified as theirs while a firm holds them);
+3. It opens `GET /oauth/authorize?response_type=code&client_id=agent_…&redirect_uri=…&code_challenge=…&code_challenge_method=S256&state=…[&resource={base}/mcp]`. The signed-in user sees the **Allow** screen:
+   - which profiles it may reach: their own, or ones a **working pass of their workspace** reaches (shown "through {firm}'s pass"). A firm's own draft that no taxpayer owns yet can't be connected;
    - what it may do: Read-only (selected), Safe or Full, the same presets as access passes;
    - the app's name is what it called itself, and the screen says so.
 4. It exchanges the code at `POST /oauth/token` (`grant_type=authorization_code`, `code_verifier`). Access tokens (`bwa_…`) last 1 hour. Refresh tokens (`bwr_…`) last 30 days and are replaced on every refresh. Reusing an old refresh token ends every token of that connection (RFC 9700).
 
-What an agent may do on a profile is the connection's permissions **narrowed by the taxpayer's access at that moment**: if a firm now holds the profile, the agent can only read; if the profile moved to someone else, nothing. An agent can never publish to BIR, share, archive or delete. Allowing the same app again replaces its earlier connection.
+What an agent may do on a profile is the connection's permissions **narrowed by its user's access at that moment**:
+- on their own profile, up to everything the owner may do;
+- through a firm's pass, no more than that pass, and nothing once the owner ends or changes the pass, the pass runs out, or the user leaves the workspace. An agent has no browser session, so its workspaces are read from the user's active memberships on every call;
+- on a profile that moved to someone else, nothing.
+
+An agent can never publish to BIR, share, archive or delete. Allowing the same app again replaces its earlier connection. The owner doesn't see a firm member's agents under Connected agents (those are the member's), but ending or changing the firm's pass bounds them at once.
 
 The connection ends when the taxpayer presses **End** under Tax profiles → Connected agents, or on a password change or any other security change on the account (`auth_users.security_revision`), or when the account is disabled.
 
@@ -223,8 +228,12 @@ Tools, all read-only (`readOnlyHint`):
 |------|-------|---------|
 | `list_tax_profiles` | — | The connected profiles with what the agent may do on each right now. A profile it can no longer reach shows only its id. |
 | `get_tax_profile` | `profile.view` | Registration details: name, TIN last 4, branch, RDO, address, contact, taxpayer type, classification, VAT, who holds it. No internal user or organization ids. |
+| `list_tax_years` | `years.view` | Each tax year, newest first: its forms (code, frequency, active) and per-year registration values. |
+| `list_form_drafts` | `drafts.view` | Draft summaries, newest first, optionally for one `tax_year`: form, year, period, revision, reviewed or not. No contents. |
+| `get_form_draft` | `drafts.view` | One draft (`profile_id`, `draft_id`) with its contents. |
+| `list_filings` | `filings.view` | Filing history, newest first: status, BIR receipt reference, failure summary, paid date. |
 
-Every call re-checks the token, the connection and the taxpayer's live access. A profile the agent may not see comes back as a tool error (`isError: true`) so the model can explain it. Tax years, drafts and filings get tools once their HTTP commands exist (`docs/sync-api.md`). There is no tool that writes, and none that files with BIR.
+Every call re-checks the token, the connection and the taxpayer's live access. A profile the agent may not see comes back as a tool error (`isError: true`) so the model can explain it. Who saved or reviewed a draft (internal user ids) is left out. An archived profile is out of an agent's reach until it is restored. There is no tool that writes, and none that files with BIR: agents never get `filings.publish`.
 
 Try it with Claude Code: `claude mcp add --transport http buwiz http://localhost:3008/mcp`, then `/mcp` to sign in.
 
@@ -306,10 +315,11 @@ A pass lets a firm's workspace work on someone else's profile. Any member of tha
 - **Permissions:** `profile.view`, `profile.edit`, `years.view`, `years.manage`, `drafts.view`, `drafts.save`, `drafts.update`, `drafts.review`, `filings.view`. Write permissions bring their read permission with them.
 - **Presets:** Read-only (the four `*.view`), **Safe** (Read-only + save, update and review drafts; selected when the screen opens), Full (all nine).
 - **`filings.publish`** is never in a preset and never in the permission list: only `allow_publish: true` turns it on, and the screen asks "Are you sure?" first. The server only records it; the grantee's installed buwiz-forms app checks it before sending to BIR.
-- **End date:** none unless the owner sets one (`ends_on`, the last day in Philippine time).
+- **End date:** none unless the owner sets one (`ends_on`, the last day in Philippine time). A pass past its end date stops working at once. The next pass action on that profile records it in the history as `tax_profile.pass_expired`, dated at the end date, with no actor. The pass is then closed: it can't be changed back to life, and the firm can be offered a new one. Ending a pass that has already expired just records the expiry.
+- **Changing:** the owner changes an offered or working pass from Tax profiles → Open passes → **Change**: permissions, publishing (asks first) and the last day (empty removes it).
 - **Ending:** the owner revokes or declines; the workspace declines an offer, withdraws a request, or gives the pass back. A claim or reclaim ends every open pass.
 - Sharing, ending passes, archiving and deleting stay with the owner; no pass grants them.
-- Notices are in-app (the Tax profiles page, "Waiting for you"); there is no grant email.
+- Notices are in-app; there is no grant email. The owner sees requests under Tax profiles → "Waiting for you". A firm's members also see offers to their workspace at the top of the workspace home (`/dashboard`, "Waiting for your workspace"), linking to where they accept.
 
 - An **archived** profile is frozen for grantees: its passes give no access and cannot be accepted, approved or changed until it is restored. The owner can still end them.
 - A workspace that asked with a TIN sees the profile's name only after the owner approves.

@@ -2,7 +2,7 @@
 //! the MCP endpoint runs on every call.
 
 use crate::contracts::AgentConnectionListResponse;
-use crate::domain::{agent_effective_permissions, is_agent_token, PassPermissions};
+use crate::domain::{agent_effective_permissions, is_agent_token, PassPermission, PassPermissions};
 use crate::error::{AuthStackError, AuthStackResult};
 use crate::store::AgentActor;
 
@@ -51,7 +51,8 @@ pub(crate) async fn agent_from_bearer(token: &str) -> AuthStackResult<AgentActor
 }
 
 /// What `agent` may do on `profile_id` right now: the connection's
-/// permissions narrowed by the taxpayer's live access. `Forbidden` when the
+/// permissions narrowed by its user's live access (as owner, or through a
+/// working pass of one of their workspaces). `Forbidden` when the
 /// profile is not connected or nothing is left.
 pub(crate) async fn agent_profile_permissions(
     agent: &AgentActor,
@@ -61,17 +62,50 @@ pub(crate) async fn agent_profile_permissions(
         return Err(AuthStackError::Forbidden);
     }
     let loaded = crate::store::load_tax_profile_by_id(profile_id).await?;
-    if !loaded.state.exists {
+    // An archived profile is out of an agent's reach until it is restored.
+    if !loaded.state.exists || loaded.state.is_archived {
         return Err(AuthStackError::Forbidden);
     }
     let now = crate::store::rfc3339_now();
-    // No organizations: an agent acts only on what its taxpayer owns.
-    let access = loaded.state.access_for(&agent.user_id, &[], &now);
+    // An agent has no browser session, so its user's workspaces come from
+    // their active memberships. Only workspaces holding a working pass on
+    // this profile matter (the owner needs none).
+    let pass_orgs: Vec<&str> = loaded
+        .state
+        .passes
+        .iter()
+        .filter(|pass| pass.is_usable(&now))
+        .map(|pass| pass.grantee.id())
+        .collect();
+    let actor_orgs = if pass_orgs.is_empty() {
+        Vec::new()
+    } else {
+        crate::store::active_organization_ids_for(&agent.user_id)
+            .await?
+            .into_iter()
+            .filter(|org| pass_orgs.contains(&org.as_str()))
+            .collect()
+    };
+    let access = loaded.state.access_for(&agent.user_id, &actor_orgs, &now);
     let permissions = agent_effective_permissions(agent.permissions, access);
     if permissions.is_empty() {
         return Err(AuthStackError::Forbidden);
     }
     Ok(permissions)
+}
+
+/// Refuses unless `agent` may use `permission` on `profile_id` right now.
+pub(crate) async fn agent_require(
+    agent: &AgentActor,
+    profile_id: &str,
+    permission: PassPermission,
+) -> AuthStackResult<()> {
+    let permissions = agent_profile_permissions(agent, profile_id).await?;
+    if permissions.contains(permission) {
+        Ok(())
+    } else {
+        Err(AuthStackError::Forbidden)
+    }
 }
 
 /// One connected profile as an agent sees it, with what it may do now.
@@ -108,12 +142,9 @@ pub(crate) async fn agent_tax_profile(
     profile_id: &str,
 ) -> AuthStackResult<AgentProfile> {
     let permissions = agent_profile_permissions(agent, profile_id).await?;
-    if !permissions.contains(crate::domain::PassPermission::ProfileView) {
+    if !permissions.contains(PassPermission::ProfileView) {
         return Err(AuthStackError::Forbidden);
     }
     let view = crate::store::fetch_tax_profile_view(profile_id, &agent.user_id).await?;
-    if view.is_archived {
-        return Err(AuthStackError::Forbidden);
-    }
     Ok(AgentProfile { view, permissions })
 }

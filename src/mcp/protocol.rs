@@ -18,10 +18,15 @@ pub const INTERNAL_ERROR: i64 = -32603;
 
 pub const TOOL_LIST_PROFILES: &str = "list_tax_profiles";
 pub const TOOL_GET_PROFILE: &str = "get_tax_profile";
+pub const TOOL_LIST_YEARS: &str = "list_tax_years";
+pub const TOOL_LIST_DRAFTS: &str = "list_form_drafts";
+pub const TOOL_GET_DRAFT: &str = "get_form_draft";
+pub const TOOL_LIST_FILINGS: &str = "list_filings";
 
 pub const INSTRUCTIONS: &str = "Read-only access to the Buwiz tax profiles this user allowed you on. \
-Start with list_tax_profiles to see them and what you may do on each. You cannot change data, \
-publish to BIR, or share profiles. The full TIN is never given out; only its last 4 digits.";
+Start with list_tax_profiles to see them and what you may do on each. Then read a profile's \
+tax years (which forms it files), its form drafts, and its filing history. You cannot change \
+data, publish to BIR, or share profiles. The full TIN is never given out; only its last 4 digits.";
 
 /// What one JSON-RPC message asks for.
 #[derive(Clone, Debug, PartialEq)]
@@ -187,17 +192,68 @@ A profile with no permissions is still connected but out of reach (for example, 
             "title": "Get a tax profile",
             "description": "One tax profile's registration details: name, RDO, address, contact, \
 taxpayer type, classification, VAT status. Needs the profile.view permission. The TIN is shown only as its last 4 digits.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "profile_id": { "type": "string", "description": "From list_tax_profiles." }
-                },
-                "required": ["profile_id"],
-                "additionalProperties": false,
-            },
+            "inputSchema": profile_input(json!({}), &[]),
+            "annotations": read_only(),
+        }),
+        json!({
+            "name": TOOL_LIST_YEARS,
+            "title": "List tax years",
+            "description": "A profile's tax years, newest first: the forms it files each year \
+(form code, monthly/quarterly/annual/one-time, active or not) and any per-year registration \
+values that differ from the profile's. Needs years.view.",
+            "inputSchema": profile_input(json!({}), &[]),
+            "annotations": read_only(),
+        }),
+        json!({
+            "name": TOOL_LIST_DRAFTS,
+            "title": "List form drafts",
+            "description": "A profile's form drafts, newest first, without their contents: form, \
+year, period, revision, and whether this revision was reviewed. Needs drafts.view.",
+            "inputSchema": profile_input(json!({
+                "tax_year": { "type": "integer", "minimum": 2000, "maximum": 2100,
+                              "description": "Only this year's drafts." }
+            }), &[]),
+            "annotations": read_only(),
+        }),
+        json!({
+            "name": TOOL_GET_DRAFT,
+            "title": "Get a form draft",
+            "description": "One form draft with its contents (the desktop app's form data, as \
+saved). Needs drafts.view.",
+            "inputSchema": profile_input(json!({
+                "draft_id": { "type": "string", "description": "From list_form_drafts." }
+            }), &["draft_id"]),
+            "annotations": read_only(),
+        }),
+        json!({
+            "name": TOOL_LIST_FILINGS,
+            "title": "List filings",
+            "description": "A profile's filing history, newest first: queued, submitted, confirmed \
+(with the BIR receipt reference), failed, or paid. Needs filings.view. Filing itself is done by \
+the taxpayer's installed app, never through this server.",
+            "inputSchema": profile_input(json!({}), &[]),
             "annotations": read_only(),
         }),
     ]
+}
+
+/// An input schema with `profile_id` and `extra` properties; `profile_id`
+/// and the `also_required` ones must be given.
+fn profile_input(extra: Value, also_required: &[&str]) -> Value {
+    let mut properties = json!({
+        "profile_id": { "type": "string", "description": "From list_tax_profiles." }
+    });
+    if let (Some(all), Value::Object(extra)) = (properties.as_object_mut(), extra) {
+        all.extend(extra);
+    }
+    let mut required = vec!["profile_id"];
+    required.extend_from_slice(also_required);
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false,
+    })
 }
 
 pub fn success(id: Value, result: Value) -> Value {
@@ -284,11 +340,43 @@ mod tests {
     fn tools_are_all_read_only() {
         let list = reply(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}));
         let tools = list["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 2);
+        let names: Vec<&str> = tools.iter().map(|tool| tool["name"].as_str().unwrap()).collect();
+        assert_eq!(
+            names,
+            [
+                TOOL_LIST_PROFILES, TOOL_GET_PROFILE, TOOL_LIST_YEARS, TOOL_LIST_DRAFTS,
+                TOOL_GET_DRAFT, TOOL_LIST_FILINGS,
+            ]
+        );
         for tool in tools {
             assert_eq!(tool["annotations"]["readOnlyHint"], true, "{}", tool["name"]);
+            assert_eq!(tool["annotations"]["destructiveHint"], false, "{}", tool["name"]);
             assert_eq!(tool["inputSchema"]["type"], "object");
+            assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{}", tool["name"]);
+            // Every required argument is described.
+            for name in tool["inputSchema"]["required"].as_array().into_iter().flatten() {
+                let name = name.as_str().unwrap();
+                assert!(tool["inputSchema"]["properties"][name].is_object(), "{name}");
+            }
         }
+    }
+
+    #[test]
+    fn record_tools_need_a_profile_and_a_draft_needs_its_id() {
+        let required = |name: &str| -> Vec<String> {
+            let tool = tools().into_iter().find(|tool| tool["name"] == name).unwrap();
+            match &tool["inputSchema"]["required"] {
+                Value::Null => Vec::new(),
+                list => serde_json::from_value(list.clone()).unwrap(),
+            }
+        };
+        assert_eq!(required(TOOL_LIST_PROFILES), Vec::<String>::new());
+        for name in [TOOL_GET_PROFILE, TOOL_LIST_YEARS, TOOL_LIST_DRAFTS, TOOL_LIST_FILINGS] {
+            assert_eq!(required(name), ["profile_id"], "{name}");
+        }
+        assert_eq!(required(TOOL_GET_DRAFT), ["profile_id", "draft_id"]);
+        let drafts = tools().into_iter().find(|tool| tool["name"] == TOOL_LIST_DRAFTS).unwrap();
+        assert_eq!(drafts["inputSchema"]["properties"]["tax_year"]["type"], "integer");
     }
 
     #[test]

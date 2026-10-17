@@ -34,7 +34,10 @@ use wasm_bindgen::JsCast;
 
 #[component]
 pub fn DashboardPage() -> impl IntoView {
-    view! { <DashboardHome /> }
+    view! {
+        <crate::app::tax_profiles::WorkspaceWaitingNotice />
+        <DashboardHome />
+    }
 }
 
 #[island]

@@ -50,6 +50,10 @@ The path is queued → submitted → confirmed → paid. A filing can fail while
 
 For a firm member, `filings.publish` already folds in both sides: the owner switched publishing on for the firm's pass, **and** the firm put this member on its publishers list.
 
+## AI agents
+
+An agent connected through MCP reads the same data with `list_tax_years`, `list_form_drafts`, `get_form_draft` and `list_filings` (README, "MCP endpoint"). It needs the matching `.view` permission on its connection, narrowed by the taxpayer's live access; it cannot write, and never gets `filings.publish`.
+
 ## Transport limits on today's runtime
 
 Request bodies can't stream on the current Spin/wasmtime (`waitable cannot be used synchronously`). The browser shell moves bodies of up to 6000 characters into a header, which is why Form 2303 uploads go in 4 KiB parts. Native clients such as the desktop app send real bodies, and `server_fn_http.rs` warns those may fail until the runtime can read incoming streams. Draft payloads are typically larger than 6000 characters, so check desktop draft sync against the deployed runtime before relying on it.
@@ -57,7 +61,6 @@ Request bodies can't stream on the current Spin/wasmtime (`waitable cannot be us
 ## Not built yet
 
 - Batch history import from headless BIR (`POST /api/sync/filing-history`, idempotent per `(profile_id, source, checkpoint)`).
-- MCP tools for years, drafts and filings (next PR). Agents never get `filings.publish`.
 - TSP or BIR SFTP relay: out of scope; see [extensions.md](extensions.md).
 
 Syncing history never proves TIN ownership; that is the Form 2303 claim (README).

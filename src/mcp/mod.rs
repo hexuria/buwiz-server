@@ -18,7 +18,10 @@ use crate::domain::{PassPermission, PassPermissions};
 use crate::error::{AuthStackError, AuthStackResult};
 use crate::store::AgentActor;
 
-use protocol::{Routed, TOOL_GET_PROFILE, TOOL_LIST_PROFILES};
+use protocol::{
+    Routed, TOOL_GET_DRAFT, TOOL_GET_PROFILE, TOOL_LIST_DRAFTS, TOOL_LIST_FILINGS,
+    TOOL_LIST_PROFILES, TOOL_LIST_YEARS,
+};
 
 type McpBody = UnsyncBoxBody<Bytes, std::io::Error>;
 type McpResponse = http::Response<McpBody>;
@@ -91,16 +94,7 @@ pub async fn serve(req: McpRequest) -> AuthStackResult<McpResponse> {
 }
 
 async fn call_tool(agent: &AgentActor, id: Value, name: &str, arguments: &Value) -> Value {
-    let outcome = match name {
-        TOOL_LIST_PROFILES => list_profiles(agent).await,
-        TOOL_GET_PROFILE => match arguments.get("profile_id").and_then(Value::as_str) {
-            Some(profile_id) if !profile_id.trim().is_empty() => {
-                get_profile(agent, profile_id.trim()).await
-            }
-            _ => Err(AuthStackError::validation("profile_id is required")),
-        },
-        _ => Err(AuthStackError::not_found("unknown tool")),
-    };
+    let outcome = run_tool(agent, name, arguments).await;
     match outcome {
         Ok(data) => protocol::tool_result(id, data),
         Err(AuthStackError::Forbidden) => protocol::tool_error(
@@ -115,6 +109,75 @@ async fn call_tool(agent: &AgentActor, id: Value, name: &str, arguments: &Value)
             protocol::error(id, protocol::INTERNAL_ERROR, "the tool failed; try again later")
         }
     }
+}
+
+async fn run_tool(agent: &AgentActor, name: &str, arguments: &Value) -> AuthStackResult<Value> {
+    use crate::application as app;
+    if name == TOOL_LIST_PROFILES {
+        return list_profiles(agent).await;
+    }
+    let profile_id = text_arg(arguments, "profile_id")?;
+    match name {
+        TOOL_GET_PROFILE => get_profile(agent, profile_id).await,
+        TOOL_LIST_YEARS => {
+            let list = app::agent_list_tax_years(agent, profile_id).await?;
+            Ok(json!({ "years": list.years }))
+        }
+        TOOL_LIST_DRAFTS => {
+            let tax_year = year_arg(arguments)?;
+            let list = app::agent_list_drafts(agent, profile_id, tax_year).await?;
+            Ok(json!({ "drafts": list.drafts.iter().map(draft_summary).collect::<Vec<_>>() }))
+        }
+        TOOL_GET_DRAFT => {
+            let draft_id = text_arg(arguments, "draft_id")?;
+            let draft = app::agent_get_draft(agent, profile_id, draft_id).await?;
+            let mut out = draft_summary(&draft.summary);
+            out["payload"] = draft.payload;
+            Ok(out)
+        }
+        TOOL_LIST_FILINGS => {
+            let list = app::agent_list_filings(agent, profile_id).await?;
+            Ok(json!({ "filings": list.filings }))
+        }
+        _ => Err(AuthStackError::not_found("unknown tool")),
+    }
+}
+
+/// A required, non-blank string argument, trimmed.
+fn text_arg<'a>(arguments: &'a Value, name: &str) -> AuthStackResult<&'a str> {
+    arguments
+        .get(name)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AuthStackError::validation(format!("{name} is required")))
+}
+
+/// The optional `tax_year` argument: absent, null, or a whole number.
+fn year_arg(arguments: &Value) -> AuthStackResult<Option<i32>> {
+    match arguments.get("tax_year") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_i64()
+            .and_then(|year| i32::try_from(year).ok())
+            .map(Some)
+            .ok_or_else(|| AuthStackError::validation("tax_year must be a whole number such as 2026")),
+    }
+}
+
+/// A draft as an agent sees it: who saved or reviewed it (internal user
+/// ids) stays out.
+fn draft_summary(summary: &crate::contracts::DraftSummary) -> Value {
+    json!({
+        "draft_id": summary.draft_id,
+        "form_code": summary.form_code,
+        "tax_year": summary.tax_year,
+        "period_key": summary.period_key,
+        "rev": summary.rev,
+        "reviewed": summary.reviewed_at.is_some(),
+        "reviewed_at": summary.reviewed_at,
+        "updated_at": summary.updated_at,
+    })
 }
 
 async fn list_profiles(agent: &AgentActor) -> AuthStackResult<Value> {
@@ -267,6 +330,51 @@ mod tests {
         assert_eq!(bearer("bearer  bwa_x ").as_deref(), Some("bwa_x"));
         assert_eq!(bearer("Basic abc"), None);
         assert_eq!(bearer("Bearer "), None);
+    }
+
+    #[test]
+    fn text_arguments_are_required_and_trimmed() {
+        let args = json!({"profile_id": "  p1 ", "blank": "  ", "number": 7});
+        assert_eq!(text_arg(&args, "profile_id").unwrap(), "p1");
+        for name in ["blank", "number", "missing"] {
+            let error = text_arg(&args, name).unwrap_err();
+            assert!(matches!(error, AuthStackError::Validation { .. }), "{name}");
+            assert!(error.to_string().contains(name), "{error}");
+        }
+    }
+
+    #[test]
+    fn tax_year_is_optional_but_whole() {
+        assert_eq!(year_arg(&json!({})).unwrap(), None);
+        assert_eq!(year_arg(&json!({"tax_year": null})).unwrap(), None);
+        assert_eq!(year_arg(&json!({"tax_year": 2026})).unwrap(), Some(2026));
+        for bad in [json!("2026"), json!(2026.5), json!(i64::from(i32::MAX) + 1), json!(true)] {
+            assert!(year_arg(&json!({"tax_year": bad})).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn agents_never_see_who_saved_or_reviewed_a_draft() {
+        let mut summary = crate::contracts::DraftSummary {
+            draft_id: "d1".into(),
+            form_code: "1701Q".into(),
+            tax_year: 2026,
+            period_key: "2026-Q1".into(),
+            rev: 3,
+            saved_once: true,
+            reviewed_at: Some("2026-04-01T00:00:00.000Z".into()),
+            reviewed_by: Some("11111111-1111-4111-8111-111111111111".into()),
+            updated_by: Some("22222222-2222-4222-8222-222222222222".into()),
+            updated_at: "2026-04-01T00:00:00.000Z".into(),
+        };
+        let shown = draft_summary(&summary);
+        let text = shown.to_string();
+        assert!(!text.contains("1111-4111") && !text.contains("2222-4222"), "{text}");
+        assert_eq!(shown["reviewed"], true);
+        assert_eq!(shown["rev"], 3);
+        assert_eq!(shown["period_key"], "2026-Q1");
+        summary.reviewed_at = None;
+        assert_eq!(draft_summary(&summary)["reviewed"], false);
     }
 
     #[test]

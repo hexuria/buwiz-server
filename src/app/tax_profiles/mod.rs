@@ -12,7 +12,7 @@ mod passes;
 pub use agents::AgentsPanel;
 pub use claims::{AdminOwnershipClaimsPage, OwnershipClaimPanel, OwnershipClaimQueue};
 pub use invites::{FirmPanel, OwnerInviteAccept, OwnerInvitePage};
-pub use passes::PassesPanel;
+pub use passes::{PassesPanel, WorkspaceWaitingNotice};
 
 use crate::app::{
     ClaimTaxProfile, CreateTaxProfile, ListTaxProfiles, ReclaimTaxProfile,

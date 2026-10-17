@@ -24,7 +24,7 @@ The taxpayer always wins: the owner can always publish, edit and end any access;
 2. One gatekeeper for every read and write; docs match the code.
 3. Owner keeps the profile; firms get revocable passes with fine-grained permissions (presets Read-only / Safe / Full; publish-to-BIR is a separate permission). Done: `src/domain/pass.rs`, pass commands in `src/domain/tax_profile.rs`, migration `0006`, REST + Tax profiles page, `scripts/verify_passes.sh`.
 4. Agent login: OAuth dynamic client registration + Allow screen; each agent connection has its own tokens, bounded by the taxpayer's live access, and ends from Tax profiles → Connected agents. Done: `src/domain/agent.rs`, `src/desktop_oauth/agent.rs`, `src/store/agent.rs`, migration `0007`, `scripts/verify_agents.sh`.
-5. `POST /mcp` with read-only tools first. Done: `src/mcp/` (stateless, JSON answers), tools `list_tax_profiles` and `get_tax_profile`; `scripts/verify_agents.sh` covers it.
+5. `POST /mcp` with read-only tools first. Done: `src/mcp/` (stateless, JSON answers), tools `list_tax_profiles`, `get_tax_profile`, `list_tax_years`, `list_form_drafts`, `get_form_draft` and `list_filings`; `scripts/verify_agents.sh` covers it.
 
 Plan item A3 ("tokens carry a scope that is never checked") is settled by design rather than a scope check: browser and desktop tokens are first-party and act as the user; agents get their own `bwa_`/`bwr_` tokens, which wasi-auth refuses everywhere a user token is expected, and which `/mcp` bounds by the connection's permissions and the taxpayer's live access.
 
@@ -33,8 +33,8 @@ Plan item A3 ("tokens carry a scope that is never checked") is settled by design
 1. Done: the taxpayer always wins, passes only (this change).
 2. Done: firm drafts and owner invites bound to a verified email (the firm keeps a Full pass without publishing), and a workspace publishers list; publishing needs the owner's switch on the pass *and* the firm's pick. Migration `0008`, `src/domain/invite.rs`, Tax profiles page → "For your firm", `/invites/{id}`.
 3. Done: ownership claims with Form 2303. Uploads arrive in 4 KiB encrypted parts. An AI-marked file is refused with "upload a clean scan". Staff review at `/admin/ownership-claims`, and the file is deleted when the claim closes (decision, reviewer and hash kept). Migration `0009`, `src/domain/{provenance,ownership_claim}.rs`. Form 2303 is never used to choose forms. Raise `PART_BYTES` once Spin can stream request bodies.
-4. Done: HTTP for tax years, drafts and filings ([docs/sync-api.md](docs/sync-api.md), `src/domain/records.rs`, migration `0010`). Next: MCP read tools for them. Check desktop draft sync against the deployed runtime first: real request bodies may fail on today's Spin.
-5. Notices on the firm's page, a change-pass screen, pass expiry recorded in history, agents for firm members (needs membership checks without a browser session).
+4. Done: HTTP for tax years, drafts and filings ([docs/sync-api.md](docs/sync-api.md), `src/domain/records.rs`, migration `0010`), and MCP read tools for them (README, "MCP endpoint"). Check desktop draft sync against the deployed runtime first: real request bodies may fail on today's Spin.
+5. Done: pass expiry recorded in history (`PassExpired`, migration `0011`) and a change-pass screen. Done: offers to a workspace show on its home (`/dashboard`). Done: agents for firm members. An agent may reach a profile through its user's workspace pass, with workspaces read from active memberships (no browser session).
 
 - Desktop client: buwiz-forms does not call this server yet. The contract is in [docs/integrations.md](docs/integrations.md).
 - Local end-to-end runs need a Spin host that matches the vendored SDK (README, "Troubleshooting").

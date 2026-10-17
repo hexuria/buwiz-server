@@ -291,6 +291,8 @@ pub enum PassStatus {
     Declined,
     /// Ended after it started.
     Revoked,
+    /// Ran past its end date (`TaxProfileEvent::PassExpired`).
+    Expired,
 }
 
 impl PassStatus {
@@ -301,6 +303,7 @@ impl PassStatus {
             Self::Active => "active",
             Self::Declined => "declined",
             Self::Revoked => "revoked",
+            Self::Expired => "expired",
         }
     }
 
