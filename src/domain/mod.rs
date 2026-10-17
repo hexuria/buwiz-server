@@ -14,10 +14,10 @@ pub mod ownership_claim;
 pub mod pass;
 pub mod provenance;
 pub mod queries;
+pub mod records;
 pub mod tax_profile;
 pub mod tin;
 pub mod tin_identity;
-pub mod v1_sync;
 
 pub use agent::{
     agent_effective_permissions, agent_permissions_from_choice, is_agent_token, redirect_uri_matches,
@@ -48,4 +48,3 @@ pub use oauth_client::{
 };
 pub use tin::{BranchCode, RegistrationKey, TinRoot};
 pub use tin_identity::{tin_last4, TinIdentityHash};
-pub use v1_sync::{SyncCommand, SyncError, SyncEvent, YearFormEntry};

@@ -50,8 +50,9 @@ contract it should use when cloud backup and sharing are wired in.
    it, because only the app can reach BIR. For a firm member this already
    folds in both sides: the owner's switch on the firm's pass and the firm's
    own publishers list, so the app checks this one list and nothing else.
-4. **Sync** of tax years, drafts and filings: the commands and tables exist,
-   the HTTP endpoints are still stubs. See [sync-api.md](sync-api.md).
+4. **Sync** of tax years, drafts and filings: see [sync-api.md](sync-api.md).
+   Drafts save at a base revision (409 on a stale one). Filings are reported
+   by the app after it sends: queued → submitted → confirmed → paid.
 5. **Never send** local secrets: the profile PIN, TOTP secret, IMAP passwords
    or mailbox OAuth tokens stay on the device.
 
