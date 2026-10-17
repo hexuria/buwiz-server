@@ -4,8 +4,9 @@
 //! - `POST /oauth/register`: Dynamic Client Registration (RFC 7591), public
 //!   clients only. Registering grants nothing.
 //! - `GET|POST /oauth/authorize` with an `agent_…` client id: the Allow
-//!   screen. The signed-in taxpayer picks which of their own profiles the
-//!   agent may reach and what it may do there.
+//!   screen. The signed-in user picks which profiles the agent may reach
+//!   (their own, or ones a working pass of their workspace reaches) and
+//!   what it may do there.
 //! - `POST /oauth/token`: PKCE code exchange and refresh. Tokens belong to
 //!   the agent connection, not to the taxpayer's browser session, so ending
 //!   one never signs the other out.
@@ -202,13 +203,13 @@ pub(super) async fn authorize_get(
         return redirect(&format!("/login?next={}", urlencoding_encode(&next)));
     };
     let user_id = session.user_id.clone().ok_or(AuthStackError::AuthRequired)?;
-    let profiles = crate::store::list_owned_profiles(&user_id).await?;
+    let profiles = crate::store::list_connectable_profiles(&user_id).await?;
     if profiles.is_empty() {
         return html(
             StatusCode::OK,
             &oauth_page(
                 "No profiles to connect",
-                "You can connect an agent only to tax profiles you own. Add or claim one first.",
+                "You can connect an agent to tax profiles you own, or that a workspace of yours has a working pass on. Add or claim one first.",
                 "<p><a href=\"/tax-profiles\" style=\"color:#fff\">Go to Tax profiles</a></p>",
             ),
         );
@@ -220,11 +221,16 @@ pub(super) async fn authorize_get(
         .iter()
         .map(|profile| {
             format!(
-                r#"<label class="row"><input type="checkbox" name="profile" value="{id}"{checked} /> {name} <span class="dim">TIN ···{last4}</span></label>"#,
+                r#"<label class="row"><input type="checkbox" name="profile" value="{id}"{checked} /> {name} <span class="dim">TIN ···{last4}{via}</span></label>"#,
                 id = html_escape(&profile.profile_id),
                 checked = if only_one { " checked" } else { "" },
                 name = html_escape(&profile.profile_name),
                 last4 = html_escape(&profile.tin_last4),
+                via = profile
+                    .via
+                    .as_deref()
+                    .map(|firm| format!(" · through {}'s pass", html_escape(firm)))
+                    .unwrap_or_default(),
             )
         })
         .collect();
@@ -257,7 +263,7 @@ pub(super) async fn authorize_get(
 <form method="post" action="/oauth/authorize">
 {client}{redirect}{state}{challenge}<input type="hidden" name="code_challenge_method" value="S256" />{csrf}
 <fieldset><legend>Profiles it may reach</legend>{profile_boxes}</fieldset>
-<fieldset><legend>What it may do</legend>{presets}<p class="dim">An agent can never publish to BIR, share your profiles, archive or delete them. It never gets more than you have, and it stops the moment you end it.</p></fieldset>
+<fieldset><legend>What it may do</legend>{presets}<p class="dim">An agent can never publish to BIR, share profiles, archive or delete them. It never gets more than you have (on a firm's pass, no more than that pass), and it stops the moment you end it, the owner ends the pass, or you leave the workspace.</p></fieldset>
 <p class="dim">Signed in as {user}. You go back to {target} after you choose. You can end this any time under Tax profiles → Connected agents.</p>
 <button type="submit" name="decision" value="allow">Allow</button><button class="deny" type="submit" name="decision" value="deny">Deny</button>
 </form>"#,
@@ -272,7 +278,7 @@ pub(super) async fn authorize_get(
     html(
         StatusCode::OK,
         &oauth_page(
-            &format!("Allow {} to work on your tax profiles?", checked.client.client_name),
+            &format!("Allow {} to work on tax profiles for you?", checked.client.client_name),
             &format!(
                 "\u{201c}{}\u{201d} named itself; Buwiz cannot confirm who made it. Allow only an app you just started yourself.",
                 checked.client.client_name
@@ -316,22 +322,22 @@ pub(super) async fn authorize_post(
             &[("error", "access_denied"), ("state", &checked.state)],
         ));
     }
-    // Only profiles the taxpayer owns can be connected. The store checks
+    // Only profiles the user may hand on can be connected. The store checks
     // again inside the transaction; filtering here keeps a real database
     // error from being reported as "nothing to connect".
-    let owned = crate::store::list_owned_profiles(&user_id).await?;
+    let reachable = crate::store::list_connectable_profiles(&user_id).await?;
     let profile_ids: Vec<String> = pairs
         .iter()
         .filter(|(key, _)| key == "profile")
         .map(|(_, value)| value.clone())
-        .filter(|id| owned.iter().any(|profile| &profile.profile_id == id))
+        .filter(|id| reachable.iter().any(|profile| &profile.profile_id == id))
         .collect();
     if profile_ids.is_empty() {
         return html(
             StatusCode::BAD_REQUEST,
             &oauth_page(
                 "Pick at least one profile",
-                "Go back and tick the profiles of yours the agent may reach.",
+                "Go back and tick the profiles the agent may reach.",
                 "",
             ),
         );

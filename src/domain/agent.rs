@@ -260,19 +260,20 @@ pub fn agent_permissions_from_choice(ids: &[String]) -> Result<PassPermissions, 
 }
 
 /// What an agent may do on one profile right now: its connection's
-/// permissions narrowed by the taxpayer's live access. Owner-only rights
+/// permissions narrowed by its user's live access. Owner-only rights
 /// (sharing, archiving, deleting) and publishing are never included.
+///
+/// The user may hand on what they own, or what a working pass gives their
+/// workspace (a firm member's agent works within the firm's pass, and the
+/// owner ending that pass ends it too). A firm's own draft is not handed on:
+/// nobody has agreed to an agent there yet.
 pub fn agent_effective_permissions(
     granted: PassPermissions,
-    taxpayer_access: ProfileAccess,
+    user_access: ProfileAccess,
 ) -> PassPermissions {
-    let live = match taxpayer_access {
-        // Only profiles the taxpayer owns can be connected; anything else
-        // (a firm's draft, a firm pass) is not theirs to hand on.
-        ProfileAccess::Owner => taxpayer_access.permissions(),
-        ProfileAccess::HoldingOrg | ProfileAccess::Pass(_) | ProfileAccess::None => {
-            PassPermissions::empty()
-        }
+    let live = match user_access {
+        ProfileAccess::Owner | ProfileAccess::Pass(_) => user_access.permissions(),
+        ProfileAccess::HoldingOrg | ProfileAccess::None => PassPermissions::empty(),
     };
     granted
         .intersect(live)
@@ -534,15 +535,18 @@ mod tests {
     }
 
     #[test]
-    fn agent_is_bounded_by_the_taxpayers_live_access() {
+    fn agent_is_bounded_by_its_users_live_access() {
         let safe = PassPreset::Safe.permissions();
         assert_eq!(agent_effective_permissions(safe, ProfileAccess::Owner), safe);
-        // Not the taxpayer's own profile any more: nothing.
-        for access in [
-            ProfileAccess::HoldingOrg,
-            ProfileAccess::Pass(PassPermissions::all()),
-            ProfileAccess::None,
-        ] {
+        // A firm member's agent gets no more than the firm's pass...
+        let read_only = PassPreset::ReadOnly.permissions();
+        assert_eq!(agent_effective_permissions(safe, ProfileAccess::Pass(read_only)), read_only);
+        // ...nor more than its own connection, and never publishing.
+        let full_pass = ProfileAccess::Pass(PassPreset::Full.permissions().with(PassPermission::FilingsPublish));
+        assert_eq!(agent_effective_permissions(read_only, full_pass), read_only);
+        assert!(!agent_effective_permissions(PassPermissions::all(), full_pass).contains(PassPermission::FilingsPublish));
+        // A firm's own draft, or no standing: nothing.
+        for access in [ProfileAccess::HoldingOrg, ProfileAccess::None] {
             assert!(agent_effective_permissions(safe, access).is_empty());
         }
     }

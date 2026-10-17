@@ -13,7 +13,7 @@ use crate::error::{AuthStackError, AuthStackResult};
 
 use super::{
     AtomicSqlStatement, execute_sql, execute_sql_atomic, initialize_schema_async, required_string,
-    row_i64, row_string, row_string_list,
+    row_bool, row_i64, row_string, row_string_list,
 };
 
 /// How agent codes and tokens are stored: SHA-256, base64url without
@@ -33,12 +33,15 @@ pub(crate) struct StoredAgentClient {
     pub redirect_uris: Vec<String>,
 }
 
-/// A profile the taxpayer may connect an agent to (one they own).
+/// A profile a user may connect an agent to: their own, or one a working
+/// pass of their workspace reaches.
 #[derive(Clone, Debug)]
-pub(crate) struct OwnedProfile {
+pub(crate) struct ConnectableProfile {
     pub profile_id: String,
     pub profile_name: String,
     pub tin_last4: String,
+    /// The workspace whose pass reaches it; `None` for the user's own.
+    pub via: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -122,31 +125,85 @@ pub(crate) async fn load_agent_client(client_id: &str) -> AuthStackResult<Option
     }))
 }
 
-/// Active profiles `user_id` owns. (`verified_owner_user_id` also counts so a
-/// profile moved to a firm under the old rules is listed before the
-/// projection is rebuilt; on replay its owner keeps it.)
-pub(crate) async fn list_owned_profiles(user_id: &str) -> AuthStackResult<Vec<OwnedProfile>> {
+/// `FROM ... WHERE ...` over the working passes on profile `p` held by an
+/// active workspace the user in parameter `?{user}` is an active member of
+/// (aliases `g` pass, `o` workspace).
+fn workspace_pass_sql(user: u8) -> String {
+    format!(
+        "FROM buwiz_server.tax_profile_grants g \
+         JOIN auth_memberships m ON m.organization_id::text = g.grantee_id \
+                                 AND m.user_id = ?{user}::uuid AND m.status = 'active' \
+         JOIN auth_organizations o ON o.organization_id = m.organization_id \
+                                  AND o.status = 'active' \
+         WHERE g.profile_id = p.profile_id AND g.grantee_kind = 'organization' \
+           AND g.status = 'active' \
+           AND (g.expires_at IS NULL OR g.expires_at > CURRENT_TIMESTAMP)"
+    )
+}
+
+/// Whether the user in parameter `?{user}` owns profile `p`
+/// (`verified_owner_user_id` also counts, so a profile moved to a firm
+/// under the old rules is reachable before the projection is rebuilt; on
+/// replay its owner keeps it).
+fn owns_sql(user: u8) -> String {
+    format!("(p.holder_user_id = ?{user}::uuid OR p.verified_owner_user_id = ?{user}::uuid)")
+}
+
+/// When that user may connect an agent to profile `p`: they own it, or a
+/// workspace of theirs holds a working pass on it. Never when archived.
+fn connectable_sql(user: u8) -> String {
+    format!(
+        "COALESCE(p.is_archived, false) = FALSE AND ({} OR EXISTS (SELECT 1 {}))",
+        owns_sql(user),
+        workspace_pass_sql(user)
+    )
+}
+
+/// Profiles `user_id` may connect an agent to, own ones first.
+pub(crate) async fn list_connectable_profiles(user_id: &str) -> AuthStackResult<Vec<ConnectableProfile>> {
     initialize_schema_async().await?;
     let rows = execute_sql(
-        "SELECT profile_id::text AS profile_id, \
-                COALESCE(display_name, registered_name) AS profile_name, \
-                COALESCE(tin_last4, '') AS tin_last4 \
-         FROM buwiz_server.tax_profiles \
-         WHERE COALESCE(is_archived, false) = FALSE \
-           AND (holder_user_id = ?1::uuid OR verified_owner_user_id = ?1::uuid) \
-         ORDER BY profile_name",
+        &format!(
+            "SELECT p.profile_id::text AS profile_id, \
+                    COALESCE(p.display_name, p.registered_name) AS profile_name, \
+                    COALESCE(p.tin_last4, '') AS tin_last4, \
+                    COALESCE({}, false) AS mine, (SELECT min(o.name) {}) AS via \
+             FROM buwiz_server.tax_profiles p \
+             WHERE {} \
+             ORDER BY mine DESC, profile_name",
+            owns_sql(1),
+            workspace_pass_sql(1),
+            connectable_sql(1)
+        ),
         vec![json!(user_id)],
     )
     .await?;
-    rows.iter()
-        .map(|row| {
-            Ok(OwnedProfile {
-                profile_id: required_string(row, "profile_id")?,
-                profile_name: row_string(row, "profile_name").unwrap_or_default(),
-                tin_last4: row_string(row, "tin_last4").unwrap_or_default(),
-            })
-        })
-        .collect()
+    rows.iter().map(connectable_from_row).collect()
+}
+
+fn connectable_from_row(row: &Value) -> AuthStackResult<ConnectableProfile> {
+    let mine = row_bool(row, "mine").unwrap_or(false);
+    Ok(ConnectableProfile {
+        profile_id: required_string(row, "profile_id")?,
+        profile_name: row_string(row, "profile_name").unwrap_or_default(),
+        tin_last4: row_string(row, "tin_last4").unwrap_or_default(),
+        via: if mine { None } else { row_string(row, "via") },
+    })
+}
+
+/// The active workspaces `user_id` is an active member of. Agents have no
+/// browser session, so their firm standing is read from here.
+pub(crate) async fn active_organization_ids_for(user_id: &str) -> AuthStackResult<Vec<String>> {
+    initialize_schema_async().await?;
+    let rows = execute_sql(
+        "SELECT m.organization_id::text AS organization_id \
+         FROM auth_memberships m \
+         JOIN auth_organizations o ON o.organization_id = m.organization_id AND o.status = 'active' \
+         WHERE m.user_id = ?1::uuid AND m.status = 'active'",
+        vec![json!(user_id)],
+    )
+    .await?;
+    Ok(rows.iter().filter_map(|row| row_string(row, "organization_id")).collect())
 }
 
 /// Records the taxpayer's Allow: a new connection on the chosen profiles
@@ -191,15 +248,17 @@ pub(crate) async fn create_agent_connection(
                 json!(permissions.ids()),
             ],
         ),
-        // Re-checks ownership here so a forged form cannot add someone
-        // else's profile.
+        // Re-checks reach here so a forged form cannot add a profile the
+        // user may not hand on.
         AtomicSqlStatement::guard(
-            "INSERT INTO buwiz_server.agent_connection_profiles (connection_id, profile_id) \
-             SELECT ?1::uuid, p.profile_id FROM buwiz_server.tax_profiles p \
-             WHERE p.profile_id::text IN (SELECT jsonb_array_elements_text(?2::jsonb)) \
-               AND COALESCE(p.is_archived, false) = FALSE \
-               AND (p.holder_user_id = ?3::uuid OR p.verified_owner_user_id = ?3::uuid) \
-             RETURNING profile_id",
+            format!(
+                "INSERT INTO buwiz_server.agent_connection_profiles (connection_id, profile_id) \
+                 SELECT ?1::uuid, p.profile_id FROM buwiz_server.tax_profiles p \
+                 WHERE p.profile_id::text IN (SELECT jsonb_array_elements_text(?2::jsonb)) \
+                   AND {} \
+                 RETURNING profile_id",
+                connectable_sql(3)
+            ),
             vec![json!(connection_id), json!(profile_ids), json!(user_id)],
         ),
         AtomicSqlStatement::execute(

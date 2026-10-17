@@ -51,7 +51,8 @@ pub(crate) async fn agent_from_bearer(token: &str) -> AuthStackResult<AgentActor
 }
 
 /// What `agent` may do on `profile_id` right now: the connection's
-/// permissions narrowed by the taxpayer's live access. `Forbidden` when the
+/// permissions narrowed by its user's live access (as owner, or through a
+/// working pass of one of their workspaces). `Forbidden` when the
 /// profile is not connected or nothing is left.
 pub(crate) async fn agent_profile_permissions(
     agent: &AgentActor,
@@ -66,8 +67,26 @@ pub(crate) async fn agent_profile_permissions(
         return Err(AuthStackError::Forbidden);
     }
     let now = crate::store::rfc3339_now();
-    // No organizations: an agent acts only on what its taxpayer owns.
-    let access = loaded.state.access_for(&agent.user_id, &[], &now);
+    // An agent has no browser session, so its user's workspaces come from
+    // their active memberships. Only workspaces holding a working pass on
+    // this profile matter (the owner needs none).
+    let pass_orgs: Vec<&str> = loaded
+        .state
+        .passes
+        .iter()
+        .filter(|pass| pass.is_usable(&now))
+        .map(|pass| pass.grantee.id())
+        .collect();
+    let actor_orgs = if pass_orgs.is_empty() {
+        Vec::new()
+    } else {
+        crate::store::active_organization_ids_for(&agent.user_id)
+            .await?
+            .into_iter()
+            .filter(|org| pass_orgs.contains(&org.as_str()))
+            .collect()
+    };
+    let access = loaded.state.access_for(&agent.user_id, &actor_orgs, &now);
     let permissions = agent_effective_permissions(agent.permissions, access);
     if permissions.is_empty() {
         return Err(AuthStackError::Forbidden);
