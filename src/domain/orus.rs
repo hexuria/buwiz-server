@@ -22,6 +22,9 @@ pub enum ProofMethod {
     FakeOrus,
     /// Reserved for the live ORUS adapter.
     Orus,
+    /// Buwiz staff approved an uploaded Form 2303
+    /// (`domain::ownership_claim`).
+    Form2303Review,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

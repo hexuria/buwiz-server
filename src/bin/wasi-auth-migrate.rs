@@ -74,6 +74,10 @@ async fn apply_or_verify_app_schema(
             "0008_owner_invites_and_publishers",
             include_str!("../../migrations/postgres/0008_owner_invites_and_publishers.sql"),
         ),
+        (
+            "0009_ownership_claims",
+            include_str!("../../migrations/postgres/0009_ownership_claims.sql"),
+        ),
     ];
     let (mut client, connection) =
         tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;

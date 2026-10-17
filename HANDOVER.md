@@ -32,7 +32,7 @@ Plan item A3 ("tokens carry a scope that is never checked") is settled by design
 
 1. Done: the taxpayer always wins, passes only (this change).
 2. Done: firm drafts and owner invites bound to a verified email (the firm keeps a Full pass without publishing), and a workspace publishers list; publishing needs the owner's switch on the pass *and* the firm's pick. Migration `0008`, `src/domain/invite.rs`, Tax profiles page → "For your firm", `/invites/{id}`.
-3. Ownership claims with Form 2303: encrypted upload, C2PA check (an AI mark means "upload a plain scan"), a staff review queue, the file deleted after the decision (decision, reviewer and file hash kept). Form 2303 is never used to choose forms.
+3. Done: ownership claims with Form 2303. Uploads arrive in 4 KiB encrypted parts. An AI-marked file is refused with "upload a clean scan". Staff review at `/admin/ownership-claims`, and the file is deleted when the claim closes (decision, reviewer and hash kept). Migration `0009`, `src/domain/{provenance,ownership_claim}.rs`. Form 2303 is never used to choose forms. Raise `PART_BYTES` once Spin can stream request bodies.
 4. HTTP for tax years, drafts and filings (commands and tables exist; see [docs/sync-api.md](docs/sync-api.md)); then MCP read tools for them.
 5. Notices on the firm's page, a change-pass screen, pass expiry recorded in history, agents for firm members (needs membership checks without a browser session).
 

@@ -14,7 +14,8 @@ use crate::contracts::{
     RoleUpsertRequest, SessionRevokeRequest, SigningKeyRotateRequest, TokenRefreshRequest,
     TokenVerifyRequest, TaxProfileClaimRequest, TaxProfileCreateRequest, TaxProfilePatchRequest,
     PassAskRequest, PassOfferRequest, PassUpdateRequest, FirmPublisherAddRequest,
-    OwnerInviteCreateRequest, OwnerInviteTokenRequest,
+    OwnerInviteCreateRequest, OwnerInviteTokenRequest, OwnershipClaimDecisionRequest,
+    OwnershipClaimPartRequest, OwnershipClaimStartRequest,
 };
 use crate::error::{AuthStackError, AuthStackResult};
 
@@ -448,6 +449,61 @@ async fn dispatch(req: RestRequest) -> AuthStackResult<RestResponse> {
             json_result(
                 crate::application::revoke_agent_connection(connection_id, request_auth).await,
             )
+        }
+        (method, path) if claim_route(path).is_some() => {
+            let route = claim_route(path).expect("checked");
+            if method != Method::GET {
+                validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+            }
+            match (method, route) {
+                (Method::GET, ClaimRoute::Mine) => {
+                    json_result(crate::application::list_my_ownership_claims(request_auth).await)
+                }
+                (Method::POST, ClaimRoute::Mine) => {
+                    let payload = parse_json::<OwnershipClaimStartRequest>(req).await?;
+                    json_result(crate::application::start_ownership_claim(payload, request_auth).await)
+                }
+                (Method::POST, ClaimRoute::FilePart { claim_id }) => {
+                    let claim_id = claim_id.to_owned();
+                    let payload = parse_json::<OwnershipClaimPartRequest>(req).await?;
+                    json_result(
+                        crate::application::upload_ownership_claim_part(claim_id, payload, request_auth)
+                            .await,
+                    )
+                }
+                (Method::POST, ClaimRoute::Withdraw { claim_id }) => json_result(
+                    crate::application::withdraw_ownership_claim(claim_id.to_owned(), request_auth)
+                        .await,
+                ),
+                (Method::GET, ClaimRoute::Queue) => {
+                    json_result(crate::application::list_ownership_claim_queue(request_auth).await)
+                }
+                (Method::GET, ClaimRoute::ReviewFile { claim_id }) => {
+                    match crate::application::ownership_claim_file_for_review(
+                        claim_id.to_owned(),
+                        request_auth,
+                    )
+                    .await
+                    {
+                        Ok((content_type, bytes)) => claim_file_response(content_type, bytes),
+                        Err(error) => auth_error_response(&error),
+                    }
+                }
+                (Method::POST, ClaimRoute::Decide { claim_id, approve }) => {
+                    let claim_id = claim_id.to_owned();
+                    let payload = parse_json::<OwnershipClaimDecisionRequest>(req).await?;
+                    json_result(
+                        crate::application::decide_ownership_claim(
+                            claim_id,
+                            approve,
+                            payload,
+                            request_auth,
+                        )
+                        .await,
+                    )
+                }
+                _ => auth_error_response(&AuthStackError::not_found("unknown claim route")),
+            }
         }
         (method, path) if invite_route(path).is_some() => {
             let route = invite_route(path).expect("checked");
@@ -955,7 +1011,7 @@ fn tax_profile_id_from_path(path: &str) -> Option<&str> {
     if rest.is_empty() || rest.contains('/') {
         return None;
     }
-    if matches!(rest, "claim" | "reclaim" | "transfer" | "passes" | "invites") {
+    if matches!(rest, "claim" | "reclaim" | "transfer" | "passes" | "invites" | "ownership-claims") {
         return None;
     }
     Some(rest)
@@ -975,7 +1031,7 @@ fn pass_route(path: &str) -> Option<(&str, Option<&str>, Option<&str>)> {
         .or_else(|| path.strip_prefix("/api/tax-profiles/"))?;
     let mut parts = rest.split('/');
     let profile_id = parts.next().filter(|id| !id.is_empty())?;
-    if matches!(profile_id, "claim" | "reclaim" | "transfer" | "passes" | "invites") {
+    if matches!(profile_id, "claim" | "reclaim" | "transfer" | "passes" | "invites" | "ownership-claims") {
         return None;
     }
     if parts.next()? != "passes" {
@@ -987,6 +1043,72 @@ fn pass_route(path: &str) -> Option<(&str, Option<&str>, Option<&str>)> {
         return None;
     }
     Some((profile_id, pass_id, action))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClaimRoute<'a> {
+    /// `GET|POST /api/tax-profiles/ownership-claims`
+    Mine,
+    /// `POST /api/tax-profiles/ownership-claims/{claim}/file-parts`
+    FilePart { claim_id: &'a str },
+    /// `POST /api/tax-profiles/ownership-claims/{claim}/withdraw`
+    Withdraw { claim_id: &'a str },
+    /// `GET /api/admin/ownership-claims`
+    Queue,
+    /// `GET /api/admin/ownership-claims/{claim}/file`
+    ReviewFile { claim_id: &'a str },
+    /// `POST /api/admin/ownership-claims/{claim}/approve|reject`
+    Decide { claim_id: &'a str, approve: bool },
+}
+
+fn claim_route(path: &str) -> Option<ClaimRoute<'_>> {
+    if let Some(rest) = path
+        .strip_prefix("/api/tax-profiles/ownership-claims")
+        .or_else(|| path.strip_prefix("/tax-profiles/ownership-claims"))
+    {
+        if rest.is_empty() {
+            return Some(ClaimRoute::Mine);
+        }
+        let parts: Vec<&str> = rest.strip_prefix('/')?.split('/').collect();
+        return match parts.as_slice() {
+            [claim_id, "file-parts"] if !claim_id.is_empty() => Some(ClaimRoute::FilePart { claim_id }),
+            [claim_id, "withdraw"] if !claim_id.is_empty() => Some(ClaimRoute::Withdraw { claim_id }),
+            _ => None,
+        };
+    }
+    let rest = path.strip_prefix("/api/admin/ownership-claims")?;
+    if rest.is_empty() {
+        return Some(ClaimRoute::Queue);
+    }
+    let parts: Vec<&str> = rest.strip_prefix('/')?.split('/').collect();
+    match parts.as_slice() {
+        [claim_id, "file"] if !claim_id.is_empty() => Some(ClaimRoute::ReviewFile { claim_id }),
+        [claim_id, "approve"] if !claim_id.is_empty() => Some(ClaimRoute::Decide {
+            claim_id,
+            approve: true,
+        }),
+        [claim_id, "reject"] if !claim_id.is_empty() => Some(ClaimRoute::Decide {
+            claim_id,
+            approve: false,
+        }),
+        _ => None,
+    }
+}
+
+/// A claimant's file for a reviewer: never cached, downloaded rather than
+/// rendered by the API origin, never sniffed into another type.
+fn claim_file_response(content_type: &'static str, bytes: Vec<u8>) -> AuthStackResult<RestResponse> {
+    let mut response = response_with_bytes(StatusCode::OK, content_type, Bytes::from(bytes))?;
+    let headers = response.headers_mut();
+    headers.insert(
+        http::header::CONTENT_DISPOSITION,
+        http::HeaderValue::from_static("attachment; filename=\"form-2303\""),
+    );
+    headers.insert(
+        "X-Content-Type-Options",
+        http::HeaderValue::from_static("nosniff"),
+    );
+    Ok(response)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1026,7 +1148,7 @@ fn invite_route(path: &str) -> Option<InviteRoute<'_>> {
 }
 
 fn is_reserved_profile_segment(segment: &str) -> bool {
-    matches!(segment, "claim" | "reclaim" | "transfer" | "passes" | "invites")
+    matches!(segment, "claim" | "reclaim" | "transfer" | "passes" | "invites" | "ownership-claims")
 }
 
 /// `/api/organizations/{org}/publishers[/{user}/remove]`.
@@ -1051,7 +1173,7 @@ fn tax_profile_action_from_path<'a>(path: &'a str, action: &str) -> Option<&'a s
     if suffix != action || id.is_empty() || id.contains('/') {
         return None;
     }
-    if matches!(id, "claim" | "reclaim" | "transfer" | "passes" | "invites") {
+    if matches!(id, "claim" | "reclaim" | "transfer" | "passes" | "invites" | "ownership-claims") {
         return None;
     }
     Some(id)
@@ -1161,6 +1283,52 @@ mod tests {
         assert_eq!(pass_route("/api/tax-profiles/passes/request"), None);
         assert_eq!(pass_route("/api/tax-profiles/p1/passes/g1/accept/x"), None);
         assert_eq!(tax_profile_id_from_path("/api/tax-profiles/passes"), None);
+    }
+
+    #[test]
+    fn claim_routes_parse_and_reject_junk() {
+        assert_eq!(claim_route("/api/tax-profiles/ownership-claims"), Some(ClaimRoute::Mine));
+        assert_eq!(claim_route("/tax-profiles/ownership-claims"), Some(ClaimRoute::Mine));
+        assert_eq!(
+            claim_route("/api/tax-profiles/ownership-claims/c1/file-parts"),
+            Some(ClaimRoute::FilePart { claim_id: "c1" })
+        );
+        assert_eq!(claim_route("/api/tax-profiles/ownership-claims/c1/file"), None);
+        assert_eq!(
+            claim_route("/api/tax-profiles/ownership-claims/c1/withdraw"),
+            Some(ClaimRoute::Withdraw { claim_id: "c1" })
+        );
+        assert_eq!(claim_route("/api/admin/ownership-claims"), Some(ClaimRoute::Queue));
+        assert_eq!(
+            claim_route("/api/admin/ownership-claims/c1/file"),
+            Some(ClaimRoute::ReviewFile { claim_id: "c1" })
+        );
+        assert_eq!(
+            claim_route("/api/admin/ownership-claims/c1/approve"),
+            Some(ClaimRoute::Decide { claim_id: "c1", approve: true })
+        );
+        assert_eq!(
+            claim_route("/api/admin/ownership-claims/c1/reject"),
+            Some(ClaimRoute::Decide { claim_id: "c1", approve: false })
+        );
+        for junk in [
+            "/api/tax-profiles/ownership-claimsx",
+            "/api/tax-profiles/ownership-claims/",
+            "/api/tax-profiles/ownership-claims/c1",
+            "/api/tax-profiles/ownership-claims//file-parts",
+            "/api/tax-profiles/ownership-claims/c1/approve",
+            "/api/tax-profiles/ownership-claims/c1/file-parts/x",
+            "/api/admin/ownership-claims/c1/withdraw",
+            "/api/admin/ownership-claims/c1",
+            "/api/admin/ownership-claimsx",
+            "/api/admin/ownership-claims//approve",
+        ] {
+            assert_eq!(claim_route(junk), None, "{junk}");
+        }
+        // Not mistaken for a profile id.
+        assert_eq!(tax_profile_id_from_path("/api/tax-profiles/ownership-claims"), None);
+        assert_eq!(invite_route("/api/tax-profiles/ownership-claims/invites"), None);
+        assert_eq!(pass_route("/api/tax-profiles/ownership-claims/passes"), None);
     }
 
     #[test]

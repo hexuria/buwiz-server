@@ -463,3 +463,123 @@ pub async fn change_firm_publisher(
         unreachable!()
     }
 }
+
+#[server(prefix = "/api/ui")]
+pub async fn list_my_ownership_claims() -> Result<OwnershipClaimListResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::list_my_ownership_claims(server_fn_request_auth())
+            .await
+            .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        unreachable!()
+    }
+}
+
+/// Starts a Form 2303 ownership claim; the file follows in parts.
+#[server(prefix = "/api/ui")]
+pub async fn start_ownership_claim(
+    tin_root: String,
+    branch_code: String,
+) -> Result<OwnershipClaimView, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::start_ownership_claim(
+            OwnershipClaimStartRequest { tin_root, branch_code },
+            server_fn_request_auth(),
+        )
+        .await
+        .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (tin_root, branch_code);
+        unreachable!()
+    }
+}
+
+/// One part (base64, at most 4 KiB decoded) of the Form 2303. JSON input,
+/// so base64 is not form-encoded and the request stays under the 6000
+/// characters the browser shell moves into a header.
+#[server(prefix = "/api/ui", input = Json)]
+pub async fn upload_ownership_claim_part(
+    claim_id: String,
+    index: u32,
+    total: u32,
+    data: String,
+) -> Result<OwnershipClaimView, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::upload_ownership_claim_part(
+            claim_id,
+            OwnershipClaimPartRequest { index, total, data },
+            server_fn_request_auth(),
+        )
+        .await
+        .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (claim_id, index, total, data);
+        unreachable!()
+    }
+}
+
+#[server(prefix = "/api/ui")]
+pub async fn withdraw_ownership_claim(
+    claim_id: String,
+) -> Result<OwnershipClaimListResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::withdraw_ownership_claim(claim_id, server_fn_request_auth())
+            .await
+            .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = claim_id;
+        unreachable!()
+    }
+}
+
+/// Staff: claims waiting for review.
+#[server(prefix = "/api/ui")]
+pub async fn list_ownership_claim_queue() -> Result<OwnershipClaimListResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::list_ownership_claim_queue(server_fn_request_auth())
+            .await
+            .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        unreachable!()
+    }
+}
+
+/// Staff: approve or reject (a rejection needs a note).
+#[server(prefix = "/api/ui")]
+pub async fn decide_ownership_claim(
+    claim_id: String,
+    approve: bool,
+    note: Option<String>,
+) -> Result<OwnershipClaimListResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::decide_ownership_claim(
+            claim_id,
+            approve,
+            OwnershipClaimDecisionRequest { note },
+            server_fn_request_auth(),
+        )
+        .await
+        .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (claim_id, approve, note);
+        unreachable!()
+    }
+}

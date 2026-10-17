@@ -328,3 +328,68 @@ pub struct PassUpdateRequest {
     #[serde(flatten)]
     pub choice: PassChoice,
 }
+
+/// Start an ownership claim: the TIN and branch of the profile to claim.
+/// The Form 2303 itself follows in parts to
+/// `POST /tax-profiles/ownership-claims/{claim}/file-parts`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OwnershipClaimStartRequest {
+    pub tin_root: String,
+    pub branch_code: String,
+}
+
+/// One ownership claim. The claimant sees the profile's name only once the
+/// claim is approved; staff always see it, plus the claimant's email.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OwnershipClaimView {
+    pub claim_id: String,
+    pub profile_id: String,
+    pub profile_name: String,
+    pub tin_last4: String,
+    /// `awaiting_file`, `pending`, `approved`, `rejected` or `withdrawn`.
+    pub status: String,
+    #[serde(default)]
+    pub file_kind: Option<String>,
+    #[serde(default)]
+    pub file_size: Option<u64>,
+    /// SHA-256 (hex) of the uploaded file; kept after the file is deleted.
+    #[serde(default)]
+    pub file_sha256: Option<String>,
+    /// The file carries a C2PA manifest that says nothing about AI.
+    pub has_c2pa: bool,
+    /// How many uploads were refused as AI-made.
+    pub ai_refusals: u64,
+    /// Parts of an upload in progress (see `OwnershipClaimPartRequest`).
+    #[serde(default)]
+    pub parts_received: u64,
+    #[serde(default)]
+    pub claimant_email: Option<String>,
+    #[serde(default)]
+    pub decision_note: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub decided_at: Option<String>,
+}
+
+/// One part of a Form 2303 upload: base64 of at most 4 KiB, sent in
+/// order (`index` 0 starts over). The last part (`index == total - 1`)
+/// screens and stores the whole file.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OwnershipClaimPartRequest {
+    pub index: u32,
+    pub total: u32,
+    pub data: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OwnershipClaimListResponse {
+    pub claims: Vec<OwnershipClaimView>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OwnershipClaimDecisionRequest {
+    /// Shown to the claimant. Required when rejecting.
+    #[serde(default)]
+    pub note: Option<String>,
+}
