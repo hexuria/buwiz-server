@@ -12,7 +12,8 @@ use crate::domain::records::{self, FilingStatus, FilingStep, RecordError};
 use crate::domain::{PassPermission, ProfileAccess};
 use crate::error::{AuthStackError, AuthStackResult};
 
-use super::{record_access, RequestAuth};
+use super::{agent_require, record_access, RequestAuth};
+use crate::store::AgentActor;
 
 fn map(error: RecordError) -> AuthStackError {
     match error {
@@ -262,4 +263,54 @@ pub async fn report_filing(
     crate::store::get_filing(&profile_id, &filing_id)
         .await?
         .ok_or_else(|| AuthStackError::store("filing missing after update"))
+}
+
+// ── AI agents (read-only, through MCP) ──────────────────────────────────────
+//
+// An agent reaches only profiles its taxpayer owns and connected, with the
+// connection's permissions narrowed by the taxpayer's live access
+// (`agent_require`). It never gets `filings.publish`, and these are its only
+// record calls: nothing here writes.
+
+pub(crate) async fn agent_list_tax_years(
+    agent: &AgentActor,
+    profile_id: &str,
+) -> AuthStackResult<TaxYearListResponse> {
+    agent_require(agent, profile_id, PassPermission::YearsView).await?;
+    Ok(TaxYearListResponse {
+        years: crate::store::list_tax_years(profile_id).await?,
+    })
+}
+
+pub(crate) async fn agent_list_drafts(
+    agent: &AgentActor,
+    profile_id: &str,
+    tax_year: Option<i32>,
+) -> AuthStackResult<DraftListResponse> {
+    let year = tax_year.map(records::tax_year).transpose().map_err(map)?;
+    agent_require(agent, profile_id, PassPermission::DraftsView).await?;
+    Ok(DraftListResponse {
+        drafts: crate::store::list_drafts(profile_id, year).await?,
+    })
+}
+
+pub(crate) async fn agent_get_draft(
+    agent: &AgentActor,
+    profile_id: &str,
+    draft_id: &str,
+) -> AuthStackResult<DraftView> {
+    agent_require(agent, profile_id, PassPermission::DraftsView).await?;
+    crate::store::get_draft(profile_id, draft_id)
+        .await?
+        .ok_or_else(|| AuthStackError::not_found("draft not found"))
+}
+
+pub(crate) async fn agent_list_filings(
+    agent: &AgentActor,
+    profile_id: &str,
+) -> AuthStackResult<FilingListResponse> {
+    agent_require(agent, profile_id, PassPermission::FilingsView).await?;
+    Ok(FilingListResponse {
+        filings: crate::store::list_filings(profile_id).await?,
+    })
 }

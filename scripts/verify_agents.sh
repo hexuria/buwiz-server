@@ -189,8 +189,9 @@ jq -e '.result.protocolVersion == "2025-06-18" and .result.capabilities.tools' "
 [[ "$(mcp "$ACCESS" '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' -H 'mcp-protocol-version: 1999-01-01')" == 400 ]] \
   || fail "unknown protocol version header should be 400"
 [[ "$(mcp "$ACCESS" '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' -H 'mcp-protocol-version: 2025-06-18')" == 200 ]] || fail "tools/list"
-jq -e '[.result.tools[].name] == ["list_tax_profiles","get_tax_profile"] and all(.result.tools[]; .annotations.readOnlyHint)' "$BODY" >/dev/null \
-  || fail "two read-only tools"
+jq -e '[.result.tools[].name] == ["list_tax_profiles","get_tax_profile","list_tax_years","list_form_drafts","get_form_draft","list_filings"]
+  and all(.result.tools[]; .annotations.readOnlyHint)' "$BODY" >/dev/null \
+  || fail "six read-only tools"
 
 step "MCP: list_tax_profiles shows only the connected profile, read-only"
 mcp "$ACCESS" '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_tax_profiles","arguments":{}}}' >/dev/null
@@ -207,6 +208,22 @@ jq -e '.result.isError == false and .result.structuredContent.name == "Ana Freel
 for other in "$OTHER_PROFILE" "$STRANGER_PROFILE"; do
   call_get "$other"
   jq -e '.result.isError == true' "$BODY" >/dev/null || fail "get $other should be refused"
+done
+step "MCP: years, drafts and filings of the connected profile only"
+call_tool() { mcp "$ACCESS" "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}" >/dev/null; }
+call_tool list_tax_years "{\"profile_id\":\"$PROFILE\"}"
+jq -e '.result.isError == false and (.result.structuredContent.years | type == "array")' "$BODY" >/dev/null || fail "list_tax_years"
+call_tool list_form_drafts "{\"profile_id\":\"$PROFILE\",\"tax_year\":2026}"
+jq -e '.result.isError == false and (.result.structuredContent.drafts | type == "array")' "$BODY" >/dev/null || fail "list_form_drafts"
+call_tool list_filings "{\"profile_id\":\"$PROFILE\"}"
+jq -e '.result.isError == false and (.result.structuredContent.filings | type == "array")' "$BODY" >/dev/null || fail "list_filings"
+call_tool get_form_draft "{\"profile_id\":\"$PROFILE\"}"
+jq -e '.result.isError == true' "$BODY" >/dev/null || fail "get_form_draft without draft_id should be a tool error"
+for other in "$OTHER_PROFILE" "$STRANGER_PROFILE"; do
+  for tool in list_tax_years list_form_drafts list_filings; do
+    call_tool "$tool" "{\"profile_id\":\"$other\"}"
+    jq -e '.result.isError == true' "$BODY" >/dev/null || fail "$tool on $other should be refused"
+  done
 done
 mcp "$ACCESS" '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"file_return","arguments":{}}}' >/dev/null
 jq -e '.error.code == -32602' "$BODY" >/dev/null || fail "unknown tool should be -32602"
