@@ -43,6 +43,9 @@ mod grpc;
 mod desktop_oauth;
 
 #[cfg(feature = "ssr")]
+mod mcp;
+
+#[cfg(feature = "ssr")]
 mod rest;
 
 #[cfg(feature = "ssr")]

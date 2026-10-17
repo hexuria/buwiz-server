@@ -40,7 +40,6 @@ async fn caller(auth: RequestAuth) -> AuthStackResult<String> {
 
 /// The agent behind a bearer token, for the MCP endpoint. Anything but a
 /// live agent access token is `InvalidToken`.
-#[allow(dead_code)] // called by the MCP endpoint
 pub(crate) async fn agent_from_bearer(token: &str) -> AuthStackResult<AgentActor> {
     let token = token.trim();
     if !is_agent_token(token) {
@@ -54,7 +53,6 @@ pub(crate) async fn agent_from_bearer(token: &str) -> AuthStackResult<AgentActor
 /// What `agent` may do on `profile_id` right now: the connection's
 /// permissions narrowed by the taxpayer's live access. `Forbidden` when the
 /// profile is not connected or nothing is left.
-#[allow(dead_code)] // called by the MCP endpoint
 pub(crate) async fn agent_profile_permissions(
     agent: &AgentActor,
     profile_id: &str,
@@ -74,4 +72,45 @@ pub(crate) async fn agent_profile_permissions(
         return Err(AuthStackError::Forbidden);
     }
     Ok(permissions)
+}
+
+/// One connected profile as an agent sees it, with what it may do now.
+pub(crate) struct AgentProfile {
+    pub view: crate::contracts::TaxProfileView,
+    pub permissions: PassPermissions,
+}
+
+/// Every active profile the agent is connected to. A profile it cannot
+/// reach right now is kept with empty permissions so the agent can say why.
+pub(crate) async fn agent_tax_profiles(agent: &AgentActor) -> AuthStackResult<Vec<AgentProfile>> {
+    let mut out = Vec::new();
+    for profile_id in &agent.profile_ids {
+        let view = match crate::store::fetch_tax_profile_view(profile_id, &agent.user_id).await {
+            Ok(view) if !view.is_archived => view,
+            _ => continue,
+        };
+        let permissions = match agent_profile_permissions(agent, profile_id).await {
+            Ok(permissions) => permissions,
+            Err(AuthStackError::Forbidden) => PassPermissions::empty(),
+            Err(error) => return Err(error),
+        };
+        out.push(AgentProfile { view, permissions });
+    }
+    Ok(out)
+}
+
+/// One profile, when the agent may see it (`profile.view`).
+pub(crate) async fn agent_tax_profile(
+    agent: &AgentActor,
+    profile_id: &str,
+) -> AuthStackResult<AgentProfile> {
+    let permissions = agent_profile_permissions(agent, profile_id).await?;
+    if !permissions.contains(crate::domain::PassPermission::ProfileView) {
+        return Err(AuthStackError::Forbidden);
+    }
+    let view = crate::store::fetch_tax_profile_view(profile_id, &agent.user_id).await?;
+    if view.is_archived {
+        return Err(AuthStackError::Forbidden);
+    }
+    Ok(AgentProfile { view, permissions })
 }

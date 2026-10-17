@@ -43,6 +43,17 @@ token_call() {
   curl "${args[@]}"
 }
 
+# mcp TOKEN JSON [EXTRA_CURL_ARGS...] -> HTTP status of POST /mcp; body in
+# $BODY, headers in $HEADERS
+mcp() {
+  local token="$1" data="$2"; shift 2
+  local args=(-sS -m 60 -o "$BODY" -D "$HEADERS" -w '%{http_code}' -X POST "$BASE_URL/mcp"
+    -H 'content-type: application/json' -H 'accept: application/json, text/event-stream'
+    --data "$data")
+  [[ -n "$token" ]] && args+=(-H "authorization: Bearer $token")
+  curl "${args[@]}" "$@"
+}
+
 captured_token() {
   local recipient="$1" kind="$2" mail=""
   for _ in $(seq 1 100); do
@@ -161,6 +172,45 @@ status="$(token_call grant_type=authorization_code "client_id=$CLIENT" "code=$CO
   "redirect_uri=$USED_REDIRECT" "code_verifier=$VERIFIER")"
 [[ "$status" == 400 ]] || fail "a code works only once (got $status)"
 
+step "MCP: no token -> 401 pointing at the metadata; foreign Origin -> 403; GET -> 405"
+INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}'
+[[ "$(mcp "" "$INIT")" == 401 ]] || fail "no token should be 401"
+grep -qi '^www-authenticate: Bearer resource_metadata=".*/.well-known/oauth-protected-resource/mcp"' "$HEADERS" \
+  || fail "401 should name the resource metadata"
+[[ "$(mcp "$ACCESS" "$INIT" -H 'origin: https://evil.example')" == 403 ]] || fail "foreign origin should be 403"
+[[ "$(curl -sS -m 30 -o /dev/null -w '%{http_code}' -H "authorization: Bearer $ACCESS" "$BASE_URL/mcp")" == 405 ]] \
+  || fail "GET /mcp should be 405"
+
+step "MCP: initialize, initialized, tools/list"
+[[ "$(mcp "$ACCESS" "$INIT")" == 200 ]] || fail "initialize"
+jq -e '.result.protocolVersion == "2025-06-18" and .result.capabilities.tools' "$BODY" >/dev/null || fail "initialize result"
+[[ "$(mcp "$ACCESS" '{"jsonrpc":"2.0","method":"notifications/initialized"}' -H 'mcp-protocol-version: 2025-06-18')" == 202 ]] \
+  || fail "a notification should get 202"
+[[ "$(mcp "$ACCESS" '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' -H 'mcp-protocol-version: 1999-01-01')" == 400 ]] \
+  || fail "unknown protocol version header should be 400"
+[[ "$(mcp "$ACCESS" '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' -H 'mcp-protocol-version: 2025-06-18')" == 200 ]] || fail "tools/list"
+jq -e '[.result.tools[].name] == ["list_tax_profiles","get_tax_profile"] and all(.result.tools[]; .annotations.readOnlyHint)' "$BODY" >/dev/null \
+  || fail "two read-only tools"
+
+step "MCP: list_tax_profiles shows only the connected profile, read-only"
+mcp "$ACCESS" '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_tax_profiles","arguments":{}}}' >/dev/null
+jq -e --arg p "$PROFILE" '.result.isError == false
+  and ([.result.structuredContent.profiles[].profile_id] == [$p])
+  and (.result.structuredContent.profiles[0].permissions | index("profile.view") and (index("profile.edit") | not) and (index("filings.publish") | not))' \
+  "$BODY" >/dev/null || fail "list_tax_profiles"
+
+step "MCP: get_tax_profile on it works; on anything else it is a tool error"
+call_get() { mcp "$ACCESS" "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"get_tax_profile\",\"arguments\":{\"profile_id\":\"$1\"}}}" >/dev/null; }
+call_get "$PROFILE"
+jq -e '.result.isError == false and .result.structuredContent.name == "Ana Freelance"
+  and (.result.structuredContent | has("owner_user_id") | not)' "$BODY" >/dev/null || fail "get own connected profile"
+for other in "$OTHER_PROFILE" "$STRANGER_PROFILE"; do
+  call_get "$other"
+  jq -e '.result.isError == true' "$BODY" >/dev/null || fail "get $other should be refused"
+done
+mcp "$ACCESS" '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"file_return","arguments":{}}}' >/dev/null
+jq -e '.error.code == -32602' "$BODY" >/dev/null || fail "unknown tool should be -32602"
+
 step "an agent token is not the taxpayer: REST refuses it"
 expect 401 GET /api/tax-profiles "$ACCESS"
 expect 401 GET /api/agents "$ACCESS"
@@ -183,6 +233,7 @@ status="$(token_call grant_type=refresh_token "refresh_token=$REFRESH")"
 [[ "$status" == 400 ]] || fail "replayed refresh -> $status"
 status="$(token_call grant_type=refresh_token "refresh_token=$NEW_REFRESH")"
 [[ "$status" == 400 ]] || fail "after a replay the newer refresh token is dead too (got $status)"
+[[ "$(mcp "$ACCESS" "$INIT")" == 401 ]] || fail "after a replay the access token is dead at /mcp too"
 
 step "a stranger cannot end the taxpayer's connection; the taxpayer can"
 expect 404 POST "/api/agents/$CONNECTION/revoke" "$STRANGER" '{}'

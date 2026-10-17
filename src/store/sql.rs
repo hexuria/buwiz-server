@@ -530,6 +530,21 @@ pub(crate) fn postgres_placeholders(sql: &str) -> String {
         } else {
             output.push('$');
             output.push_str(&digits);
+            // Spin binds every JSON string as text. With `$1::uuid` Postgres
+            // types the parameter itself as uuid and rejects the text value
+            // (`WrongType { postgres: Uuid, rust: String }`); the same for jsonb,
+            // timestamptz and date. Route them
+            // through text: `$1::text::uuid` converts on the server.
+            let rest: String = chars.clone().take(14).collect::<String>().to_ascii_lowercase();
+            if ["::uuid", "::jsonb", "::json", "::timestamptz", "::date"].iter().any(|cast| {
+                rest.starts_with(cast)
+                    && !rest[cast.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            }) {
+                output.push_str("::text");
+            }
         }
     }
 
