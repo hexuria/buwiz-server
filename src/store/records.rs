@@ -12,7 +12,7 @@ use crate::error::{AuthStackError, AuthStackResult};
 
 use super::{
     AtomicSqlStatement, execute_sql, execute_sql_atomic, initialize_schema_async, required_string,
-    row_bool, row_i64, row_string,
+    is_unique_violation, row_bool, row_i64, row_string, uuid_shaped,
 };
 
 // Spin binds every JSON integer as int8 (`ddd_cqrs_es` postgres_parameters),
@@ -237,9 +237,9 @@ pub(crate) async fn list_drafts(profile_id: &str, tax_year: Option<i16>) -> Auth
 
 pub(crate) async fn get_draft(profile_id: &str, draft_id: &str) -> AuthStackResult<Option<DraftView>> {
     initialize_schema_async().await?;
-    if draft_id.len() != 36 {
+    let Some(draft_id) = uuid_shaped(draft_id) else {
         return Ok(None);
-    }
+    };
     let rows = execute_sql(
         &format!(
             "SELECT {}, payload FROM buwiz_server.form_drafts \
@@ -391,9 +391,9 @@ pub(crate) async fn list_filings(profile_id: &str) -> AuthStackResult<Vec<Filing
 
 pub(crate) async fn get_filing(profile_id: &str, filing_id: &str) -> AuthStackResult<Option<FilingView>> {
     initialize_schema_async().await?;
-    if filing_id.len() != 36 {
+    let Some(filing_id) = uuid_shaped(filing_id) else {
         return Ok(None);
-    }
+    };
     let rows = execute_sql(
         &format!(
             "SELECT {} FROM buwiz_server.filings WHERE tax_profile_id = ?1::uuid AND id::text = ?2",
@@ -426,8 +426,7 @@ pub(crate) async fn queue_filing(
     )])
     .await
     .map_err(|error| {
-        let message = error.to_string().to_ascii_lowercase();
-        if message.contains("unique") || message.contains("duplicate") {
+        if is_unique_violation(&error) {
             AuthStackError::conflict("this form and period already has a filing on its way")
         } else {
             AuthStackError::not_found("draft not found")

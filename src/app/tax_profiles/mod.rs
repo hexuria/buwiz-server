@@ -307,3 +307,27 @@ fn access_line(access: &str, permissions: &[String]) -> String {
         _ => String::new(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::access_line;
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|id| (*id).to_owned()).collect()
+    }
+
+    #[test]
+    fn access_lines_say_who_controls_and_whether_publishing_works() {
+        assert_eq!(access_line("owner", &ids(&["profile.view"])), "You own this profile");
+        assert_eq!(access_line("holding_org", &[]), "Held by your workspace");
+        assert_eq!(
+            access_line("pass", &ids(&["profile.view", "drafts.save"])),
+            "Access pass: 2 permissions · cannot publish to BIR"
+        );
+        assert_eq!(
+            access_line("pass", &ids(&["profile.view", "filings.publish"])),
+            "Access pass: 2 permissions · can publish to BIR"
+        );
+        assert_eq!(access_line("none", &[]), "");
+    }
+}

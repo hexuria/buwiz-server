@@ -986,7 +986,7 @@ async fn standing(state: &TaxProfile, user_id: &str, session_id: Option<&str>) -
         }
     }
     let mut access = state.access_for(user_id, &actor_orgs, &now);
-    if access.has(PassPermission::FilingsPublish) && matches!(access, ProfileAccess::Pass(_)) {
+    if matches!(&access, ProfileAccess::Pass(permissions) if permissions.contains(PassPermission::FilingsPublish)) {
         // Publishing also needs the firm's pick; if that can't be read,
         // publishing is off (fail closed).
         let publishers = crate::store::publisher_orgs(user_id, &actor_orgs)

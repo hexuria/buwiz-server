@@ -16,7 +16,7 @@ use crate::error::{AuthStackError, AuthStackResult};
 
 use super::{
     AtomicSqlStatement, execute_sql, execute_sql_atomic, initialize_schema_async, required_string,
-    row_bool, row_i64, row_string,
+    is_unique_violation, row_bool, row_i64, row_string, uuid_shaped,
 };
 
 const NONCE_BYTES: usize = 12;
@@ -135,8 +135,7 @@ pub(crate) async fn insert_ownership_claim(
     )])
     .await
     .map_err(|error| {
-        let message = error.to_string().to_ascii_lowercase();
-        if message.contains("unique") || message.contains("duplicate") {
+        if is_unique_violation(&error) {
             AuthStackError::conflict("you already have an open claim for this profile")
         } else {
             error
@@ -147,9 +146,9 @@ pub(crate) async fn insert_ownership_claim(
 
 pub(crate) async fn load_ownership_claim(claim_id: &str) -> AuthStackResult<Option<StoredClaim>> {
     initialize_schema_async().await?;
-    if claim_id.len() != 36 {
+    let Some(claim_id) = uuid_shaped(claim_id) else {
         return Ok(None);
-    }
+    };
     let rows = execute_sql(
         "SELECT claim_id::text AS claim_id, profile_id::text AS profile_id, \
                 claimant_user_id::text AS claimant_user_id, status \
@@ -256,6 +255,18 @@ pub(crate) async fn store_ownership_claim_part(
     ciphertext_b64: &str,
 ) -> AuthStackResult<()> {
     initialize_schema_async().await?;
+    execute_sql_atomic(part_statements(claim_id, index, nonce_b64, ciphertext_b64))
+        .await
+        .map_err(|_| AuthStackError::conflict("parts must arrive in order; start the upload again"))?;
+    Ok(())
+}
+
+fn part_statements(
+    claim_id: &str,
+    index: usize,
+    nonce_b64: &str,
+    ciphertext_b64: &str,
+) -> Vec<AtomicSqlStatement> {
     let mut statements = Vec::new();
     if index == 0 {
         statements.push(delete_parts_statement(claim_id));
@@ -274,10 +285,7 @@ pub(crate) async fn store_ownership_claim_part(
             json!(ciphertext_b64),
         ],
     ));
-    execute_sql_atomic(statements)
-        .await
-        .map_err(|_| AuthStackError::conflict("parts must arrive in order; start the upload again"))?;
-    Ok(())
+    statements
 }
 
 /// How many parts of the current upload are stored.
@@ -454,6 +462,71 @@ mod tests {
 
     const KEY: [u8; 32] = [7; 32];
     const CLAIM: &str = "11111111-1111-4111-8111-111111111111";
+
+    #[test]
+    fn closing_a_claim_deletes_its_parts_and_records_the_decision() {
+        let statements =
+            close_ownership_claim_statements(CLAIM, ClaimCaseStatus::Rejected, Some("u1"), Some("blurry"));
+        assert_eq!(statements.len(), 2);
+        assert!(statements[0].sql().starts_with("DELETE FROM buwiz_server.ownership_claim_parts"));
+        assert!(statements[1].sql().starts_with("UPDATE buwiz_server.ownership_claims"));
+        assert_eq!(statements[1].minimum_rows(), 1, "an already-decided claim aborts");
+        assert_eq!(
+            statements[1].params(),
+            &[json!(CLAIM), json!("rejected"), json!("u1"), json!("blurry")]
+        );
+    }
+
+    #[test]
+    fn only_the_first_part_drops_an_earlier_upload() {
+        let first = part_statements(CLAIM, 0, "n", "c");
+        assert_eq!(first.len(), 2);
+        assert!(first[0].sql().starts_with("DELETE FROM buwiz_server.ownership_claim_parts"));
+        let later = part_statements(CLAIM, 3, "n", "c");
+        assert_eq!(later.len(), 1);
+        assert!(later[0].sql().starts_with("INSERT INTO buwiz_server.ownership_claim_parts"));
+        assert_eq!(later[0].params(), &[json!(CLAIM), json!(3), json!("n"), json!("c")]);
+        assert_eq!(later[0].minimum_rows(), 1, "an out-of-order part aborts");
+    }
+
+    fn claim_row(status: &str) -> Value {
+        json!({
+            "claim_id": CLAIM,
+            "profile_id": "22222222-2222-4222-8222-222222222222",
+            "status": status,
+            "profile_name": "Someone Else's Name",
+            "tin_last4": "1234",
+            "claimant_email": "claimant@example.test",
+        })
+    }
+
+    #[test]
+    fn claimants_see_the_profile_name_only_once_approved() {
+        for status in ["awaiting_file", "pending", "rejected", "withdrawn"] {
+            let view = claim_view(&claim_row(status), false).unwrap();
+            assert_eq!(view.profile_name, "", "{status}");
+            assert_eq!(view.claimant_email, None);
+            assert_eq!(view.tin_last4, "1234");
+        }
+        let approved = claim_view(&claim_row("approved"), false).unwrap();
+        assert_eq!(approved.profile_name, "Someone Else's Name");
+        let staff = claim_view(&claim_row("pending"), true).unwrap();
+        assert_eq!(staff.profile_name, "Someone Else's Name");
+        assert_eq!(staff.claimant_email.as_deref(), Some("claimant@example.test"));
+    }
+
+    #[test]
+    fn claim_columns_select_every_field_the_view_reads() {
+        let columns = claim_columns();
+        for alias in [
+            "AS claim_id", "AS profile_id", "c.status", "c.file_kind", "c.file_size",
+            "c.file_sha256", "c.has_c2pa", "c.ai_refusals", "c.decision_note", "AS created_at",
+            "AS updated_at", "AS decided_at", "AS profile_name", "p.tin_last4",
+            "AS claimant_email", "AS parts_received",
+        ] {
+            assert!(columns.contains(alias), "{alias}");
+        }
+    }
 
     #[test]
     fn files_round_trip_and_stay_bound_to_their_claim() {

@@ -1,0 +1,24 @@
+# cargo-mutants settings (see .github/workflows/mutants.yml).
+#
+# Excluded on purpose. These are not equivalent mutants. They are code that
+# unit tests can't reach and that only an HTTP or database run would check:
+#
+# - Route tables (`rest::dispatch`, `server_fn_http::dispatch`). Path parsing
+#   is pure and unit-tested (`pass_route`, `invite_route`, `claim_route`, ...);
+#   the match arms that call the application are covered only end to end by
+#   `scripts/verify_*.sh`, which can't run locally until Spin stops hanging on
+#   zero-row queries (README, "Troubleshooting").
+# - The count `reproject_all_tax_profiles` returns to the admin endpoint. Its
+#   skip rule is `needs_reprojection`, which is tested.
+#
+# - `src/bin/`: the migration binary only talks to Postgres, and CI mutates
+#   with `--lib`, so no test could ever see a mutant there. `make db-migrate`
+#   (apply twice, then verify) is its check.
+#
+# Remove an entry once an HTTP or Postgres harness runs in CI.
+exclude_globs = ["src/bin/**"]
+exclude_re = [
+    "src/rest\\.rs:.* in dispatch$",
+    "src/server_fn_http\\.rs:.*replace dispatch ->",
+    "in reproject_all_tax_profiles$",
+]

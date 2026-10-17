@@ -1476,6 +1476,9 @@ mod tests {
             "/api/admin/ownership-claims/c1",
             "/api/admin/ownership-claimsx",
             "/api/admin/ownership-claims//approve",
+            "/api/tax-profiles/ownership-claims//withdraw",
+            "/api/admin/ownership-claims//file",
+            "/api/admin/ownership-claims//reject",
         ] {
             assert_eq!(claim_route(junk), None, "{junk}");
         }
