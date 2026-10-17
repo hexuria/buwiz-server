@@ -20,7 +20,7 @@ One gatekeeper: `authorize` in `src/application/tax_profile.rs`, re-checked in t
 2. One gatekeeper for every read and write; docs match the code.
 3. Owner keeps the profile; firms get revocable passes with fine-grained permissions (presets Read-only / Safe / Full; publish-to-BIR is a separate permission). Done: `src/domain/pass.rs`, pass commands in `src/domain/tax_profile.rs`, migration `0006`, REST + Tax profiles page, `scripts/verify_passes.sh`.
 4. Agent login: OAuth dynamic client registration + Allow screen; each agent connection has its own tokens, bounded by the taxpayer's live access, and ends from Tax profiles → Connected agents. Done: `src/domain/agent.rs`, `src/desktop_oauth/agent.rs`, `src/store/agent.rs`, migration `0007`, `scripts/verify_agents.sh`.
-5. `POST /mcp` with read-only tools first.
+5. `POST /mcp` with read-only tools first. Done: `src/mcp/` (stateless, JSON answers), tools `list_tax_profiles` and `get_tax_profile`; `scripts/verify_agents.sh` covers it.
 
 ## Verify
 

@@ -153,7 +153,28 @@ The connection ends when the taxpayer presses **End** under Tax profiles → Con
 | `GET /api/agents` | The caller's connected agents, with profiles and preset |
 | `POST /api/agents/{connection}/revoke` | End one (its tokens stop on the next call) |
 
-The MCP endpoint itself (`POST /mcp`) comes next; until then nothing accepts agent tokens.
+Agent tokens are accepted only at `POST /mcp`.
+
+---
+
+## MCP endpoint
+
+`POST /mcp` is MCP over Streamable HTTP, kept to what Spin does well:
+- **Stateless, JSON answers only:** no `Mcp-Session-Id`, no server-sent events. `GET` and `DELETE` get 405.
+- **Protocol versions:** 2025-11-25, 2025-06-18 and 2025-03-26. An unknown `MCP-Protocol-Version` header gets 400.
+- **Sign-in:** without a valid agent token the answer is 401 with `WWW-Authenticate: Bearer resource_metadata="{base}/.well-known/oauth-protected-resource/mcp"`, which starts the client's OAuth flow above.
+- **Origin:** a request with an `Origin` other than this server is refused, to block DNS rebinding.
+
+Tools, all read-only (`readOnlyHint`):
+
+| Tool | Needs | Returns |
+|------|-------|---------|
+| `list_tax_profiles` | — | The connected profiles with what the agent may do on each right now. A profile it can no longer reach shows only its id. |
+| `get_tax_profile` | `profile.view` | Registration details: name, TIN last 4, branch, RDO, address, contact, taxpayer type, classification, VAT, who holds it. No internal user or organization ids. |
+
+Every call re-checks the token, the connection and the taxpayer's live access. A profile the agent may not see comes back as a tool error (`isError: true`) so the model can explain it. Tax years, drafts and filings get tools once their HTTP commands exist (`docs/sync-api.md`). There is no tool that writes, and none that files with BIR.
+
+Try it with Claude Code: `claude mcp add --transport http buwiz http://localhost:3008/mcp`, then `/mcp` to sign in.
 
 ---
 
@@ -274,7 +295,7 @@ Compose Redis uses `--maxmemory-policy noeviction` so a future event-store exper
 
 ## WebMCP
 
-Browser agents can drive register/login via **declarative HTML attributes** (and an optional hydrate-only `document.modelContext.registerTool`). This is **not** a backend MCP server.
+Browser agents can drive register/login via **declarative HTML attributes** (and an optional hydrate-only `document.modelContext.registerTool`). This is separate from the server's `POST /mcp` endpoint.
 
 See [docs/webmcp.md](docs/webmcp.md). Flag: `WEBMCP_ENABLED` (default on in local Spin vars). Auth forms never use `toolautosubmit`.
 

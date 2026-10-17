@@ -1,6 +1,6 @@
 # WebMCP on Buwiz
 
-WebMCP is a **client-side browser API** so an in-browser agent can discover page tools. It is **not** a backend MCP or SSE server.
+WebMCP is a **client-side browser API** so an in-browser agent can discover page tools. It is not the server's MCP endpoint (see below).
 
 Spec: [Web Model Context Protocol](https://webmachinelearning.github.io/webmcp/)  
 Chrome: [Declarative API](https://developer.chrome.com/docs/ai/webmcp/declarative-api)
@@ -26,4 +26,4 @@ The getter moved from `navigator.modelContext` to `document.modelContext` (tools
 4. Fill via the agent, then click **Sign in** / **Create workspace** yourself.
 5. With the flag off or in Firefox/Safari, the page still works; registration is a no-op.
 
-Later tax-profile actions can add the same attributes. WebMCP is separate from the planned server MCP endpoint (`POST /mcp`, JSON-RPC with JSON responses, OAuth bearer tokens) that lets agents such as Claude Code or Codex work on a tax profile they were given access to; that endpoint does not replace these page tools.
+Later tax-profile actions can add the same attributes. WebMCP is separate from the server MCP endpoint, `POST /mcp` (README, "MCP endpoint"), which lets agents such as Claude Code or Codex read the tax profiles a taxpayer allowed them on. That endpoint does not replace these page tools.

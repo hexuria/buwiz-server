@@ -94,6 +94,17 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
                 false
             }
         };
+        if crate::mcp::is_mcp_request(&request_path) {
+            let response = crate::mcp::serve(req).await.map_err(|error| {
+                tracing::error!(
+                    error = %error,
+                    error_code = error.public_code(),
+                    "failed to build MCP response"
+                );
+                ErrorCode::InternalError(None)
+            })?;
+            return wasip3::http_compat::http_into_wasi_response(response);
+        }
         if crate::desktop_oauth::is_desktop_oauth_request(&request_path) {
             let response = crate::desktop_oauth::serve(req).await.map_err(|error| {
                 tracing::error!(

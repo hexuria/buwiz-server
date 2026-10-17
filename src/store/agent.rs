@@ -54,9 +54,8 @@ pub(crate) struct ConsumedAgentCode {
 pub(crate) struct AgentActor {
     pub connection_id: String,
     pub user_id: String,
-    #[allow(dead_code)] // read by the MCP endpoint
+    #[allow(dead_code)] // kept for audit logs
     pub client_id: String,
-    #[allow(dead_code)] // read by the MCP endpoint
     pub client_name: String,
     pub permissions: PassPermissions,
     pub profile_ids: Vec<String>,
