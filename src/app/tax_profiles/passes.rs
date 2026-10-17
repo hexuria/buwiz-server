@@ -150,7 +150,7 @@ pub fn PassesPanel() -> impl IntoView {
     };
 
     view! {
-        <section class=PANEL>
+        <section class=PANEL id="access-passes">
             <p class=SECTION_LABEL>"Access passes"</p>
             <p class=RESULT_LINE>
                 "Let a firm's workspace work on your tax profile, and end it any time. Any member of that workspace can use the pass. Sharing, ending passes, archiving and deleting stay with you."
@@ -507,6 +507,53 @@ pub fn PassesPanel() -> impl IntoView {
     }
 }
 
+/// The firm's notice on its workspace home: offers waiting for one of the
+/// caller's workspaces to accept. Shows nothing when there are none.
+#[island]
+pub fn WorkspaceWaitingNotice() -> impl IntoView {
+    let loaded = browser_load(list_passes);
+    let waiting = move || {
+        loaded
+            .get()
+            .and_then(Result::ok)
+            .map(|list| waiting_for_workspace(&list.passes))
+            .unwrap_or_default()
+    };
+    view! {
+        <Show when=move || !waiting().is_empty()>
+            <section class=PANEL aria-label="Waiting for your workspace">
+                <p class=SECTION_LABEL>"Waiting for your workspace"</p>
+                <ul>
+                    <For
+                        each=waiting
+                        key=|p| format!("{}{}", p.pass_id, p.updated_at)
+                        children=move |p: PassView| view! {
+                            <li class=RESULT_LINE>{format!(
+                                "For {}: {} access to {} ····{}, offered by its owner",
+                                who(&p),
+                                what(&p),
+                                p.profile_name,
+                                p.tin_last4,
+                            )}</li>
+                        }
+                    />
+                </ul>
+                <a class=BTN_PRIMARY href="/tax-profiles#access-passes">"Answer on Tax profiles"</a>
+            </section>
+        </Show>
+    }
+}
+
+/// Offers a workspace of the caller's has yet to accept, newest first (the
+/// list already comes newest first).
+fn waiting_for_workspace(passes: &[PassView]) -> Vec<PassView> {
+    passes
+        .iter()
+        .filter(|p| p.my_side == "grantee" && p.waiting_on_me)
+        .cloned()
+        .collect()
+}
+
 fn who(pass: &PassView) -> String {
     pass.grantee_name
         .clone()
@@ -568,6 +615,18 @@ mod tests {
             my_side: side.into(),
             waiting_on_me: false,
         }
+    }
+
+    #[test]
+    fn the_workspace_notice_lists_only_offers_it_must_answer() {
+        let mut offer = pass("grantee", "offered", None);
+        offer.waiting_on_me = true;
+        let mut request = pass("owner", "requested", None);
+        request.waiting_on_me = true;
+        let sent = pass("grantee", "requested", None);
+        let working = pass("grantee", "active", None);
+        let shown = waiting_for_workspace(&[request, offer.clone(), sent, working]);
+        assert_eq!(shown, [offer]);
     }
 
     #[test]

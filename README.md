@@ -314,7 +314,7 @@ A pass lets a firm's workspace work on someone else's profile. Any member of tha
 - **Changing:** the owner changes an offered or working pass from Tax profiles → Open passes → **Change**: permissions, publishing (asks first) and the last day (empty removes it).
 - **Ending:** the owner revokes or declines; the workspace declines an offer, withdraws a request, or gives the pass back. A claim or reclaim ends every open pass.
 - Sharing, ending passes, archiving and deleting stay with the owner; no pass grants them.
-- Notices are in-app (the Tax profiles page, "Waiting for you"); there is no grant email.
+- Notices are in-app; there is no grant email. The owner sees requests under Tax profiles → "Waiting for you". A firm's members also see offers to their workspace at the top of the workspace home (`/dashboard`, "Waiting for your workspace"), linking to where they accept.
 
 - An **archived** profile is frozen for grantees: its passes give no access and cannot be accepted, approved or changed until it is restored. The owner can still end them.
 - A workspace that asked with a TIN sees the profile's name only after the owner approves.
