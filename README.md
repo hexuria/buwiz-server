@@ -223,8 +223,12 @@ Tools, all read-only (`readOnlyHint`):
 |------|-------|---------|
 | `list_tax_profiles` | — | The connected profiles with what the agent may do on each right now. A profile it can no longer reach shows only its id. |
 | `get_tax_profile` | `profile.view` | Registration details: name, TIN last 4, branch, RDO, address, contact, taxpayer type, classification, VAT, who holds it. No internal user or organization ids. |
+| `list_tax_years` | `years.view` | Each tax year, newest first: its forms (code, frequency, active) and per-year registration values. |
+| `list_form_drafts` | `drafts.view` | Draft summaries, newest first, optionally for one `tax_year`: form, year, period, revision, reviewed or not. No contents. |
+| `get_form_draft` | `drafts.view` | One draft (`profile_id`, `draft_id`) with its contents. |
+| `list_filings` | `filings.view` | Filing history, newest first: status, BIR receipt reference, failure summary, paid date. |
 
-Every call re-checks the token, the connection and the taxpayer's live access. A profile the agent may not see comes back as a tool error (`isError: true`) so the model can explain it. Tax years, drafts and filings get tools once their HTTP commands exist (`docs/sync-api.md`). There is no tool that writes, and none that files with BIR.
+Every call re-checks the token, the connection and the taxpayer's live access. A profile the agent may not see comes back as a tool error (`isError: true`) so the model can explain it. Who saved or reviewed a draft (internal user ids) is left out. An archived profile is out of an agent's reach until it is restored. There is no tool that writes, and none that files with BIR: agents never get `filings.publish`.
 
 Try it with Claude Code: `claude mcp add --transport http buwiz http://localhost:3008/mcp`, then `/mcp` to sign in.
 
