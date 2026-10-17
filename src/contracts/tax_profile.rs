@@ -221,8 +221,10 @@ pub struct PassChoice {
     pub permissions: Option<Vec<String>>,
     #[serde(default)]
     pub allow_publish: bool,
-    /// Last day the pass works (`YYYY-MM-DD`, Philippine time). Empty or
-    /// missing: no end date.
+    /// Last day the pass works (`YYYY-MM-DD`, Philippine time). When
+    /// offering or approving, empty or missing means no end date. When
+    /// changing a pass, missing keeps the current end date and `""` removes
+    /// it.
     #[serde(default)]
     pub ends_on: Option<String>,
 }

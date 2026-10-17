@@ -65,8 +65,8 @@ mod tests {
             "$1::text::UUID, $2::bigint, $3::text, $4, $5::uuidx"
         );
         assert_eq!(
-            postgres_placeholders("?1::timestamptz, ?2::date, ?3::dates"),
-            "$1::text::timestamptz, $2::text::date, $3::dates"
+            postgres_placeholders("?1::timestamptz, ?2::date, ?3::dates, ?4::timestamp"),
+            "$1::text::timestamptz, $2::text::date, $3::dates, $4::text::timestamp"
         );
     }
 
