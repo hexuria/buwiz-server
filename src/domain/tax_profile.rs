@@ -510,7 +510,6 @@ pub enum TaxProfileError {
     NotFound,
     NotHolder,
     ClaimRequiresCompanyHold,
-    ReclaimDenied,
     ProofMismatch,
     ConcurrentModification,
     StaleWrite,
@@ -544,10 +543,6 @@ impl std::fmt::Display for TaxProfileError {
             Self::ClaimRequiresCompanyHold => write!(
                 f,
                 "claim is only allowed while a company/managing account holds the profile"
-            ),
-            Self::ReclaimDenied => write!(
-                f,
-                "only the verified natural or legal owner can reclaim this profile"
             ),
             Self::ProofMismatch => write!(
                 f,
@@ -1359,10 +1354,6 @@ impl TaxProfile {
             return Err(TaxProfileError::NotFound);
         }
         self.require_identity(&identity_hash)?;
-        let is_recorded_owner = self
-            .verified_owner_user_id
-            .as_deref()
-            .is_some_and(|id| id == actor_user_id);
         let personal_holder_is_actor = matches!(
             &self.holder,
             Some(AccountHolder::Personal { user_id }) if user_id == &actor_user_id
@@ -1372,13 +1363,11 @@ impl TaxProfile {
                 reason: "caller already holds exclusive control".to_owned(),
             });
         }
-        if !is_recorded_owner
-            && !matches!(
-                proof_method,
-                ProofMethod::FakeOrus | ProofMethod::Orus | ProofMethod::Form2303Review
-            )
-        {
-            return Err(TaxProfileError::ReclaimDenied);
+        // Every proof method proves the TIN independently, so none needs the
+        // caller to be the recorded owner already. No wildcard: a new,
+        // weaker method must decide here.
+        match proof_method {
+            ProofMethod::FakeOrus | ProofMethod::Orus | ProofMethod::Form2303Review => {}
         }
         Ok(vec![TaxProfileEvent::Reclaimed {
             holder: AccountHolder::Personal {

@@ -16,7 +16,7 @@ use crate::error::{AuthStackError, AuthStackResult};
 
 use super::{
     AtomicSqlStatement, execute_sql, execute_sql_atomic, initialize_schema_async, required_string,
-    row_bool, row_i64, row_string,
+    row_bool, row_i64, row_string, uuid_shaped,
 };
 
 pub(crate) struct LoadedTaxProfile {
@@ -45,7 +45,11 @@ pub(crate) fn rfc3339_in_days(days: u32) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    unix_to_rfc3339(now.as_secs() + u64::from(days) * 86_400, now.subsec_millis())
+    rfc3339_days_after(now.as_secs(), now.subsec_millis(), days)
+}
+
+fn rfc3339_days_after(secs: u64, millis: u32, days: u32) -> String {
+    unix_to_rfc3339(secs + u64::from(days) * 86_400, millis)
 }
 
 /// A 256-bit secret, base64url without padding.
@@ -555,9 +559,9 @@ fn invite_upsert_statement(
 /// The profile an invite belongs to.
 pub(crate) async fn profile_id_for_invite(invite_id: &str) -> AuthStackResult<Option<String>> {
     initialize_schema_async().await?;
-    if invite_id.len() != 36 {
+    let Some(invite_id) = uuid_shaped(invite_id) else {
         return Ok(None);
-    }
+    };
     let rows = execute_sql(
         "SELECT profile_id::text AS profile_id FROM buwiz_server.tax_profile_owner_invites \
          WHERE invite_id::text = ?1",
@@ -707,9 +711,9 @@ pub(crate) async fn remove_firm_publisher(organization_id: &str, user_id: &str) 
 /// `organization_id` if it names an active organization.
 pub(crate) async fn active_organization_id(organization_id: &str) -> AuthStackResult<Option<String>> {
     initialize_schema_async().await?;
-    if organization_id.len() != 36 {
+    let Some(organization_id) = uuid_shaped(organization_id) else {
         return Ok(None);
-    }
+    };
     let rows = execute_sql(
         "SELECT organization_id::text AS organization_id FROM auth_organizations \
          WHERE organization_id::text = ?1 AND status = 'active'",
@@ -1137,7 +1141,6 @@ pub(crate) fn map_tax_profile_error(error: TaxProfileError) -> AuthStackError {
         TaxProfileError::NotFound => AuthStackError::not_found(error.to_string()),
         TaxProfileError::NotHolder
         | TaxProfileError::ClaimRequiresCompanyHold
-        | TaxProfileError::ReclaimDenied
         | TaxProfileError::ProofMismatch => AuthStackError::Forbidden,
         TaxProfileError::AlreadyArchived | TaxProfileError::NotArchived => {
             AuthStackError::conflict(error.to_string())
@@ -1209,6 +1212,18 @@ mod tests {
 
     const ME: &str = "11111111-1111-4111-8111-111111111111";
     const FIRM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+    #[test]
+    fn days_after_adds_whole_days() {
+        assert_eq!(rfc3339_days_after(0, 0, 0), unix_to_rfc3339(0, 0));
+        assert_eq!(rfc3339_days_after(0, 0, 14), unix_to_rfc3339(14 * 86_400, 0));
+        assert_eq!(rfc3339_days_after(90, 250, 1), unix_to_rfc3339(86_490, 250));
+        // An invite made now runs out later, in the same timestamp format.
+        let (now, later) = (rfc3339_now(), rfc3339_in_days(14));
+        assert_eq!(later.len(), now.len());
+        assert!(later > now, "{later} <= {now}");
+        assert!(later.starts_with(|c: char| c.is_ascii_digit()));
+    }
 
     fn row(holder_user: Option<&str>, holder_org: Option<&str>, pass: &[&str], publisher: bool) -> Value {
         json!({

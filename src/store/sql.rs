@@ -143,6 +143,21 @@ impl AtomicSqlStatement {
             minimum_rows: 1,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn sql(&self) -> &str {
+        &self.sql
+    }
+
+    #[cfg(test)]
+    pub(crate) fn params(&self) -> &[Value] {
+        &self.params
+    }
+
+    #[cfg(test)]
+    pub(crate) fn minimum_rows(&self) -> usize {
+        self.minimum_rows
+    }
 }
 
 pub(crate) static SCHEMA_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -407,6 +422,27 @@ pub(crate) fn default_storage_backend() -> &'static str {
     "postgres"
 }
 
+/// `id` when it has the canonical UUID shape (8-4-4-4-12 hex digits), so
+/// a junk id in a path is a plain "not found" instead of a failed
+/// `::uuid` cast in Postgres.
+pub(crate) fn uuid_shaped(id: &str) -> Option<&str> {
+    let bytes = id.as_bytes();
+    let shaped = bytes.len() == 36
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => *byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        });
+    shaped.then_some(id)
+}
+
+/// Whether a failed statement hit a unique index (Postgres `23505`).
+pub(crate) fn is_unique_violation(error: &AuthStackError) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    ["unique", "duplicate", "23505"]
+        .iter()
+        .any(|needle| message.contains(needle))
+}
+
 pub(crate) fn env_non_empty(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
@@ -565,3 +601,40 @@ pub(crate) fn postgres_placeholders(sql: &str) -> String {
 }
 
 // ── App-owned profile store (Spin key-value; not wasi-auth schema) ──────────
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+
+    #[test]
+    fn uuid_shaped_takes_only_canonical_uuids() {
+        let id = "0f8fad5b-d9cb-469f-a165-70867728950e";
+        assert_eq!(uuid_shaped(id), Some(id));
+        assert!(uuid_shaped(&id.to_uppercase()).is_some());
+        for junk in [
+            "",
+            "0f8fad5b-d9cb-469f-a165-70867728950",
+            "0f8fad5b-d9cb-469f-a165-70867728950e0",
+            "0f8fad5bxd9cb-469f-a165-70867728950e",
+            "0f8fad5b-d9cb-469f-a165-70867728950g",
+            "0f8fad5b-d9cb-469f-a165-7086772895-e",
+            "0f8fad5b0d9cb0469f0a165070867728950e",
+            "------------------------------------",
+        ] {
+            assert_eq!(uuid_shaped(junk), None, "{junk}");
+        }
+    }
+
+    #[test]
+    fn unique_violations_are_recognised() {
+        for message in [
+            "duplicate key value violates unique constraint \"filings_open_uidx\"",
+            "UNIQUE violation",
+            "SQLSTATE 23505",
+        ] {
+            assert!(is_unique_violation(&AuthStackError::store(message)), "{message}");
+        }
+        assert!(!is_unique_violation(&AuthStackError::store("connection refused")));
+        assert!(!is_unique_violation(&AuthStackError::store("guard matched 0 rows")));
+    }
+}

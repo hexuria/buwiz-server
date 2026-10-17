@@ -11,7 +11,12 @@
 # - The count `reproject_all_tax_profiles` returns to the admin endpoint. Its
 #   skip rule is `needs_reprojection`, which is tested.
 #
+# - `src/bin/`: the migration binary only talks to Postgres, and CI mutates
+#   with `--lib`, so no test could ever see a mutant there. `make db-migrate`
+#   (apply twice, then verify) is its check.
+#
 # Remove an entry once an HTTP or Postgres harness runs in CI.
+exclude_globs = ["src/bin/**"]
 exclude_re = [
     "src/rest\\.rs:.* in dispatch$",
     "src/server_fn_http\\.rs:.*replace dispatch ->",
