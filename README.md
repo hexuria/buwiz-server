@@ -18,28 +18,80 @@ Desktop IMAP secrets, local PIN, and TOTP are **not** stored on this server.
 
 ## Run locally
 
-```bash
-cp .env.example .env
-# .env may leave AUTH_ROOT_KEY_BASE64 / AUTH_OUTBOX_KEY_BASE64 empty;
-# `make` writes them to .auth-root-key and .auth-outbox-key if needed.
+### Prerequisites
 
-make db-up          # Postgres :54329 and Redis :6379
-make dev transport=both
-# open http://localhost:3008  (prefer localhost over 127.0.0.1 for passkeys)
+| Tool | Version | Install |
+|------|---------|---------|
+| Rust | ≥ 1.93 with the `wasm32-wasip2` target | `rustup target add wasm32-wasip2` |
+| cargo-leptos | ≥ 0.3.7 | `cargo install --locked cargo-leptos --version '^0.3.7'` |
+| wasm-tools | any | `cargo install --locked wasm-tools` |
+| Spin | a host whose `spin:postgres@4.2` blocking `query` returns empty row sets (see Troubleshooting) | [Spin install](https://spinframework.dev/install) |
+| Docker | for Postgres 17 (and Redis) | Docker Desktop / OrbStack |
+| jq, curl | for the verify scripts | Homebrew |
+
+`bash scripts/verify_toolchain.sh` checks Rust, cargo-leptos, the target and wasm-tools.
+
+### Start
+
+```bash
+cp .env.example .env     # works as is: commented lines fall back to the Makefile defaults
+make db-up               # Postgres on 127.0.0.1:54329, Redis on 127.0.0.1:6379
+make dev transport=both  # migrations, then Spin + the mail outbox worker
+# open http://localhost:3008  (localhost, not 127.0.0.1, so passkeys and cookies work)
 ```
 
-`make dev` starts **Spin** and the native **`wasi-auth-outbox-worker`**. `make spin` serves the app but does **not** deliver verification email.
+- `make dev` applies every migration (`0001`–`0007`, idempotent), builds, then runs **Spin** and the native **`wasi-auth-outbox-worker`**. `make spin` serves the app without delivering verification mail.
+- The first `make` writes random dev keys to `.auth-root-key` and `.auth-outbox-key` (gitignored, mode 600). Keep them: deleting them signs everyone out and makes sealed mail unreadable.
+- Mail is **captured** locally. After you register, press **Verify now** (see below).
+- Guest logs: `make dev SPIN_UP_BUILD_FLAG="--build -e RUST_LOG=info,buwiz_server=debug"`.
+
+### First steps in the app
+
+1. Register, then **Verify now**.
+2. **Tax profiles** → add a profile (TIN, branch, RDO).
+3. Share it with a firm: create a workspace (Organizations), then **Give access** on Tax profiles (passes, below).
+4. Connect an AI agent: `claude mcp add --transport http buwiz http://localhost:3008/mcp`, then `/mcp` in Claude Code and **Allow** (AI agents, below).
+5. The desktop app signs in with the device flow (Desktop auth, below).
+
+### Make targets
 
 | Target | Purpose |
 |--------|---------|
-| `make db-up` | Postgres + Redis |
-| `make db-migrate` | wasi-auth schema + Buwiz migrations (`0001`–`0005`) |
-| `make dev` | Spin + outbox worker (register / verify) |
-| `make check` | `wasm32-wasip2` compile |
+| `make db-up` / `make db-down` | Start / stop Postgres + Redis (Docker Compose) |
+| `make db-migrate` | wasi-auth schema + Buwiz migrations `0001`–`0007` |
+| `make db-verify` | Check every migration is applied and unchanged |
+| `make dev` | Migrations, Spin and the outbox worker (register / verify work) |
+| `make spin` | Spin only (no mail delivery) |
+| `make check` / `make grpc-check` | `wasm32-wasip2` compile, REST / gRPC transport |
 | `make smoke` | REST + web route checks against `BASE_URL` |
-| `cargo test --lib` | Domain tests (exclusive ownership) without Spin |
+| `cargo test --lib` | Domain tests, no Spin needed |
+| `cargo test --lib --features ssr,postgres` | Also the OAuth, MCP, REST-route and SQL-placeholder tests |
 
 Password minimum length is **15** (wasi-auth default in this stack).
+
+### Check it works end to end
+
+With `make dev` running:
+
+```bash
+bash scripts/verify_passes.sh   # access passes: offer, accept, use, revoke (4 accounts)
+bash scripts/verify_agents.sh   # agent OAuth: register, Allow, PKCE, refresh, /mcp tools, End
+```
+
+Both sign up throwaway `@example.test` accounts through captured mail and use only the API.
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Sign-in for an unknown email, email verification or `POST /auth/device/poll` with a wrong code never answers; a 401 after a token lookup hangs | Spin host and the vendored `spin-sdk` (blocking `spin:postgres@4.2`, see `vendor/README.md`) disagree: **queries that return zero rows never complete**. Seen with Spin `4.1.0-pre0` on macOS. Queries with rows work. | Use the Spin build the vendored SDK targets. App code is not at fault; endpoints whose queries return rows (for example `/mcp` with a connected agent) still work. |
+| `make db-up` fails: port 6379 in use | Another Redis (e.g. Homebrew) holds 6379 | Redis is optional (wake only): `docker compose up -d --wait postgres`, then `make dev -o db-up REDIS_URL=`. |
+| `cargo-leptos` fails to read `.env` | An unquoted value with spaces (old `.env` copies had `AUTH_*_SCOPES=openid email profile`) | Comment those lines out; the Makefile defaults are the same. |
+| `POSTGRES_URL is required` or Spin refuses to start without a root key | A blank `POSTGRES_URL=` / `AUTH_ROOT_KEY_BASE64=` in `.env` overrides the Makefile default | Delete or comment out the blank line. |
+| `WrongType { postgres: Uuid, rust: String }` | A query bound a uuid/json/timestamp parameter as text | Fixed in `postgres_placeholders` (`$1::uuid` becomes `$1::text::uuid`). New SQL should cast parameters the same way (`?1::uuid`). |
+| Spin ignores Ctrl-C | It waits for hung requests (see the first row) | Send SIGINT again, then SIGKILL the `spin up` process. |
+
+How this server fits with the desktop app and the other repos: [docs/integrations.md](docs/integrations.md).
 
 ### Development authentication (cloud / local default)
 
@@ -354,5 +406,5 @@ src/store/            Postgres events/projection + Redis wake + OAuth codes
 src/desktop_oauth.rs  device flow + PKCE (`RegisterDevice` / `IssueDesktopSession`)
 src/app/              Leptos UI (auth, tax profiles, WebMCP)
 migrations/postgres/  0001 app storage, 0002 tax profiles + OAuth, 0003 hashed TIN, 0004 canonical V1 read models
-docs/                 webmcp, sync API, extensions
+docs/                 integrations (other repos, MCP clients), sync API, webmcp, extensions
 ```
