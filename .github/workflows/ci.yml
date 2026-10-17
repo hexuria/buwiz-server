@@ -25,6 +25,8 @@ jobs:
         with:
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
+      - name: Install protoc (gRPC build)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
       - name: Unit tests (default features)
         run: cargo test --locked --lib
       - name: Unit tests (ssr, postgres)
