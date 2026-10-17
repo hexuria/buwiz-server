@@ -255,6 +255,34 @@ pub(crate) async fn commit_tax_profile_command(
     Ok((next, revision))
 }
 
+/// Rewrites every profile's projection row and pass rows from its event
+/// stream (no new events). Returns how many profiles were rebuilt.
+pub(crate) async fn reproject_all_tax_profiles() -> AuthStackResult<usize> {
+    initialize_schema_async().await?;
+    let rows = execute_sql(
+        "SELECT profile_id::text AS profile_id FROM buwiz_server.tax_profiles ORDER BY profile_id",
+        vec![],
+    )
+    .await?;
+    let mut rebuilt = 0;
+    for row in &rows {
+        let profile_id = required_string(row, "profile_id")?;
+        let loaded = load_stream(&profile_id).await?;
+        if !loaded.state.exists || loaded.from_projection {
+            continue;
+        }
+        // `false`: a rebuild must not move updated_at (the desktop's
+        // last-write-wins token).
+        let mut statements = vec![projection_upsert_statement(&loaded.state, loaded.revision, false)?];
+        statements.extend(loaded.state.passes.iter().map(|pass| pass_upsert_statement(&profile_id, pass)));
+        execute_sql_atomic(statements)
+            .await
+            .map_err(map_concurrency_store_error)?;
+        rebuilt += 1;
+    }
+    Ok(rebuilt)
+}
+
 /// The projection row. `touches_profile` is false for pass-only commits, so
 /// `updated_at` (the desktop's last-write-wins token) only moves when the
 /// profile itself changed.
@@ -623,8 +651,6 @@ fn set_list_access(
         crate::domain::ProfileAccess::Owner
     } else if holder_org.is_some() && holder_org.as_deref() == organization_id {
         crate::domain::ProfileAccess::HoldingOrg
-    } else if view.verified_owner_user_id.as_deref() == Some(user_id) {
-        crate::domain::ProfileAccess::OwnerReadOnly
     } else {
         let permissions = PassPermissions::from_stored(&row_string_list(row, "pass_permissions"));
         if permissions.is_empty() {

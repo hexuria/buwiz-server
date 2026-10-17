@@ -4,7 +4,7 @@ use crate::contracts::{
     MeOrg, MeResponse, PassAskRequest, PassChoice, PassListResponse, PassOfferRequest,
     PassPermissionInfo, PassPresetInfo, PassUpdateRequest, TaxProfileClaimRequest,
     TaxProfileCreateRequest, TaxProfileListResponse, TaxProfilePatchRequest,
-    TaxProfileTransferRequest, TaxProfileView,
+    TaxProfileView,
 };
 use crate::domain::{
     pass_end_from_date, tin_last4, AccountHolder, CloudTaxProfileFacts, FakeOrusVerifier,
@@ -281,39 +281,6 @@ pub async fn reclaim_tax_profile(
     )
     .await?;
     view_after(&profile_id, &user_id, session_id.as_deref()).await
-}
-
-pub async fn transfer_tax_profile(
-    request: TaxProfileTransferRequest,
-    auth: RequestAuth,
-) -> AuthStackResult<TaxProfileView> {
-    let (user_id, session_id) = require_verified_actor(auth).await?;
-    resolve_holder(
-        &user_id,
-        session_id.as_deref(),
-        Some(request.organization_id.as_str()),
-    )
-    .await?;
-    let loaded = crate::store::load_tax_profile_by_id(&request.id).await?;
-    if !loaded.state.exists {
-        return Err(AuthStackError::not_found("tax profile not found"));
-    }
-    let actor_controls_org =
-        authorize_transfer(&loaded.state, &user_id, session_id.as_deref()).await?;
-    let expected = request.expected_revision.unwrap_or(loaded.revision);
-    crate::store::commit_tax_profile_command(
-        &request.id,
-        TaxProfileCommand::Transfer {
-            new_holder: AccountHolder::Organization {
-                organization_id: request.organization_id,
-            },
-            actor_user_id: user_id.clone(),
-            actor_controls_org,
-        },
-        expected,
-    )
-    .await?;
-    view_after(&request.id, &user_id, session_id.as_deref()).await
 }
 
 async fn attested_existing(
@@ -725,11 +692,12 @@ struct Standing {
 
 /// The one gatekeeper for every tax-profile read and write.
 ///
-/// Control follows the holder: the personal holder (the owner), or a member
-/// of the holding organization. While an organization holds it, the verified
-/// owner may only read. A working pass gives every member of the firm that
-/// holds it the pass's permissions. Registering a profile grants nothing by
-/// itself. Moving a profile is checked by [`authorize_transfer`].
+/// The taxpayer always wins: the owner (the personal holder) may do
+/// everything, always. A firm reaches someone else's profile only through a
+/// working pass, which gives every member of that firm the pass's
+/// permissions. A firm's own draft (a profile it created that no taxpayer
+/// owns yet) gives its members the Full preset, without publishing or
+/// sharing. Registering a profile grants nothing by itself.
 async fn authorize(
     state: &TaxProfile,
     user_id: &str,
@@ -768,34 +736,6 @@ async fn standing(state: &TaxProfile, user_id: &str, session_id: Option<&str>) -
     Standing {
         access: state.access_for(user_id, &actor_orgs, &now),
         actor_orgs,
-    }
-}
-
-/// Moving a profile: the personal holder, or someone with
-/// `ownership.transfer` in the holding organization. Returns that
-/// organization for the domain to re-check.
-async fn authorize_transfer(
-    state: &TaxProfile,
-    user_id: &str,
-    session_id: Option<&str>,
-) -> AuthStackResult<Option<String>> {
-    match &state.holder {
-        Some(AccountHolder::Personal { user_id: holder }) if holder == user_id => Ok(None),
-        Some(AccountHolder::Organization { organization_id }) => {
-            let allowed = org_permissions(session_id, organization_id)
-                .await
-                .is_some_and(|permissions| {
-                    permissions
-                        .iter()
-                        .any(|p| p == crate::access::PermissionId::OWNERSHIP_TRANSFER.as_str())
-                });
-            if allowed {
-                Ok(Some(organization_id.clone()))
-            } else {
-                Err(AuthStackError::Forbidden)
-            }
-        }
-        _ => Err(AuthStackError::Forbidden),
     }
 }
 

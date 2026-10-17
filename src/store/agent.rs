@@ -122,8 +122,9 @@ pub(crate) async fn load_agent_client(client_id: &str) -> AuthStackResult<Option
     }))
 }
 
-/// Active profiles `user_id` owns: held personally, or verified as theirs
-/// while a firm holds them.
+/// Active profiles `user_id` owns. (`verified_owner_user_id` also counts so a
+/// profile moved to a firm under the old rules is listed before the
+/// projection is rebuilt; on replay its owner keeps it.)
 pub(crate) async fn list_owned_profiles(user_id: &str) -> AuthStackResult<Vec<OwnedProfile>> {
     initialize_schema_async().await?;
     let rows = execute_sql(

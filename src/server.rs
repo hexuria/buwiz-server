@@ -25,7 +25,7 @@ use crate::app::{
     SaveAuthProvider, SaveDashboardLayout, SaveRedirectAllowlist, SeedDashboardDemos,
     SelectOrganization, SkipDevelopmentEmailVerification, StartOauthLogin, StartPasskeyLogin,
     StartPasskeyRegistration,
-    StartPasswordReset, StartTotpEnrollment, TestDashboardHttpSource, TransferTaxProfile,
+    StartPasswordReset, StartTotpEnrollment, TestDashboardHttpSource,
     PatchTaxProfile,
     TransferWorkspaceOwnership,
     UpdateAccountProfile, UpdateDashboardNote, UpdateWorkspaceName, UpsertCurrentOrganizationRole,
@@ -313,7 +313,6 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
             .with_server_fn::<PatchTaxProfile>()
             .with_server_fn::<ClaimTaxProfile>()
             .with_server_fn::<ReclaimTaxProfile>()
-            .with_server_fn::<TransferTaxProfile>()
             .with_server_fn::<WebmcpEnabled>()
             .with_server_fn::<ListAccountSessions>()
             .with_server_fn::<RevokeAccountSession>()

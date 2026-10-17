@@ -38,7 +38,7 @@ pub struct TaxProfileView {
     pub revision: u64,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
-    /// The caller's standing: `owner`, `holding_org`, `owner_read_only`,
+    /// The caller's standing: `owner`, `holding_org` (a firm's draft),
     /// `pass` or `none`.
     #[serde(default)]
     pub access: String,
@@ -124,14 +124,6 @@ pub struct TaxProfilePatchRequest {
 pub struct TaxProfileClaimRequest {
     pub tin_root: String,
     pub branch_code: String,
-    #[serde(default)]
-    pub expected_revision: Option<u64>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TaxProfileTransferRequest {
-    pub id: String,
-    pub organization_id: String,
     #[serde(default)]
     pub expected_revision: Option<u64>,
 }

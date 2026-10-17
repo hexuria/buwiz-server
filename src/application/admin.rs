@@ -59,6 +59,16 @@ pub async fn run_storage_projections(
     crate::store::catch_up_storage_projections(batch_limit).await
 }
 
+/// Rebuilds every tax profile's projection row and pass rows from its
+/// events, writing no new events. Run once after a release that changes how
+/// history replays (for example, old "move to firm" events now replay as a
+/// pass the owner controls). Safe to repeat.
+pub async fn reproject_tax_profiles(auth: RequestAuth) -> AuthStackResult<serde_json::Value> {
+    require_step_up_permission_for("auth:storage:admin", auth).await?;
+    let rebuilt = crate::store::reproject_all_tax_profiles().await?;
+    Ok(serde_json::json!({ "rebuilt": rebuilt }))
+}
+
 #[cfg(feature = "mail-capture")]
 pub async fn verify_storage_atomic_rollback() -> AuthStackResult<serde_json::Value> {
     crate::store::verify_atomic_rollback_probe().await

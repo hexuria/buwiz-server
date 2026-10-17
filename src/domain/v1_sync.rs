@@ -629,7 +629,7 @@ mod tests {
     fn enqueue_requires_publish_and_active_form() {
         for access in [
             ProfileAccess::None,
-            ProfileAccess::OwnerReadOnly,
+            ProfileAccess::HoldingOrg,
             ProfileAccess::Pass(PassPreset::Full.permissions()),
         ] {
             assert_eq!(

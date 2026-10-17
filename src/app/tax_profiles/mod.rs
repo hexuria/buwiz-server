@@ -297,7 +297,6 @@ fn access_line(access: &str, permissions: &[String]) -> String {
     match access {
         "owner" => "You own this profile".to_owned(),
         "holding_org" => "Held by your workspace".to_owned(),
-        "owner_read_only" => "Yours, held by a workspace: read-only".to_owned(),
         "pass" => format!("Access pass: {} permissions · {publish}", permissions.len()),
         _ => String::new(),
     }

@@ -176,31 +176,6 @@ pub async fn reclaim_tax_profile(
 }
 
 #[server(prefix = "/api/ui")]
-pub async fn transfer_tax_profile(
-    profile_id: String,
-    organization_id: String,
-) -> Result<TaxProfileView, ServerFnError> {
-    #[cfg(feature = "ssr")]
-    {
-        crate::application::transfer_tax_profile(
-            TaxProfileTransferRequest {
-                id: profile_id,
-                organization_id,
-                expected_revision: None,
-            },
-            server_fn_request_auth(),
-        )
-        .await
-        .map_err(server_fn_error)
-    }
-    #[cfg(not(feature = "ssr"))]
-    {
-        let _ = (profile_id, organization_id);
-        unreachable!()
-    }
-}
-
-#[server(prefix = "/api/ui")]
 pub async fn webmcp_enabled() -> Result<bool, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
