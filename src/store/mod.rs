@@ -55,6 +55,22 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn uuid_and_json_placeholders_are_bound_as_text() {
+        assert_eq!(
+            postgres_placeholders("WHERE id = ?1::uuid AND p @> ?2::jsonb AND j = ?3::json"),
+            "WHERE id = $1::text::uuid AND p @> $2::text::jsonb AND j = $3::text::json"
+        );
+        assert_eq!(
+            postgres_placeholders("?1::UUID, ?2::bigint, ?3::text, ?4, ?5::uuidx"),
+            "$1::text::UUID, $2::bigint, $3::text, $4, $5::uuidx"
+        );
+        assert_eq!(
+            postgres_placeholders("?1::timestamptz, ?2::date, ?3::dates"),
+            "$1::text::timestamptz, $2::text::date, $3::dates"
+        );
+    }
+
+    #[test]
     fn dashboard_storage_requires_postgres_is_configuration_error() {
         let error = dashboard_storage_requires_postgres();
         assert!(matches!(
