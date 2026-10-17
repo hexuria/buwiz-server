@@ -310,7 +310,8 @@ A pass lets a firm's workspace work on someone else's profile. Any member of tha
 - **Permissions:** `profile.view`, `profile.edit`, `years.view`, `years.manage`, `drafts.view`, `drafts.save`, `drafts.update`, `drafts.review`, `filings.view`. Write permissions bring their read permission with them.
 - **Presets:** Read-only (the four `*.view`), **Safe** (Read-only + save, update and review drafts; selected when the screen opens), Full (all nine).
 - **`filings.publish`** is never in a preset and never in the permission list: only `allow_publish: true` turns it on, and the screen asks "Are you sure?" first. The server only records it; the grantee's installed buwiz-forms app checks it before sending to BIR.
-- **End date:** none unless the owner sets one (`ends_on`, the last day in Philippine time).
+- **End date:** none unless the owner sets one (`ends_on`, the last day in Philippine time). A pass past its end date stops working at once. The next pass action on that profile records it in the history as `tax_profile.pass_expired`, dated at the end date, with no actor. The pass is then closed: it can't be changed back to life, and the firm can be offered a new one. Ending a pass that has already expired just records the expiry.
+- **Changing:** the owner changes an offered or working pass from Tax profiles → Open passes → **Change**: permissions, publishing (asks first) and the last day (empty removes it).
 - **Ending:** the owner revokes or declines; the workspace declines an offer, withdraws a request, or gives the pass back. A claim or reclaim ends every open pass.
 - Sharing, ending passes, archiving and deleting stay with the owner; no pass grants them.
 - Notices are in-app (the Tax profiles page, "Waiting for you"); there is no grant email.
