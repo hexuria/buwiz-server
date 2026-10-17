@@ -15,7 +15,8 @@ use crate::contracts::{
     TokenVerifyRequest, TaxProfileClaimRequest, TaxProfileCreateRequest, TaxProfilePatchRequest,
     PassAskRequest, PassOfferRequest, PassUpdateRequest, FirmPublisherAddRequest,
     OwnerInviteCreateRequest, OwnerInviteTokenRequest, OwnershipClaimDecisionRequest,
-    OwnershipClaimPartRequest, OwnershipClaimStartRequest,
+    OwnershipClaimPartRequest, OwnershipClaimStartRequest, DraftSaveRequest, FilingQueueRequest,
+    FilingReportRequest, TaxYearCloneRequest, TaxYearPutRequest,
 };
 use crate::error::{AuthStackError, AuthStackResult};
 
@@ -449,6 +450,61 @@ async fn dispatch(req: RestRequest) -> AuthStackResult<RestResponse> {
             json_result(
                 crate::application::revoke_agent_connection(connection_id, request_auth).await,
             )
+        }
+        (method, path) if record_route(path).is_some() => {
+            let (profile_id, route) = record_route(path).expect("checked");
+            let profile_id = profile_id.to_owned();
+            if method != Method::GET {
+                validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+            }
+            match (method, route) {
+                (Method::GET, RecordRoute::Years) => {
+                    json_result(crate::application::list_tax_years(profile_id, request_auth).await)
+                }
+                (Method::PUT, RecordRoute::Year { tax_year }) => {
+                    let payload = parse_json::<TaxYearPutRequest>(req).await?;
+                    json_result(
+                        crate::application::put_tax_year(profile_id, tax_year, payload, request_auth).await,
+                    )
+                }
+                (Method::POST, RecordRoute::CloneYear { tax_year }) => {
+                    let payload = parse_json::<TaxYearCloneRequest>(req).await?;
+                    json_result(
+                        crate::application::clone_tax_year(profile_id, tax_year, payload, request_auth)
+                            .await,
+                    )
+                }
+                (Method::GET, RecordRoute::Drafts) => {
+                    let tax_year = query_value(&uri, "tax_year").and_then(|year| year.parse().ok());
+                    json_result(crate::application::list_drafts(profile_id, tax_year, request_auth).await)
+                }
+                (Method::PUT, RecordRoute::Drafts) => {
+                    let payload = parse_json::<DraftSaveRequest>(req).await?;
+                    json_result(crate::application::save_draft(profile_id, payload, request_auth).await)
+                }
+                (Method::GET, RecordRoute::Draft { draft_id }) => json_result(
+                    crate::application::get_draft(profile_id, draft_id.to_owned(), request_auth).await,
+                ),
+                (Method::POST, RecordRoute::ReviewDraft { draft_id }) => json_result(
+                    crate::application::review_draft(profile_id, draft_id.to_owned(), request_auth).await,
+                ),
+                (Method::GET, RecordRoute::Filings) => {
+                    json_result(crate::application::list_filings(profile_id, request_auth).await)
+                }
+                (Method::POST, RecordRoute::Filings) => {
+                    let payload = parse_json::<FilingQueueRequest>(req).await?;
+                    json_result(crate::application::queue_filing(profile_id, payload, request_auth).await)
+                }
+                (Method::POST, RecordRoute::FilingStep { filing_id, step }) => {
+                    let (filing_id, step) = (filing_id.to_owned(), step.to_owned());
+                    let payload = parse_json::<FilingReportRequest>(req).await?;
+                    json_result(
+                        crate::application::report_filing(profile_id, filing_id, step, payload, request_auth)
+                            .await,
+                    )
+                }
+                _ => auth_error_response(&AuthStackError::not_found("unknown route")),
+            }
         }
         (method, path) if claim_route(path).is_some() => {
             let route = claim_route(path).expect("checked");
@@ -1046,6 +1102,51 @@ fn pass_route(path: &str) -> Option<(&str, Option<&str>, Option<&str>)> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecordRoute<'a> {
+    /// `GET /api/tax-profiles/{profile}/years`
+    Years,
+    /// `PUT /api/tax-profiles/{profile}/years/{year}`
+    Year { tax_year: i32 },
+    /// `POST /api/tax-profiles/{profile}/years/{year}/clone`
+    CloneYear { tax_year: i32 },
+    /// `GET|PUT /api/tax-profiles/{profile}/drafts`
+    Drafts,
+    /// `GET /api/tax-profiles/{profile}/drafts/{draft}`
+    Draft { draft_id: &'a str },
+    /// `POST /api/tax-profiles/{profile}/drafts/{draft}/review`
+    ReviewDraft { draft_id: &'a str },
+    /// `GET|POST /api/tax-profiles/{profile}/filings`
+    Filings,
+    /// `POST /api/tax-profiles/{profile}/filings/{filing}/{submitted|confirmed|failed|paid}`
+    FilingStep { filing_id: &'a str, step: &'a str },
+}
+
+fn record_route(path: &str) -> Option<(&str, RecordRoute<'_>)> {
+    let rest = path
+        .strip_prefix("/api/tax-profiles/")
+        .or_else(|| path.strip_prefix("/tax-profiles/"))?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.iter().any(|part| part.is_empty()) || is_reserved_profile_segment(parts[0]) {
+        return None;
+    }
+    let year = |raw: &str| raw.parse::<i32>().ok().filter(|_| raw.len() == 4);
+    let route = match parts.as_slice() {
+        [_, "years"] => RecordRoute::Years,
+        [_, "years", raw] => RecordRoute::Year { tax_year: year(raw)? },
+        [_, "years", raw, "clone"] => RecordRoute::CloneYear { tax_year: year(raw)? },
+        [_, "drafts"] => RecordRoute::Drafts,
+        [_, "drafts", draft_id] => RecordRoute::Draft { draft_id },
+        [_, "drafts", draft_id, "review"] => RecordRoute::ReviewDraft { draft_id },
+        [_, "filings"] => RecordRoute::Filings,
+        [_, "filings", filing_id, step @ ("submitted" | "confirmed" | "failed" | "paid")] => {
+            RecordRoute::FilingStep { filing_id, step }
+        }
+        _ => return None,
+    };
+    Some((parts[0], route))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ClaimRoute<'a> {
     /// `GET|POST /api/tax-profiles/ownership-claims`
     Mine,
@@ -1283,6 +1384,59 @@ mod tests {
         assert_eq!(pass_route("/api/tax-profiles/passes/request"), None);
         assert_eq!(pass_route("/api/tax-profiles/p1/passes/g1/accept/x"), None);
         assert_eq!(tax_profile_id_from_path("/api/tax-profiles/passes"), None);
+    }
+
+    #[test]
+    fn record_routes_parse_and_reject_junk() {
+        let p = "/api/tax-profiles/p1";
+        assert_eq!(record_route(&format!("{p}/years")), Some(("p1", RecordRoute::Years)));
+        assert_eq!(
+            record_route(&format!("{p}/years/2026")),
+            Some(("p1", RecordRoute::Year { tax_year: 2026 }))
+        );
+        assert_eq!(
+            record_route("/tax-profiles/p1/years/2026/clone"),
+            Some(("p1", RecordRoute::CloneYear { tax_year: 2026 }))
+        );
+        assert_eq!(record_route(&format!("{p}/drafts")), Some(("p1", RecordRoute::Drafts)));
+        assert_eq!(
+            record_route(&format!("{p}/drafts/d1")),
+            Some(("p1", RecordRoute::Draft { draft_id: "d1" }))
+        );
+        assert_eq!(
+            record_route(&format!("{p}/drafts/d1/review")),
+            Some(("p1", RecordRoute::ReviewDraft { draft_id: "d1" }))
+        );
+        assert_eq!(record_route(&format!("{p}/filings")), Some(("p1", RecordRoute::Filings)));
+        for step in ["submitted", "confirmed", "failed", "paid"] {
+            assert_eq!(
+                record_route(&format!("{p}/filings/f1/{step}")),
+                Some(("p1", RecordRoute::FilingStep { filing_id: "f1", step }))
+            );
+        }
+        for junk in [
+            "/api/tax-profiles/p1",
+            "/api/tax-profiles/p1/years/26",
+            "/api/tax-profiles/p1/years/20260",
+            "/api/tax-profiles/p1/years/abcd",
+            "/api/tax-profiles/p1/years/2026/copy",
+            "/api/tax-profiles/p1/drafts/",
+            "/api/tax-profiles/p1/drafts/d1/approve",
+            "/api/tax-profiles/p1/filings/f1/queued",
+            "/api/tax-profiles/p1/filings/f1",
+            "/api/tax-profiles//years",
+            "/api/tax-profiles/passes/years",
+            "/api/tax-profiles/invites/drafts",
+            "/api/tax-profiles/ownership-claims/filings",
+            "/api/tax-profiles/p1/passes",
+        ] {
+            assert_eq!(record_route(junk), None, "{junk}");
+        }
+        // And the other routes don't claim these paths.
+        assert_eq!(pass_route("/api/tax-profiles/p1/years"), None);
+        assert_eq!(invite_route("/api/tax-profiles/p1/drafts"), None);
+        assert_eq!(tax_profile_id_from_path("/api/tax-profiles/p1/filings"), None);
+        assert_eq!(tax_profile_action_from_path("/api/tax-profiles/p1/years", "archive"), None);
     }
 
     #[test]

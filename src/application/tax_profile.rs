@@ -906,6 +906,25 @@ async fn require_publisher_manager(organization_id: &str, auth: RequestAuth) -> 
     Ok(context.principal().user_id().as_str().to_owned())
 }
 
+/// The caller and their standing on a profile, for the year, draft and
+/// filing endpoints: `(user_id, access, is_archived)`. A caller with no
+/// standing gets "not found", so ids reveal nothing.
+pub(crate) async fn record_access(
+    profile_id: &str,
+    auth: RequestAuth,
+) -> AuthStackResult<(String, ProfileAccess, bool)> {
+    let (user_id, session_id) = require_verified_actor(auth).await?;
+    let loaded = crate::store::load_tax_profile_by_id(profile_id).await?;
+    if !loaded.state.exists {
+        return Err(AuthStackError::not_found("tax profile not found"));
+    }
+    let standing = standing(&loaded.state, &user_id, session_id.as_deref()).await;
+    if standing.access == ProfileAccess::None {
+        return Err(AuthStackError::not_found("tax profile not found"));
+    }
+    Ok((user_id, standing.access, loaded.state.is_archived))
+}
+
 // ── The gatekeeper ──────────────────────────────────────────────────────────
 
 /// What a caller wants to do with a tax profile.

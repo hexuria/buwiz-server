@@ -125,6 +125,16 @@ impl AtomicSqlStatement {
         }
     }
 
+    /// Returns its rows, and may return none.
+    pub(crate) fn query(sql: impl Into<String>, params: Vec<Value>) -> Self {
+        Self {
+            sql: sql.into(),
+            params,
+            returns_rows: true,
+            minimum_rows: 0,
+        }
+    }
+
     pub(crate) fn guard(sql: impl Into<String>, params: Vec<Value>) -> Self {
         Self {
             sql: sql.into(),
@@ -188,6 +198,7 @@ pub async fn initialize_schema_async() -> AuthStackResult<()> {
         "0007_agent_connections",
         "0008_owner_invites_and_publishers",
         "0009_ownership_claims",
+        "0010_record_authors",
     ] {
         let app_migration = execute_postgres(
             "SELECT version FROM buwiz_server.schema_migrations WHERE version = ?1",
