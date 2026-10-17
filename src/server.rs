@@ -27,7 +27,7 @@ use crate::app::{
     StartPasskeyRegistration,
     StartPasswordReset, StartTotpEnrollment, TestDashboardHttpSource,
     PatchTaxProfile,
-    ListPasses, OfferPass, AskForPass, PassStep, ListAgentConnections, RevokeAgentConnection, InviteOwner, WithdrawOwnerInvite, PreviewOwnerInvite, AcceptOwnerInvite, ListFirmPublishers, ChangeFirmPublisher,
+    ListPasses, OfferPass, AskForPass, PassStep, ListAgentConnections, RevokeAgentConnection, InviteOwner, WithdrawOwnerInvite, PreviewOwnerInvite, AcceptOwnerInvite, ListFirmPublishers, ChangeFirmPublisher, ListMyOwnershipClaims, StartOwnershipClaim, UploadOwnershipClaimPart, WithdrawOwnershipClaim, ListOwnershipClaimQueue, DecideOwnershipClaim,
     TransferWorkspaceOwnership,
     UpdateAccountProfile, UpdateDashboardNote, UpdateWorkspaceName, UpsertCurrentOrganizationRole,
     UpsertDashboardQuery, UpsertDashboardResource, UpsertDashboardSource, UpsertWorkspaceRole,
@@ -326,6 +326,12 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
             .with_server_fn::<AcceptOwnerInvite>()
             .with_server_fn::<ListFirmPublishers>()
             .with_server_fn::<ChangeFirmPublisher>()
+            .with_server_fn::<ListMyOwnershipClaims>()
+            .with_server_fn::<StartOwnershipClaim>()
+            .with_server_fn::<UploadOwnershipClaimPart>()
+            .with_server_fn::<WithdrawOwnershipClaim>()
+            .with_server_fn::<ListOwnershipClaimQueue>()
+            .with_server_fn::<DecideOwnershipClaim>()
             .with_server_fn::<WebmcpEnabled>()
             .with_server_fn::<ListAccountSessions>()
             .with_server_fn::<RevokeAccountSession>()

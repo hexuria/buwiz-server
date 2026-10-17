@@ -1372,7 +1372,11 @@ impl TaxProfile {
                 reason: "caller already holds exclusive control".to_owned(),
             });
         }
-        if !is_recorded_owner && !matches!(proof_method, ProofMethod::FakeOrus | ProofMethod::Orus)
+        if !is_recorded_owner
+            && !matches!(
+                proof_method,
+                ProofMethod::FakeOrus | ProofMethod::Orus | ProofMethod::Form2303Review
+            )
         {
             return Err(TaxProfileError::ReclaimDenied);
         }
@@ -3304,5 +3308,78 @@ mod tests {
         let both = orgs(&["firm-1", "firm-2"]);
         assert!(!state.effective_access("clerk", &both, &orgs(&["firm-2"]), NOW).has(P::FilingsPublish));
         assert!(state.effective_access("clerk", &both, &orgs(&["firm-1"]), NOW).has(P::FilingsPublish));
+    }
+
+    // ── Form 2303 claims ────────────────────────────────────────────────────
+
+    fn reviewed_reclaim(user: &str) -> TaxProfileCommand {
+        TaxProfileCommand::Reclaim {
+            actor_user_id: user.into(),
+            identity_hash: identity(),
+            proof_method: ProofMethod::Form2303Review,
+        }
+    }
+
+    #[test]
+    fn a_reviewed_2303_takes_the_profile_from_whoever_registered_it_first() {
+        // Mallory registered Ana's TIN first and gave a firm a pass.
+        let mut store = InMemoryTaxProfileStore::default();
+        store
+            .execute("tp-1", create("tp-1", personal("mallory"), "mallory", "Squatted"), 0)
+            .unwrap();
+        store
+            .execute("tp-1", offer("pass-1", "firm-1", "mallory", PassPreset::Safe.permissions()), 1)
+            .unwrap();
+        store.execute("tp-1", accept("pass-1", "boss", &["firm-1"]), 2).unwrap();
+        let (state, _) = store.execute("tp-1", reviewed_reclaim("ana"), 3).unwrap();
+        assert_eq!(state.holder, Some(personal("ana")));
+        assert_eq!(state.verification, VerificationStatus::Verified);
+        assert_eq!(state.verified_owner_user_id.as_deref(), Some("ana"));
+        assert_eq!(state.access_for("ana", &[], NOW), ProfileAccess::Owner);
+        // Mallory and the pass she gave are out.
+        assert_eq!(state.access_for("mallory", &[], NOW), ProfileAccess::None);
+        assert_eq!(state.access_for("clerk", &orgs(&["firm-1"]), NOW), ProfileAccess::None);
+        assert_eq!(state.pass("pass-1").unwrap().status, PassStatus::Revoked);
+    }
+
+    #[test]
+    fn a_reviewed_2303_takes_a_firm_draft_and_withdraws_its_invite() {
+        let mut store = firm_draft();
+        store.execute("tp-1", invite("i1", "someone@example.ph", &["firm-1"]), 1).unwrap();
+        let (state, _) = store
+            .execute(
+                "tp-1",
+                TaxProfileCommand::Claim {
+                    claimant: personal("ana"),
+                    actor_user_id: "ana".into(),
+                    identity_hash: identity(),
+                    proof_method: ProofMethod::Form2303Review,
+                },
+                2,
+            )
+            .unwrap();
+        assert_eq!(state.holder, Some(personal("ana")));
+        assert_eq!(state.invite("i1").unwrap().status, InviteStatus::Withdrawn);
+        assert_eq!(state.access_for("clerk", &orgs(&["firm-1"]), NOW), ProfileAccess::None);
+    }
+
+    #[test]
+    fn every_proof_method_including_a_reviewed_2303_allows_a_reclaim() {
+        let mut store = InMemoryTaxProfileStore::default();
+        store
+            .execute("tp-1", create("tp-1", personal("mallory"), "mallory", "Squatted"), 0)
+            .unwrap();
+        for proof in [ProofMethod::FakeOrus, ProofMethod::Orus, ProofMethod::Form2303Review] {
+            let mut command = reviewed_reclaim("ana");
+            if let TaxProfileCommand::Reclaim { proof_method, .. } = &mut command {
+                *proof_method = proof;
+            }
+            assert!(store.load("tp-1").0.handle(command).is_ok(), "{proof:?}");
+        }
+        // The owner can't "reclaim" from themselves.
+        assert!(matches!(
+            store.load("tp-1").0.handle(reviewed_reclaim("mallory")).unwrap_err(),
+            TaxProfileError::InvalidFacts { .. }
+        ));
     }
 }

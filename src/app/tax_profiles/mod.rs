@@ -5,10 +5,12 @@
 #![allow(clippy::unit_arg)]
 
 mod agents;
+mod claims;
 mod invites;
 mod passes;
 
 pub use agents::AgentsPanel;
+pub use claims::{AdminOwnershipClaimsPage, OwnershipClaimPanel, OwnershipClaimQueue};
 pub use invites::{FirmPanel, OwnerInviteAccept, OwnerInvitePage};
 pub use passes::PassesPanel;
 
@@ -36,6 +38,7 @@ pub fn TaxProfilesPage() -> impl IntoView {
             <TaxProfilesHome />
             <PassesPanel />
             <FirmPanel />
+            <OwnershipClaimPanel />
             <AgentsPanel />
         },
     )

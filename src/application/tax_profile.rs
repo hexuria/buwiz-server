@@ -309,7 +309,7 @@ async fn attested_existing(
     Ok((profile_id, identity_hash, expected, proof.method))
 }
 
-async fn require_verified_actor(auth: RequestAuth) -> AuthStackResult<(String, Option<String>)> {
+pub(crate) async fn require_verified_actor(auth: RequestAuth) -> AuthStackResult<(String, Option<String>)> {
     let session = authenticated_session_view(auth).await?;
     let user_id = session.user_id.ok_or(AuthStackError::AuthRequired)?;
     let status = crate::store::user_status(&user_id).await?;
@@ -1081,7 +1081,7 @@ async fn verify_tin_ownership(
         .map_err(map_orus_error)
 }
 
-fn parse_registration(tin_root: &str, branch_code: &str) -> AuthStackResult<RegistrationKey> {
+pub(crate) fn parse_registration(tin_root: &str, branch_code: &str) -> AuthStackResult<RegistrationKey> {
     RegistrationKey::parse(tin_root, branch_code).map_err(AuthStackError::validation)
 }
 

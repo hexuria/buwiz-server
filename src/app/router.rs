@@ -10,7 +10,7 @@ use crate::app::workspace_settings::{
 use crate::app::{
     AccountMfaPage, AccountPasskeysPage, AccountPasswordPage, AccountProfilePage,
     AccountProvidersPage, AccountSessionsPage, AccountVaultRedirectPage, AdminHealthPage,
-    AdminPoliciesPage, AdminUsersPage, AuthProviderAdminPage, AuthRequiredPage,
+    AdminOwnershipClaimsPage, AdminPoliciesPage, AdminUsersPage, AuthProviderAdminPage, AuthRequiredPage,
     AuthorizationPolicyPage, ForbiddenPage, ForgotPasswordPage, HomePage, InvitationAcceptPage,
     LoginPage, NotFoundPage, OAuthCallbackErrorPage, OAuthCallbackPage, OrgVaultPage,
     OrganizationAuditPage, OrganizationInvitationsPage, OrganizationMembersPage,
@@ -127,6 +127,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/organizations/permissions") view=OrganizationPermissionsPage />
                     <Route path=path!("/organizations/audit") view=OrganizationAuditPage />
                     <Route path=path!("/admin/users") view=AdminUsersPage />
+                    <Route path=path!("/admin/ownership-claims") view=AdminOwnershipClaimsPage />
                     <Route path=path!("/admin/health") view=AdminHealthPage />
                     <Route path=path!("/admin/policies") view=AdminPoliciesPage />
                     <Route path=path!("/admin/auth/signing-keys") view=SigningKeyAdminPage />

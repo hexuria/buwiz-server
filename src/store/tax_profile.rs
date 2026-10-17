@@ -231,6 +231,17 @@ pub(crate) async fn commit_tax_profile_command(
     command: TaxProfileCommand,
     expected_revision: u64,
 ) -> AuthStackResult<(TaxProfile, u64)> {
+    commit_tax_profile_command_with(profile_id, command, expected_revision, Vec::new()).await
+}
+
+/// [`commit_tax_profile_command`], plus `extra` statements in the same
+/// transaction (for example, closing the ownership claim that caused it).
+pub(crate) async fn commit_tax_profile_command_with(
+    profile_id: &str,
+    command: TaxProfileCommand,
+    expected_revision: u64,
+    extra: Vec<AtomicSqlStatement>,
+) -> AuthStackResult<(TaxProfile, u64)> {
     initialize_schema_async().await?;
     let loaded = load_stream(profile_id).await?;
     if loaded.revision != expected_revision {
@@ -280,6 +291,7 @@ pub(crate) async fn commit_tax_profile_command(
     for invite in &next.invites {
         statements.push(invite_upsert_statement(profile_id, invite));
     }
+    statements.extend(extra);
     execute_sql_atomic(statements)
         .await
         .map_err(map_concurrency_store_error)?;

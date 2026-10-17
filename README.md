@@ -259,11 +259,25 @@ V1 commands (past-tense event mirrors). Keep them small.
 
 Queries: `GetTaxProfile`, `ListTaxProfilesForAccount`, `GetProfileYear`, `ListYearForms`, `GetFormDraft`, `ListDraftsForYear`, `ListFilings`, `GetFilingByPeriod`.
 
-Claim and reclaim remain (TIN attestation + ORUS proof) for a taxpayer to take a firm's draft or a profile someone else registered. Moving a profile to a firm is gone: firms work through passes.
+Claim and reclaim remain for a taxpayer to take a firm's draft or a profile someone else registered. Moving a profile to a firm is gone: firms work through passes.
+
+**Ownership claims with Form 2303.** ORUS has no production adapter, so the working proof is a Form 2303 (Certificate of Registration) that Buwiz staff review. The flow:
+
+1. The claimant starts a claim with the TIN and branch. The TIN goes in the request body, never in a URL.
+2. They upload the file in 4 KiB parts. Request bodies can't stream on the current runtime, so each part has to fit the browser shell's 6000-character header shim. Each part is encrypted when it arrives.
+3. After the last part, the server screens the whole file (`domain::provenance`):
+   - it must be a JPEG, PNG or PDF of at most 5 MB;
+   - a file that names an IPTC AI source type (`trainedAlgorithmicMedia`, in C2PA or XMP) is refused with "upload a clean scan", counted, and never stored.
+4. The file is stored encrypted: AES-256-GCM, with a key derived from the server key and the claim id as associated data.
+5. Staff (`system.user.manage` plus a step-up, never the claimant) download it from `/admin/ownership-claims` and approve or reject it.
+6. Approval runs the profile's own claim or reclaim (`ProofMethod::Form2303Review`) and closes the claim in the same transaction, so every pass and invite ends.
+7. Every way a claim closes deletes the file, and keeps the decision, reviewer, note and SHA-256.
+
+Form 2303 is used **only** to prove ownership, never to choose forms. The `c2pa` crate doesn't build for `wasm32-wasip2` on stable, so the screen reads the marks without verifying signatures. It only ever refuses, so a forged mark hurts nobody but its uploader. No mark found proves nothing: metadata can be stripped, and SynthID has no public detector. That's why staff review every claim.
 
 V1.1 stubs only: `SaveFormTemplate` / `ApplyFormTemplate`.
 
-Do **not** port COR/OCR/effective-date ledgers, inference flag updates, or IMAP/OAuth mailbox secrets.
+Do **not** port COR/OCR/effective-date ledgers, inference flag updates, or IMAP/OAuth mailbox secrets. The only Form 2303 the server accepts is an ownership-claim upload (above). It is never read for form selection and is deleted once the claim is decided.
 
 Rules:
 
@@ -335,6 +349,13 @@ Cloud field subset for sync: `full_name`, `rdo_code`, `address`, `taxpayer_type`
 | `POST /tax-profiles/{id}/invites/{invite}/withdraw` | `WithdrawOwnerInvite` (holding workspace) |
 | `POST /tax-profiles/invites/{invite}/preview` | What the invite is for (`{ token }`) |
 | `POST /tax-profiles/invites/{invite}/accept` | `AcceptOwnerInvite` (`{ token }`; caller's verified email must match) |
+| `GET /tax-profiles/ownership-claims` | Your Form 2303 claims |
+| `POST /tax-profiles/ownership-claims` | Start a claim (`{ tin_root, branch_code }`) |
+| `POST /tax-profiles/ownership-claims/{claim}/file-parts` | One part of the file (`{ index, total, data }`, base64 of at most 4 KiB, in order; the last part screens and stores it) |
+| `POST /tax-profiles/ownership-claims/{claim}/withdraw` | Withdraw an open claim (the file is deleted) |
+| `GET /api/admin/ownership-claims` | Staff: claims waiting for review (`system.user.manage`, step-up) |
+| `GET /api/admin/ownership-claims/{claim}/file` | Staff: download the decrypted file |
+| `POST /api/admin/ownership-claims/{claim}/approve` / `reject` | Staff: decide (`{ note }`, required to reject) |
 | `GET /api/organizations/{org}/publishers` | Members the workspace lets publish to BIR (any member) |
 | `POST /api/organizations/{org}/publishers` | Add one by sign-in email (`organization.update`, step-up) |
 | `POST /api/organizations/{org}/publishers/{user}/remove` | Remove one (`organization.update`, step-up) |

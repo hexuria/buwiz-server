@@ -107,6 +107,7 @@ pub(crate) const OAUTH_FLOW_BINDING_INFO: &[u8] = b"fullstack:oauth-flow:v1";
 pub(crate) const CSRF_KEY_INFO: &[u8] = b"fullstack:csrf:v1";
 pub(crate) const JWT_KEY_INFO: &[u8] = b"fullstack:jwt:v1";
 pub(crate) const TIN_IDENTITY_INFO: &[u8] = b"fullstack:tin-identity:v1";
+pub(crate) const OWNERSHIP_CLAIM_FILE_INFO: &[u8] = b"buwiz:ownership-claim-file:v1";
 pub(crate) const VERIFIED_TOKEN_CACHE_CAPACITY: usize = 256;
 
 pub(crate) static TOKEN_VERIFIER: OnceLock<RuntimeTokenVerifier> = OnceLock::new();
