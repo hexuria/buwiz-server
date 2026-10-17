@@ -57,6 +57,9 @@ mod server_fn_http;
 #[cfg(feature = "ssr")]
 mod store;
 
+#[cfg(all(test, feature = "ssr", not(runtime_spin)))]
+mod db_tests;
+
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn hydrate() {

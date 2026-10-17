@@ -215,6 +215,15 @@ pub async fn require_permission_for(
         return Err(AuthStackError::Forbidden);
     }
 
+    #[cfg(test)]
+    if let Some(view) = crate::db_tests::session(&auth) {
+        return if view.permissions.iter().any(|p| p == permission) {
+            Ok(view)
+        } else {
+            Err(AuthStackError::Forbidden)
+        };
+    }
+
     require_authorized_route_for(permission, auth.session_id).await
 }
 

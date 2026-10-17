@@ -25,6 +25,10 @@ use crate::contracts::*;
 use crate::error::{AuthStackError, AuthStackResult};
 
 pub async fn list_organizations(auth: RequestAuth) -> AuthStackResult<OrganizationListResponse> {
+    #[cfg(test)]
+    if let Some(organizations) = crate::db_tests::organizations(&auth) {
+        return Ok(OrganizationListResponse { organizations });
+    }
     let (context, _) = verified_context_and_permissions(auth, false).await?;
     crate::auth_product::list_organizations(context.principal().user_id().as_str()).await
 }

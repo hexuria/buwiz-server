@@ -39,6 +39,25 @@ jobs:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    # Each shard gets its own database, so the database tests (src/db_tests)
+    # check store and application mutants too. Same setup as ci.yml.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: wasi_auth
+          POSTGRES_USER: wasi_auth
+          POSTGRES_PASSWORD: wasi_auth_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wasi_auth -d wasi_auth"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      DATABASE_URL: postgres://wasi_auth:wasi_auth_ci@127.0.0.1:5432/wasi_auth
+      AUTH_PUBLIC_BASE_URL: http://127.0.0.1:3000
+      AUTH_ROOT_KEY_BASE64: dGVzdC1vbmx5LXJvb3Qta2V5LW5ldmVyLWluLXByb2Q=
+      BUWIZ_REQUIRE_DATABASE: "1"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,6 +82,8 @@ jobs:
             git diff origin/main...HEAD -- src > pr.diff
           fi
           wc -l pr.diff
+      - name: Migrate the test database
+        run: cargo run --locked --quiet --no-default-features --features migrate --bin wasi-auth-migrate -- apply
       - name: Mutate changed lines
         run: |
           if [ ! -s pr.diff ]; then echo "No Rust source changes."; exit 0; fi

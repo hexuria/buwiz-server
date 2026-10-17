@@ -19,6 +19,20 @@ jobs:
     name: Tests and wasm checks
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # The database tests (src/db_tests) run the store and application layers
+    # against this Postgres; see scripts/test_db.sh.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: wasi_auth
+          POSTGRES_USER: wasi_auth
+          POSTGRES_PASSWORD: wasi_auth_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wasi_auth -d wasi_auth"
+          --health-interval 2s --health-timeout 3s --health-retries 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -29,7 +43,17 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
       - name: Unit tests (default features)
         run: cargo test --locked --lib
-      - name: Unit tests (ssr, postgres)
+      - name: Migrate the test database
+        env:
+          DATABASE_URL: postgres://wasi_auth:wasi_auth_ci@127.0.0.1:5432/wasi_auth
+        run: cargo run --locked --quiet --no-default-features --features migrate --bin wasi-auth-migrate -- apply
+      - name: Unit and database tests (ssr, postgres)
+        # Throwaway keys for a throwaway database.
+        env:
+          DATABASE_URL: postgres://wasi_auth:wasi_auth_ci@127.0.0.1:5432/wasi_auth
+          AUTH_PUBLIC_BASE_URL: http://127.0.0.1:3000
+          AUTH_ROOT_KEY_BASE64: dGVzdC1vbmx5LXJvb3Qta2V5LW5ldmVyLWluLXByb2Q=
+          BUWIZ_REQUIRE_DATABASE: "1"
         run: cargo test --locked --lib --features ssr,postgres
       - name: make check (wasm32-wasip2)
         run: WASI_RUNTIME=spin AUTH_TRANSPORT=both cargo check --locked --target wasm32-wasip2 --no-default-features --features ssr,postgres,mail-capture

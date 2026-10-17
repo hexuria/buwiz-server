@@ -83,6 +83,10 @@ pub(crate) struct AuthenticatedSessionParts {
 }
 
 pub(crate) async fn authenticated_session_view(auth: RequestAuth) -> AuthStackResult<SessionView> {
+    #[cfg(test)]
+    if let Some(view) = crate::db_tests::session(&auth) {
+        return Ok(view);
+    }
     if let Some(access_token) = auth.access_token {
         let verified =
             crate::application::auth::verify_access_token(TokenVerifyRequest { access_token })

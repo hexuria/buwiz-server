@@ -159,3 +159,20 @@ pub struct FilingReportRequest {
     #[serde(default)]
     pub error_summary: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_form_is_active_unless_it_says_otherwise() {
+        let form: YearForm =
+            serde_json::from_value(serde_json::json!({"form_code": "1701Q", "frequency": "quarterly"})).unwrap();
+        assert!(form.active);
+        let off: YearForm = serde_json::from_value(
+            serde_json::json!({"form_code": "1701Q", "frequency": "quarterly", "active": false}),
+        )
+        .unwrap();
+        assert!(!off.active);
+    }
+}

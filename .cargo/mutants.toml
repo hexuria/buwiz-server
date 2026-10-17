@@ -1,7 +1,8 @@
 # cargo-mutants settings (see .github/workflows/mutants.yml).
 #
-# Excluded on purpose. These are not equivalent mutants. They are code that
-# unit tests can't reach and that only an HTTP or database run would check:
+# Excluded on purpose. Most are not equivalent mutants but code that the
+# tests can't reach: CI runs the unit tests and the database tests
+# (src/db_tests, against Postgres), but no HTTP server and no browser.
 #
 # - Route tables (`rest::dispatch`, `server_fn_http::dispatch`). Path parsing
 #   is pure and unit-tested (`pass_route`, `invite_route`, `claim_route`, ...);
@@ -15,10 +16,26 @@
 #   with `--lib`, so no test could ever see a mutant there. `make db-migrate`
 #   (apply twice, then verify) is its check.
 #
-# Remove an entry once an HTTP or Postgres harness runs in CI.
-exclude_globs = ["src/bin/**"]
+# - Browser-only glue, compiled only with `--features hydrate`, so a mutant
+#   there changes nothing in the test build: reading the picked file and
+#   sending it (`send_claim`, `chosen_file`, `read_file`), and reading the
+#   page's location (`invite_from_location`, `browser_origin`). The logic in
+#   them is pulled out and tested (`file_size_problem`,
+#   `parse_invite_location`).
+# - The test harness itself (`src/db_tests/`, `src/store/test_pg.rs`).
+#
+# Equivalent mutants:
+# - `|` to `^` in `legacy_move_pass_id`: the masked bits are already zero
+#   (`b & 0x0f`, `b & 0x3f`), so OR and XOR set the same version and
+#   variant bits.
+#
+# Remove an entry once an HTTP or browser harness runs in CI.
+exclude_globs = ["src/bin/**", "src/db_tests/**", "src/store/test_pg.rs"]
 exclude_re = [
     "src/rest\\.rs:.* in dispatch$",
     "src/server_fn_http\\.rs:.*replace dispatch ->",
     "in reproject_all_tax_profiles$",
+    "src/app/tax_profiles/claims\\.rs:.*replace (send_claim|chosen_file|read_file) ->",
+    "src/app/tax_profiles/invites\\.rs:.*replace (invite_from_location|browser_origin) ->",
+    "replace \\| with \\^ in legacy_move_pass_id$",
 ]

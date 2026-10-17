@@ -894,6 +894,18 @@ pub async fn remove_firm_publisher(
 
 async fn require_publisher_manager(organization_id: &str, auth: RequestAuth) -> AuthStackResult<String> {
     crate::application::validate_identifier("organization_id", organization_id)?;
+    // Tests can't build wasi-auth's verified context for a fake session, so
+    // the fake's firm permission stands in for the check below.
+    #[cfg(test)]
+    if let Some(view) = crate::db_tests::session(&auth) {
+        let session_id = view.session_id.unwrap_or_default();
+        return match crate::db_tests::organization(&session_id, organization_id) {
+            Some(Ok(org)) if org.permissions.iter().any(|p| p == crate::db_tests::MANAGE) => {
+                Ok(view.user_id.unwrap_or_default())
+            }
+            _ => Err(AuthStackError::Forbidden),
+        };
+    }
     let (context, _) = crate::application::verified_context_and_permissions(auth, true).await?;
     crate::application::enforce_organization_scope(&context, organization_id).await?;
     crate::application::require_organization_permission(

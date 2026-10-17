@@ -58,7 +58,7 @@ make dev transport=both  # migrations, then Spin + the mail outbox worker
 | Target | Purpose |
 |--------|---------|
 | `make db-up` / `make db-down` | Start / stop Postgres + Redis (Docker Compose) |
-| `make db-migrate` | wasi-auth schema + Buwiz migrations `0001`–`0007` |
+| `make db-migrate` | wasi-auth schema + Buwiz migrations `0001`–`0011` |
 | `make db-verify` | Check every migration is applied and unchanged |
 | `make dev` | Migrations, Spin and the outbox worker (register / verify work) |
 | `make spin` | Spin only (no mail delivery) |
@@ -66,6 +66,7 @@ make dev transport=both  # migrations, then Spin + the mail outbox worker
 | `make smoke` | REST + web route checks against `BASE_URL` |
 | `cargo test --lib` | Domain tests, no Spin needed |
 | `cargo test --lib --features ssr,postgres` | Also the OAuth, MCP, REST-route and SQL-placeholder tests |
+| `DATABASE_URL=… scripts/test_db.sh` | Database tests (`src/db_tests`): store and application code against a migrated Postgres (`make db-up && make db-migrate`); CI runs them on every PR |
 
 Password minimum length is **15** (wasi-auth default in this stack).
 

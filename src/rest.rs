@@ -1513,6 +1513,8 @@ mod tests {
             "/api/tax-profiles/invites",
             "/api/tax-profiles/invites/invites",
             "/api/tax-profiles/passes/invites",
+            "/api/tax-profiles/passes/invites/i1/withdraw",
+            "/api/tax-profiles/invites/invites/i1/withdraw",
             "/api/tax-profiles/p1/invites/",
             "/api/tax-profiles//invites",
             "/api/tax-profiles/p1/invites/i1",
