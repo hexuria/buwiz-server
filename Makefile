@@ -58,12 +58,21 @@ AUTH_BOOTSTRAP_ADMIN_EMAILS ?=
 # it is absent these persist a random key beside the project so restarts do
 # not invalidate sessions, MFA secrets, or sealed mail. Never commit them.
 local_key = $(shell test -s $(1) || { umask 077 && head -c 32 /dev/urandom | base64 | tr -d '\n' > $(1); }; cat $(1))
-AUTH_ROOT_KEY_BASE64 ?= $(call local_key,.auth-root-key)
+# A macro, not a setting: the bare `export` above would hand it to every
+# recipe, where the shell runs it with an empty path and prints an error.
+unexport local_key
+# An empty `AUTH_ROOT_KEY_BASE64=` in an older .env counts as unset.
+ifeq ($(strip $(AUTH_ROOT_KEY_BASE64)),)
+AUTH_ROOT_KEY_BASE64 := $(call local_key,.auth-root-key)
+endif
 AUTH_CSRF_SECRET ?=
 AUTH_VAULT_KEY_BASE64 ?=
 AUTH_VAULT_KEY_VERSION ?= development-v1
 AUTH_VAULT_KEY_RING_JSON ?=
-AUTH_OUTBOX_KEY_BASE64 ?= $(call local_key,.auth-outbox-key)
+# An empty `AUTH_OUTBOX_KEY_BASE64=` in an older .env counts as unset.
+ifeq ($(strip $(AUTH_OUTBOX_KEY_BASE64)),)
+AUTH_OUTBOX_KEY_BASE64 := $(call local_key,.auth-outbox-key)
+endif
 AUTH_OUTBOX_KEY_VERSION ?= development-v1
 AUTH_OUTBOX_POSTGRES_POOL_SIZE ?= 4
 AUTH_OUTBOX_MAIL_BATCH_SIZE ?= 25
@@ -138,7 +147,10 @@ AUTH_APPLE_JWKS_URL ?= https://appleid.apple.com/auth/keys
 AUTH_APPLE_JWKS_JSON ?=
 AUTH_APPLE_SCOPES ?= openid email name
 AUTH_APPLE_REDIRECT_URI ?= $(AUTH_PUBLIC_BASE_URL)/api/auth/oauth/apple/callback
-POSTGRES_URL ?= postgres://wasi_auth:wasi_auth_dev@127.0.0.1:54329/wasi_auth
+# An empty `POSTGRES_URL=` in an older .env counts as unset.
+ifeq ($(strip $(POSTGRES_URL)),)
+POSTGRES_URL := postgres://wasi_auth:wasi_auth_dev@127.0.0.1:54329/wasi_auth
+endif
 REDIS_URL ?= redis://127.0.0.1:6379
 REDIS_CHANNEL ?= buwiz-tax-profiles
 ORUS_FAKE_VERIFIER ?= false
@@ -304,8 +316,14 @@ help:
 validate-toolchain:
 	bash scripts/verify_toolchain.sh
 
+# Which containers db-up starts. DB_SERVICES=postgres reuses a Redis already
+# running on 6379; DB_SERVICES=none uses an external Postgres (POSTGRES_URL)
+# too. ./buwiz picks this on its own.
+DB_SERVICES ?= postgres redis
+
 db-up:
-	docker compose up -d --wait postgres redis
+	@if [ "$(DB_SERVICES)" = none ]; then echo "Using the external Postgres and Redis (DB_SERVICES=none)."; \
+	else docker compose up -d --wait $(DB_SERVICES); fi
 
 db-down:
 	docker compose down

@@ -18,6 +18,50 @@ Desktop IMAP secrets, local PIN, and TOTP are **not** stored on this server.
 
 ## Run locally
 
+Everything goes through one script at the repo root, `./buwiz`. It wraps the Makefile and prints each command it runs, so nothing is hidden. `./buwiz help` lists every command.
+
+### Quick start
+
+```bash
+./buwiz doctor   # check tools, Docker and ports; says how to fix what is missing
+./buwiz up       # first run: creates .env, starts Postgres, migrates, builds, serves
+# open http://localhost:3008  (localhost, not 127.0.0.1, so passkeys and cookies work)
+```
+
+`./buwiz up` runs in the foreground, and Ctrl-C stops it. The first build takes a few minutes.
+
+### Run it in the background (for AI agents)
+
+```bash
+./buwiz start    # returns once http://localhost:3008 answers (exit 0), or fails with the log tail
+./buwiz status   # database, server process, and whether the URL answers (exit 1 if not)
+./buwiz logs     # last 100 lines; ./buwiz logs -f to follow
+./buwiz stop     # stops Spin and the mail worker; ./buwiz stop --db also stops Postgres
+```
+
+An agent should run `./buwiz start`, check the exit code, use the server, then run `./buwiz stop`. The pid and log live in `.buwiz/` (gitignored). `start` waits up to 15 minutes for the first build (`BUWIZ_START_TIMEOUT`).
+
+### Commands
+
+| Command | Does |
+|---------|------|
+| `./buwiz up` / `start` / `stop` / `restart` | Run the server in the foreground / background, stop it, restart it |
+| `./buwiz status` / `logs [-f]` / `open` | Health, the background log, open the app in the browser |
+| `./buwiz db up` / `db down` | Start / stop the Docker databases |
+| `./buwiz db migrate` / `db verify` | Apply every migration (safe to repeat) / check none is missing or changed |
+| `./buwiz db reset --yes` | **Erase** the local database, then migrate |
+| `./buwiz db psql` | psql on the dev database |
+| `./buwiz test` | Unit tests (default features, then `ssr,postgres`) |
+| `./buwiz test db [filter]` | Database tests (`src/db_tests`) on a separate `buwiz_test` database, so your dev data is untouched |
+| `./buwiz test all` | Both |
+| `./buwiz check` | `wasm32-wasip2` builds, REST and gRPC transports |
+| `./buwiz smoke` / `verify` | Route smoke checks / end-to-end passes and agents scripts, against a running server |
+| `./buwiz doctor` | Toolchain, Docker, Spin and port check |
+
+The CLI handles two local setups by itself:
+- **Redis already running on 6379** (for example Homebrew): it reuses that Redis instead of starting the container.
+- **Your own Postgres:** set `POSTGRES_URL=postgres://…` in your shell and it skips the Docker Postgres. For `test db`, also set `BUWIZ_TEST_DATABASE_URL` to a separate database.
+
 ### Prerequisites
 
 | Tool | Version | Install |
@@ -29,19 +73,10 @@ Desktop IMAP secrets, local PIN, and TOTP are **not** stored on this server.
 | Docker | for Postgres 17 (and Redis) | Docker Desktop / OrbStack |
 | jq, curl | for the verify scripts | Homebrew |
 
-`bash scripts/verify_toolchain.sh` checks Rust, cargo-leptos, the target and wasm-tools.
+### What starting does
 
-### Start
-
-```bash
-cp .env.example .env     # works as is: commented lines fall back to the Makefile defaults
-make db-up               # Postgres on 127.0.0.1:54329, Redis on 127.0.0.1:6379
-make dev transport=both  # migrations, then Spin + the mail outbox worker
-# open http://localhost:3008  (localhost, not 127.0.0.1, so passkeys and cookies work)
-```
-
-- `make dev` applies every migration (`0001`–`0007`, idempotent), builds, then runs **Spin** and the native **`wasi-auth-outbox-worker`**. `make spin` serves the app without delivering verification mail.
-- The first `make` writes random dev keys to `.auth-root-key` and `.auth-outbox-key` (gitignored, mode 600). Keep them: deleting them signs everyone out and makes sealed mail unreadable.
+- It applies every migration (`0001`–`0011`, idempotent), builds, then runs **Spin** and the native **`wasi-auth-outbox-worker`**.
+- The first run writes random dev keys to `.auth-root-key` and `.auth-outbox-key` (gitignored, mode 600). Keep them: deleting them signs everyone out and makes sealed mail unreadable.
 - Mail is **captured** locally. After you register, press **Verify now** (see below).
 - Guest logs: `make dev SPIN_UP_BUILD_FLAG="--build -e RUST_LOG=info,buwiz_server=debug"`.
 
@@ -53,11 +88,15 @@ make dev transport=both  # migrations, then Spin + the mail outbox worker
 4. Connect an AI agent: `claude mcp add --transport http buwiz http://localhost:3008/mcp`, then `/mcp` in Claude Code and **Allow** (AI agents, below).
 5. The desktop app signs in with the device flow (Desktop auth, below).
 
-### Make targets
+Password minimum length is **15** (wasi-auth default in this stack).
+
+### Under the hood: make targets
+
+`./buwiz` calls these. Use them directly for anything it does not cover (`make help` lists all).
 
 | Target | Purpose |
 |--------|---------|
-| `make db-up` / `make db-down` | Start / stop Postgres + Redis (Docker Compose) |
+| `make db-up` / `make db-down` | Start / stop Postgres + Redis (Docker Compose; `DB_SERVICES=postgres` or `none` to skip containers) |
 | `make db-migrate` | wasi-auth schema + Buwiz migrations `0001`–`0011` |
 | `make db-verify` | Check every migration is applied and unchanged |
 | `make dev` | Migrations, Spin and the outbox worker (register / verify work) |
@@ -66,13 +105,11 @@ make dev transport=both  # migrations, then Spin + the mail outbox worker
 | `make smoke` | REST + web route checks against `BASE_URL` |
 | `cargo test --lib` | Domain tests, no Spin needed |
 | `cargo test --lib --features ssr,postgres` | Also the OAuth, MCP, REST-route and SQL-placeholder tests |
-| `DATABASE_URL=… scripts/test_db.sh` | Database tests (`src/db_tests`): store and application code against a migrated Postgres (`make db-up && make db-migrate`); CI runs them on every PR |
-
-Password minimum length is **15** (wasi-auth default in this stack).
+| `DATABASE_URL=… scripts/test_db.sh` | Database tests against a migrated Postgres (what `./buwiz test db` runs); CI runs them on every PR |
 
 ### Check it works end to end
 
-With `make dev` running:
+With the server running, `./buwiz verify` runs both scripts:
 
 ```bash
 bash scripts/verify_passes.sh   # access passes: offer, accept, use, revoke (4 accounts)
@@ -86,11 +123,12 @@ Both sign up throwaway `@example.test` accounts through captured mail and use on
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | Sign-in for an unknown email, email verification or `POST /auth/device/poll` with a wrong code never answers; a 401 after a token lookup hangs | Spin host and the vendored `spin-sdk` (blocking `spin:postgres@4.2`, see `vendor/README.md`) disagree: **queries that return zero rows never complete**. Seen with Spin `4.1.0-pre0` on macOS. Queries with rows work. | Use the Spin build the vendored SDK targets. App code is not at fault; endpoints whose queries return rows (for example `/mcp` with a connected agent) still work. |
-| `make db-up` fails: port 6379 in use | Another Redis (e.g. Homebrew) holds 6379 | Redis is optional (wake only): `docker compose up -d --wait postgres`, then `make dev -o db-up REDIS_URL=`. |
+| `make db-up` fails: port 6379 in use | Another Redis (e.g. Homebrew) holds 6379 | `./buwiz` reuses it on its own. With make: `make dev DB_SERVICES=postgres`. |
+| `db up` fails with `failed to mount … read-only file system` | Docker's VM disk is in a bad state (not this repo) | Restart Docker Desktop / OrbStack. Or skip Docker: `POSTGRES_URL=postgres://… ./buwiz start` with your own Postgres 17. |
 | `cargo-leptos` fails to read `.env` | An unquoted value with spaces (old `.env` copies had `AUTH_*_SCOPES=openid email profile`) | Comment those lines out; the Makefile defaults are the same. |
-| `POSTGRES_URL is required` or Spin refuses to start without a root key | A blank `POSTGRES_URL=` / `AUTH_ROOT_KEY_BASE64=` in `.env` overrides the Makefile default | Delete or comment out the blank line. |
+| Every page is a 500 and the log says `AUTH_ROOT_KEY_BASE64 is required` | An old Makefile let a blank `AUTH_ROOT_KEY_BASE64=` in `.env` override the generated key | Fixed: blank keys and a blank `POSTGRES_URL=` now count as unset. Commenting those lines out in `.env` also works. |
 | `WrongType { postgres: Uuid, rust: String }` | A query bound a uuid/json/timestamp parameter as text | Fixed in `postgres_placeholders` (`$1::uuid` becomes `$1::text::uuid`). New SQL should cast parameters the same way (`?1::uuid`). |
-| Spin ignores Ctrl-C | It waits for hung requests (see the first row) | Send SIGINT again, then SIGKILL the `spin up` process. |
+| Spin ignores Ctrl-C | It waits for hung requests (see the first row) | Send SIGINT again, then SIGKILL the `spin up` process. In the background, `./buwiz stop` kills the whole process group after 10 seconds. |
 
 How this server fits with the desktop app and the other repos: [docs/integrations.md](docs/integrations.md).
 

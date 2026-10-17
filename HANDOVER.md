@@ -41,6 +41,8 @@ Plan item A3 ("tokens carry a scope that is never checked") is settled by design
 
 ## Verify
 
+`./buwiz help` wraps all of this (`./buwiz start`, `./buwiz test all`, `./buwiz check`, `./buwiz verify`); README, "Run locally".
+
 ```bash
 cargo test --lib      # domain rules, no Spin needed
 cargo test --lib --features ssr,postgres   # plus OAuth, MCP, REST routes, SQL placeholders

@@ -1,0 +1,328 @@
+#!/usr/bin/env bash
+# buwiz — one entry point for running and checking buwiz-server locally.
+#
+#   ./buwiz help            list commands
+#   ./buwiz up              start everything in this terminal (Ctrl-C stops)
+#   ./buwiz start           start everything in the background (for agents)
+#   ./buwiz status | logs | stop
+#
+# It wraps the Makefile; every command prints the make target it runs, so
+# nothing here is hidden. Background state lives in .buwiz/ (gitignored).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT"
+
+STATE_DIR="$ROOT/.buwiz"
+PID_FILE="$STATE_DIR/dev.pid"
+LOG_FILE="$STATE_DIR/dev.log"
+URL="${BUWIZ_URL:-http://localhost:3008}"
+# A POSTGRES_URL in your shell means "use this database, not the Docker one".
+EXTERNAL_DB="${POSTGRES_URL:+1}"
+DEV_DB_URL="${POSTGRES_URL:-postgres://wasi_auth:wasi_auth_dev@127.0.0.1:54329/wasi_auth}"
+TEST_DB_NAME="buwiz_test"
+TEST_DB_URL="${BUWIZ_TEST_DATABASE_URL:-postgres://wasi_auth:wasi_auth_dev@127.0.0.1:54329/$TEST_DB_NAME}"
+START_TIMEOUT="${BUWIZ_START_TIMEOUT:-900}"
+
+if [ -t 1 ]; then
+    bold=$'\e[1m' green=$'\e[32m' red=$'\e[31m' yellow=$'\e[33m' reset=$'\e[0m'
+else
+    bold='' green='' red='' yellow='' reset=''
+fi
+say() { printf '%s==>%s %s\n' "$bold" "$reset" "$*"; }
+ok() { printf '%s✓%s %s\n' "$green" "$reset" "$*"; }
+warn() { printf '%s!%s %s\n' "$yellow" "$reset" "$*" >&2; }
+die() { printf '%s✗%s %s\n' "$red" "$reset" "$*" >&2; exit 1; }
+run() { printf '%s$ %s%s\n' "$bold" "$*" "$reset"; "$@"; }
+
+usage() {
+    cat <<EOF
+${bold}buwiz${reset} — run and check buwiz-server locally
+
+${bold}Run the server${reset}
+  up                 First-time setup if needed, then Postgres + migrations + Spin
+                     + mail worker in this terminal. Ctrl-C stops it.
+  start              Same, in the background. Waits until $URL answers,
+                     then returns. Logs: .buwiz/dev.log
+  stop [--db]        Stop the background server (--db also stops Postgres/Redis)
+  restart            stop, then start
+  status             Database containers, server process, and whether $URL answers
+  logs [-f]          Show (or follow) the background server log
+  open               Open $URL in the browser
+
+${bold}Database${reset}
+  db up | down       Start / stop Postgres + Redis (Docker)
+  db migrate         Apply every migration (safe to repeat)
+  db verify          Check every migration is applied and unchanged
+  db reset --yes     ERASE the local dev database, then migrate again
+  db psql            Open psql on the dev database
+
+${bold}Check the code${reset}
+  test               Unit tests (default features, then ssr+postgres)
+  test db [filter]   Database tests against a separate '$TEST_DB_NAME' database
+                     (created and migrated on demand; your dev data is untouched)
+  test all           Both of the above
+  check              wasm32-wasip2 builds (REST and gRPC transports)
+  smoke              Route smoke checks against a running server
+  verify             End-to-end passes + agents scripts against a running server
+  doctor             Check the toolchain, Docker, Spin and ports
+
+${bold}Environment${reset}
+  BUWIZ_URL                 server URL (default $URL)
+  POSTGRES_URL              use this Postgres instead of the Docker one (must be reachable;
+                            'db reset' still erases it)
+  BUWIZ_TEST_DATABASE_URL   database for 'test db' (default: $TEST_DB_NAME in the Docker
+                            Postgres; when set, Docker is not used and it is only migrated)
+  BUWIZ_START_TIMEOUT       seconds 'start' waits for the first build (default $START_TIMEOUT)
+EOF
+}
+
+# ── helpers ─────────────────────────────────────────────────────────────────
+
+need() { command -v "$1" >/dev/null 2>&1 || die "$1 is not installed. $2"; }
+
+setup_env() {
+    if [ ! -f .env ]; then
+        run cp .env.example .env
+        ok "created .env from .env.example (works as is)"
+    fi
+}
+
+server_pid() {
+    [ -f "$PID_FILE" ] || return 1
+    local pid
+    pid="$(cat "$PID_FILE")"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        echo "$pid"
+    else
+        rm -f "$PID_FILE"
+        return 1
+    fi
+}
+
+answers() { curl -s -o /dev/null --max-time 3 "$URL/" ; }
+
+# Redis is only a wake-up bus here, so a Redis already answering on 6379
+# (Homebrew, another project) is reused instead of fighting it for the port.
+redis_answers() {
+    { exec 3<>/dev/tcp/127.0.0.1/6379 && printf 'PING\r\n' >&3 && read -r -t 2 reply <&3 && [[ "$reply" == +PONG* ]]; } 2>/dev/null
+}
+choose_db_services() {
+    [ -n "${DB_SERVICES:-}" ] && return
+    local postgres=postgres redis=redis
+    if [ -n "$EXTERNAL_DB" ]; then
+        postgres=''
+    fi
+    if ! docker compose ps --status running --services 2>/dev/null | grep -qx redis && redis_answers; then
+        redis=''
+    fi
+    DB_SERVICES="$(echo $postgres $redis)"
+    DB_SERVICES="${DB_SERVICES:-none}"
+}
+choose_db_services
+
+# make, with the database settings this CLI chose. Command-line values beat
+# .env, so an empty POSTGRES_URL= there can't break a run.
+mk() {
+    run make --no-print-directory "$@" POSTGRES_URL="$DEV_DB_URL" DB_SERVICES="$DB_SERVICES"
+}
+
+port_in_use() { lsof -nP -iTCP:3008 -sTCP:LISTEN >/dev/null 2>&1; }
+
+db_running() {
+    docker compose ps --status running --services 2>/dev/null | grep -qx postgres
+}
+
+ensure_test_db() {
+    if [ -n "${BUWIZ_TEST_DATABASE_URL:-}" ] || [ -n "$EXTERNAL_DB" ]; then
+        [ -n "${BUWIZ_TEST_DATABASE_URL:-}" ] || die "with an external POSTGRES_URL, set BUWIZ_TEST_DATABASE_URL to a separate test database"
+        say "migrating the database in BUWIZ_TEST_DATABASE_URL"
+        DATABASE_URL="$TEST_DB_URL" run cargo run --quiet --no-default-features --features migrate \
+            --bin wasi-auth-migrate -- apply >/dev/null
+        ok "test database is migrated"
+        return
+    fi
+    mk db-up
+    if ! docker compose exec -T postgres psql -U wasi_auth -d wasi_auth -Atc \
+        "SELECT 1 FROM pg_database WHERE datname = '$TEST_DB_NAME'" | grep -q 1; then
+        run docker compose exec -T postgres createdb -U wasi_auth "$TEST_DB_NAME"
+    fi
+    say "migrating $TEST_DB_NAME"
+    DATABASE_URL="$TEST_DB_URL" run cargo run --quiet --no-default-features --features migrate \
+        --bin wasi-auth-migrate -- apply >/dev/null
+    ok "$TEST_DB_NAME is migrated"
+}
+
+# ── commands ────────────────────────────────────────────────────────────────
+
+cmd_doctor() {
+    local failed=0
+    check() {
+        if command -v "$1" >/dev/null 2>&1; then ok "$1: $($1 --version 2>&1 | head -1)"
+        else warn "$1 missing — $2"; failed=1; fi
+    }
+    check cargo "install Rust from https://rustup.rs"
+    check cargo-leptos "cargo install --locked cargo-leptos --version '^0.3.7'"
+    check wasm-tools "cargo install --locked wasm-tools"
+    check spin "https://spinframework.dev/install"
+    check docker "Docker Desktop or OrbStack"
+    check jq "brew install jq"
+    check curl "brew install curl"
+    if rustup target list --installed 2>/dev/null | grep -qx wasm32-wasip2; then ok "wasm32-wasip2 target"
+    else warn "wasm32-wasip2 target missing — rustup target add wasm32-wasip2"; failed=1; fi
+    if docker info >/dev/null 2>&1; then ok "Docker is running"
+    else warn "Docker is not running"; failed=1; fi
+    if port_in_use && ! server_pid >/dev/null; then
+        warn "port 3008 is taken by another process: $(lsof -nP -iTCP:3008 -sTCP:LISTEN | awk 'NR==2{print $1" pid "$2}')"
+    fi
+    [ "$failed" = 0 ] && ok "ready" || die "fix the items above, then run ./buwiz doctor again"
+}
+
+cmd_up() {
+    setup_env
+    server_pid >/dev/null && die "already running in the background (./buwiz stop first)"
+    mk db-up
+    say "starting (first build takes a few minutes); open $URL"
+    mk dev transport=both
+}
+
+cmd_start() {
+    setup_env
+    if pid="$(server_pid)"; then
+        ok "already running (pid $pid) at $URL"
+        return
+    fi
+    port_in_use && die "port 3008 is already taken by another process (./buwiz doctor)"
+    mkdir -p "$STATE_DIR"
+    mk db-up
+    say "starting in the background; log: .buwiz/dev.log"
+    # Own process group, so stop can end make, Spin and the mail worker together.
+    set -m
+    nohup make --no-print-directory dev transport=both \
+        POSTGRES_URL="$DEV_DB_URL" DB_SERVICES="$DB_SERVICES" >"$LOG_FILE" 2>&1 &
+    echo $! >"$PID_FILE"
+    set +m
+    local waited=0
+    until answers; do
+        if ! server_pid >/dev/null; then
+            tail -n 40 "$LOG_FILE" >&2
+            die "the server exited while starting (full log: .buwiz/dev.log)"
+        fi
+        if [ "$waited" -ge "$START_TIMEOUT" ]; then
+            die "no answer from $URL after ${START_TIMEOUT}s; still building? ./buwiz logs -f"
+        fi
+        sleep 5
+        waited=$((waited + 5))
+        [ $((waited % 60)) = 0 ] && say "still starting (${waited}s)… last log line: $(tail -n 1 "$LOG_FILE" | cut -c1-100)"
+    done
+    ok "running at $URL (pid $(cat "$PID_FILE"))"
+}
+
+cmd_stop() {
+    if pid="$(server_pid)"; then
+        say "stopping server (process group $pid)"
+        kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+        for _ in $(seq 1 20); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+        done
+        kill -KILL -- "-$pid" 2>/dev/null || true
+        rm -f "$PID_FILE"
+        ok "server stopped"
+    else
+        ok "server is not running in the background"
+    fi
+    if [ "${1:-}" = "--db" ]; then
+        mk db-down
+    fi
+}
+
+cmd_status() {
+    ok "database: $DEV_DB_URL (containers started by db up: $DB_SERVICES)"
+    if [ -z "$EXTERNAL_DB" ]; then
+        if db_running; then ok "Postgres container is running"; else warn "Postgres container is not running (./buwiz db up)"; fi
+    fi
+    if redis_answers; then ok "Redis answers on 6379"; else warn "no Redis on 6379 (./buwiz db up)"; fi
+    if pid="$(server_pid)"; then ok "server process running (pid $pid)"; else warn "no background server (./buwiz start)"; fi
+    if answers; then ok "$URL answers"; else warn "$URL does not answer"; return 1; fi
+}
+
+cmd_logs() {
+    [ -f "$LOG_FILE" ] || die "no log yet; the background server writes .buwiz/dev.log"
+    if [ "${1:-}" = "-f" ]; then tail -n 50 -f "$LOG_FILE"; else tail -n 100 "$LOG_FILE"; fi
+}
+
+cmd_open() {
+    if command -v open >/dev/null 2>&1; then open "$URL"; else xdg-open "$URL"; fi
+}
+
+cmd_db() {
+    case "${1:-}" in
+        up) mk db-up ;;
+        down) mk db-down ;;
+        migrate) mk db-migrate ;;
+        verify) mk db-verify ;;
+        reset)
+            [ "${2:-}" = "--yes" ] || die "this erases every local account and profile; run: ./buwiz db reset --yes"
+            server_pid >/dev/null && die "stop the server first (./buwiz stop)"
+            mk fresh db=postgres
+            ;;
+        psql)
+            if [ -n "$EXTERNAL_DB" ]; then run psql "$DEV_DB_URL"
+            else run docker compose exec postgres psql -U wasi_auth -d wasi_auth; fi
+            ;;
+        *) die "usage: ./buwiz db up|down|migrate|verify|reset --yes|psql" ;;
+    esac
+}
+
+cmd_test() {
+    case "${1:-unit}" in
+        unit)
+            run cargo test --lib
+            run cargo test --lib --features ssr,postgres
+            ;;
+        db)
+            ensure_test_db
+            DATABASE_URL="$TEST_DB_URL" run scripts/test_db.sh "${2:-db_tests}"
+            ;;
+        all)
+            cmd_test unit
+            cmd_test db
+            ;;
+        *) die "usage: ./buwiz test [unit|db [filter]|all]" ;;
+    esac
+}
+
+cmd_check() {
+    mk check
+    mk grpc-check
+}
+
+cmd_smoke() {
+    answers || die "$URL does not answer; ./buwiz start first"
+    mk smoke
+}
+
+cmd_verify() {
+    answers || die "$URL does not answer; ./buwiz start first"
+    run bash scripts/verify_passes.sh
+    run bash scripts/verify_agents.sh
+}
+
+case "${1:-help}" in
+    help | -h | --help) usage ;;
+    doctor) cmd_doctor ;;
+    up) cmd_up ;;
+    start) cmd_start ;;
+    stop) shift; cmd_stop "$@" ;;
+    restart) cmd_stop; cmd_start ;;
+    status) cmd_status ;;
+    logs) shift; cmd_logs "$@" ;;
+    open) cmd_open ;;
+    db) shift; cmd_db "$@" ;;
+    test) shift; cmd_test "$@" ;;
+    check) cmd_check ;;
+    smoke) cmd_smoke ;;
+    verify) cmd_verify ;;
+    *) usage >&2; die "unknown command: $1" ;;
+esac

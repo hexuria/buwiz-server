@@ -21,3 +21,6 @@ blob-report
 # Editor / OS
 .DS_Store
 *.swp
+
+# ./buwiz background server state (pid, log)
+.buwiz/
