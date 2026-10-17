@@ -47,7 +47,7 @@ Queries: `GetFormDraft`, `ListDraftsForYear`.
 
 Status path: **queued → submitted → confirmed → paid** (`EnqueueFiling` → `FilingQueued`, plus submit/confirm/fail/paid).
 
-Authz for enqueue: caller owns the profile (`account_id`); form is active in the year set.
+Authz for enqueue: the caller controls the profile (see "Who may do what" in the README); form is active in the year set. The stub in `src/domain/v1_sync.rs` still checks `account_id` and must move to the same rule when these commands get routes.
 
 Metadata only. **Not** BIR credentials.
 
@@ -68,7 +68,7 @@ GET /api/sync/filing-history?profile_id=...&after=...
 
 ### Rules to encode later
 
-- Require verified email + tax-profile `account_id` match (UUID load, never raw TIN as SoT).
+- Require verified email + the README access rule (UUID load, never raw TIN as SoT).
 - Key all sync by **profile UUID**, never raw TIN.
 - Idempotency per `(profile_id, source, checkpoint)`.
 - Reject payloads that include secrets (`imap_*`, `totp_*`, `pin`, mailbox tokens, `profile_pin_hash`).

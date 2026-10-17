@@ -224,14 +224,23 @@ pub enum TaxProfileCommand {
         facts: Option<CloudTaxProfileFacts>,
         expected_updated_at: Option<String>,
         actor_user_id: String,
+        /// The holding organization the application verified the actor is a
+        /// member of; `None` when it holds no such membership.
+        actor_org: Option<String>,
         occurred_at: String,
     },
     ArchiveTaxProfile {
         actor_user_id: String,
+        /// The holding organization the application verified the actor is a
+        /// member of; `None` when it holds no such membership.
+        actor_org: Option<String>,
         occurred_at: String,
     },
     RestoreTaxProfile {
         actor_user_id: String,
+        /// The holding organization the application verified the actor is a
+        /// member of; `None` when it holds no such membership.
+        actor_org: Option<String>,
         occurred_at: String,
     },
     /// Extra (company-managed). Not a V1 listed command; kept for reclaim/claim.
@@ -384,6 +393,36 @@ impl std::fmt::Display for TaxProfileError {
     }
 }
 
+/// An actor's standing on one tax profile. The single source for every read
+/// and write check (the application builds it, the domain re-checks it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileAccess {
+    /// The personal holder, or a member of the holding organization.
+    Controller,
+    /// The verified owner while an organization holds the profile.
+    OwnerReadOnly,
+    None,
+}
+
+/// What an actor wants to do with a profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileAction {
+    View,
+    Edit,
+    Archive,
+}
+
+impl ProfileAccess {
+    #[must_use]
+    pub fn allows(self, action: ProfileAction) -> bool {
+        match self {
+            Self::Controller => true,
+            Self::OwnerReadOnly => action == ProfileAction::View,
+            Self::None => false,
+        }
+    }
+}
+
 /// Exclusive-ownership aggregate for one registration unit (UUID identity).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaxProfile {
@@ -496,22 +535,26 @@ impl TaxProfile {
                 facts,
                 expected_updated_at,
                 actor_user_id,
+                actor_org,
                 occurred_at,
             } => self.handle_update_identity(
                 display_name,
                 facts,
                 expected_updated_at,
                 actor_user_id,
+                actor_org,
                 occurred_at,
             ),
             TaxProfileCommand::ArchiveTaxProfile {
                 actor_user_id,
+                actor_org,
                 occurred_at,
-            } => self.handle_archive(actor_user_id, occurred_at),
+            } => self.handle_archive(actor_user_id, actor_org, occurred_at),
             TaxProfileCommand::RestoreTaxProfile {
                 actor_user_id,
+                actor_org,
                 occurred_at,
-            } => self.handle_restore(actor_user_id, occurred_at),
+            } => self.handle_restore(actor_user_id, actor_org, occurred_at),
             TaxProfileCommand::Claim {
                 claimant,
                 actor_user_id,
@@ -794,12 +837,13 @@ impl TaxProfile {
         facts: Option<CloudTaxProfileFacts>,
         expected_updated_at: Option<String>,
         actor_user_id: String,
+        actor_org: Option<String>,
         occurred_at: String,
     ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
         if !self.exists {
             return Err(TaxProfileError::NotFound);
         }
-        self.require_account(&actor_user_id)?;
+        self.require_access(&actor_user_id, actor_org.as_deref(), ProfileAction::Edit)?;
         if self.is_archived {
             return Err(TaxProfileError::AlreadyArchived);
         }
@@ -834,12 +878,13 @@ impl TaxProfile {
     fn handle_archive(
         &self,
         actor_user_id: String,
+        actor_org: Option<String>,
         occurred_at: String,
     ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
         if !self.exists {
             return Err(TaxProfileError::NotFound);
         }
-        self.require_account(&actor_user_id)?;
+        self.require_access(&actor_user_id, actor_org.as_deref(), ProfileAction::Archive)?;
         if self.is_archived {
             return Err(TaxProfileError::AlreadyArchived);
         }
@@ -852,12 +897,13 @@ impl TaxProfile {
     fn handle_restore(
         &self,
         actor_user_id: String,
+        actor_org: Option<String>,
         occurred_at: String,
     ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
         if !self.exists {
             return Err(TaxProfileError::NotFound);
         }
-        self.require_account(&actor_user_id)?;
+        self.require_access(&actor_user_id, actor_org.as_deref(), ProfileAction::Archive)?;
         if !self.is_archived {
             return Err(TaxProfileError::NotArchived);
         }
@@ -867,10 +913,40 @@ impl TaxProfile {
         }])
     }
 
-    fn require_account(&self, actor_user_id: &str) -> Result<(), TaxProfileError> {
-        match self.account_id.as_deref() {
-            Some(account_id) if account_id == actor_user_id => Ok(()),
-            _ => Err(TaxProfileError::NotHolder),
+    /// What `actor_user_id` is to this profile. `actor_org` is the holding
+    /// organization the application verified the actor belongs to (`None`
+    /// otherwise). Registering the profile grants nothing by itself: control
+    /// follows the holder, so a claim or transfer moves it.
+    #[must_use]
+    pub fn access_for(&self, actor_user_id: &str, actor_org: Option<&str>) -> ProfileAccess {
+        match &self.holder {
+            Some(AccountHolder::Personal { user_id }) if user_id == actor_user_id => {
+                return ProfileAccess::Controller;
+            }
+            Some(AccountHolder::Organization { organization_id })
+                if actor_org == Some(organization_id.as_str()) =>
+            {
+                return ProfileAccess::Controller;
+            }
+            _ => {}
+        }
+        if self.verified_owner_user_id.as_deref() == Some(actor_user_id) {
+            ProfileAccess::OwnerReadOnly
+        } else {
+            ProfileAccess::None
+        }
+    }
+
+    fn require_access(
+        &self,
+        actor_user_id: &str,
+        actor_org: Option<&str>,
+        action: ProfileAction,
+    ) -> Result<(), TaxProfileError> {
+        if self.access_for(actor_user_id, actor_org).allows(action) {
+            Ok(())
+        } else {
+            Err(TaxProfileError::NotHolder)
         }
     }
 
@@ -1165,6 +1241,75 @@ mod tests {
         assert_eq!(err, TaxProfileError::NotHolder);
     }
 
+    fn rename(actor: &str, actor_org: Option<&str>) -> TaxProfileCommand {
+        TaxProfileCommand::UpdateTaxProfileIdentity {
+            display_name: Some("Renamed".into()),
+            facts: None,
+            expected_updated_at: None,
+            actor_user_id: actor.into(),
+            actor_org: actor_org.map(str::to_owned),
+            occurred_at: "2026-02-01T00:00:00Z".into(),
+        }
+    }
+
+    fn claim_as(user: &str) -> TaxProfileCommand {
+        TaxProfileCommand::Claim {
+            claimant: personal(user),
+            actor_user_id: user.into(),
+            identity_hash: identity(),
+            proof_method: ProofMethod::FakeOrus,
+        }
+    }
+
+    #[test]
+    fn registering_grants_nothing_once_the_owner_claims() {
+        let mut store = InMemoryTaxProfileStore::default();
+        store
+            .execute("tp-1", create("tp-1", org("firm-1"), "bookkeeper", "Client Co"), 0)
+            .unwrap();
+        store.execute("tp-1", claim_as("alice"), 1).unwrap();
+        // The bookkeeper registered it, but Alice holds it now.
+        let err = store.execute("tp-1", rename("bookkeeper", Some("firm-1")), 2).unwrap_err();
+        assert_eq!(err, TaxProfileError::NotHolder);
+        let (state, _) = store.execute("tp-1", rename("alice", None), 2).unwrap();
+        assert_eq!(state.display_name.as_deref(), Some("Renamed"));
+    }
+
+    #[test]
+    fn owner_reads_but_does_not_edit_while_a_firm_holds_it() {
+        let mut store = InMemoryTaxProfileStore::default();
+        store
+            .execute("tp-1", create("tp-1", org("firm-1"), "bookkeeper", "Client Co"), 0)
+            .unwrap();
+        store.execute("tp-1", claim_as("alice"), 1).unwrap();
+        let (state, _) = store
+            .execute("tp-1", transfer(org("firm-2"), "alice", None), 2)
+            .unwrap();
+        assert_eq!(state.access_for("alice", None), ProfileAccess::OwnerReadOnly);
+        assert!(ProfileAccess::OwnerReadOnly.allows(ProfileAction::View));
+        assert_eq!(
+            store.execute("tp-1", rename("alice", None), 3).unwrap_err(),
+            TaxProfileError::NotHolder
+        );
+        // The old firm is out; the holding firm's members are in.
+        assert_eq!(
+            store.execute("tp-1", rename("bookkeeper", Some("firm-1")), 3).unwrap_err(),
+            TaxProfileError::NotHolder
+        );
+        store.execute("tp-1", rename("clerk", Some("firm-2")), 3).unwrap();
+    }
+
+    #[test]
+    fn strangers_have_no_access() {
+        let mut store = InMemoryTaxProfileStore::default();
+        let (state, _) = store
+            .execute("tp-1", create("tp-1", personal("alice"), "alice", "Alice"), 0)
+            .unwrap();
+        assert_eq!(state.access_for("bob", None), ProfileAccess::None);
+        assert_eq!(state.access_for("bob", Some("firm-1")), ProfileAccess::None);
+        assert!(!ProfileAccess::None.allows(ProfileAction::View));
+    }
+
     #[test]
     fn concurrent_creates_fail_on_expected_revision() {
         let mut store = InMemoryTaxProfileStore::default();
@@ -1247,6 +1392,7 @@ mod tests {
                     facts: None,
                     expected_updated_at: Some("2026-01-01T00:00:00Z".into()),
                     actor_user_id: "alice".into(),
+                    actor_org: None,
                     occurred_at: "2026-01-02T00:00:00Z".into(),
                 },
                 1,
@@ -1261,6 +1407,7 @@ mod tests {
                     facts: None,
                     expected_updated_at: Some("2026-01-01T00:00:00Z".into()),
                     actor_user_id: "alice".into(),
+                    actor_org: None,
                     occurred_at: "2026-01-03T00:00:00Z".into(),
                 },
                 2,
@@ -1283,6 +1430,7 @@ mod tests {
                     facts: Some(facts("Renamed")),
                     expected_updated_at: Some("2026-01-01T00:00:00Z".into()),
                     actor_user_id: "alice".into(),
+                    actor_org: None,
                     occurred_at: "2026-01-02T00:00:00Z".into(),
                 },
                 1,
@@ -1293,7 +1441,7 @@ mod tests {
     }
 
     #[test]
-    fn archive_and_restore_require_account_id() {
+    fn archive_and_restore_require_the_controller() {
         let mut store = InMemoryTaxProfileStore::default();
         store
             .execute("tp-1", create("tp-1", personal("alice"), "alice", "Alice"), 0)
@@ -1303,6 +1451,7 @@ mod tests {
                 "tp-1",
                 TaxProfileCommand::ArchiveTaxProfile {
                     actor_user_id: "bob".into(),
+                    actor_org: None,
                     occurred_at: "2026-01-03T00:00:00Z".into(),
                 },
                 1,
@@ -1314,6 +1463,7 @@ mod tests {
                 "tp-1",
                 TaxProfileCommand::ArchiveTaxProfile {
                     actor_user_id: "alice".into(),
+                    actor_org: None,
                     occurred_at: "2026-01-03T00:00:00Z".into(),
                 },
                 1,
@@ -1328,6 +1478,7 @@ mod tests {
                     facts: None,
                     expected_updated_at: None,
                     actor_user_id: "alice".into(),
+                    actor_org: None,
                     occurred_at: "2026-01-04T00:00:00Z".into(),
                 },
                 2,
@@ -1339,6 +1490,7 @@ mod tests {
                 "tp-1",
                 TaxProfileCommand::RestoreTaxProfile {
                     actor_user_id: "alice".into(),
+                    actor_org: None,
                     occurred_at: "2026-01-04T00:00:00Z".into(),
                 },
                 2,

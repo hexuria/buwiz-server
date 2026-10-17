@@ -23,8 +23,8 @@ pub use orus::{
 };
 pub use queries::TaxProfileQuery;
 pub use tax_profile::{
-    AccountHolder, ClaimStatus, CloudTaxProfileFacts, OwnershipStatus, TaxProfile,
-    TaxProfileCommand, TaxProfileError, TaxProfileEvent, TaxpayerType, VerificationStatus,
+    AccountHolder, ClaimStatus, CloudTaxProfileFacts, OwnershipStatus, ProfileAccess,
+    ProfileAction, TaxProfile, TaxProfileCommand, TaxProfileError, TaxProfileEvent, TaxpayerType, VerificationStatus,
 };
 pub use oauth_client::{
     desktop_redirect_uri_allowed, DESKTOP_CLIENT_ID, DESKTOP_CUSTOM_SCHEME_REDIRECT,
