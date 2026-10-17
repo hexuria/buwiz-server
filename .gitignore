@@ -1,0 +1,23 @@
+# Local secrets (`ddd init` / make persist keys here)
+.env
+.auth-root-key
+.auth-outbox-key
+
+# Build artifacts
+/target
+/target-site
+/target/site
+pkg
+*.wasm
+*.d
+.spin
+
+# Node / Playwright
+node_modules
+test-results
+playwright-report
+blob-report
+
+# Editor / OS
+.DS_Store
+*.swp

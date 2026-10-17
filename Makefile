@@ -1,0 +1,476 @@
+transport ?= both
+# Spin listen address. Change this once to move the public origin stack:
+#   make spin listen=127.0.0.1:3000
+# AUTH_PUBLIC_BASE_URL, JWT issuer, OAuth redirects, passkey origin, and smoke
+# BASE_URL default from this value unless set explicitly (or via .env).
+listen ?= 127.0.0.1:3008
+backend_listen ?= 127.0.0.1:3009
+WASI_AUTH_INGRESS_BIN ?= wasi-auth-ingress
+WASI_AUTH_VERSION ?= 0.1.0-rc.5
+WASI_AUTH_LOCAL_SOURCE := $(abspath $(CURDIR)/../../../wasi-auth/crates/wasi-auth)
+WASI_AUTH_SOURCE ?= $(if $(wildcard $(WASI_AUTH_LOCAL_SOURCE)/Cargo.toml),$(WASI_AUTH_LOCAL_SOURCE),)
+WASI_AUTH_TOOLS_PROFILE := $(if $(WASI_AUTH_SOURCE),local,$(WASI_AUTH_VERSION))
+WASI_AUTH_TOOLS_ROOT ?= $(CURDIR)/target/wasi-auth-tools/$(WASI_AUTH_TOOLS_PROFILE)
+WASI_AUTH_OUTBOX_WORKER_BIN ?= $(WASI_AUTH_TOOLS_ROOT)/bin/wasi-auth-outbox-worker
+SPIN_BIN ?= spin
+SPIN_UP_BUILD_FLAG ?= --build
+CARGO_CONFIG_ARGS ?=
+
+-include .env
+export
+
+db ?= $(if $(DATABASE_BACKEND),$(DATABASE_BACKEND),postgres)
+
+# --- Public origin (single source of truth) ---------------------------------
+AUTH_PUBLIC_SCHEME ?= http
+# Host without port for WebAuthn rpId (ports are not allowed in rpId).
+AUTH_PUBLIC_HOST := $(firstword $(subst :, ,$(listen)))
+AUTH_PUBLIC_PORT := $(word 2,$(subst :, ,$(listen)))
+# Browsers reject IP addresses as WebAuthn rpId (SecurityError). When Spin
+# listens on a loopback IP, public URLs and passkeys use the "localhost"
+# hostname — open http://localhost:PORT (not http://127.0.0.1:PORT). The app
+# also 303-redirects document navigations from 127.0.0.1/::1 → localhost.
+AUTH_PUBLIC_CANONICAL_HOST := $(if $(filter 127.0.0.1 ::1,$(AUTH_PUBLIC_HOST)),localhost,$(AUTH_PUBLIC_HOST))
+AUTH_PUBLIC_BASE_URL ?= $(AUTH_PUBLIC_SCHEME)://$(AUTH_PUBLIC_CANONICAL_HOST)$(if $(AUTH_PUBLIC_PORT),:$(AUTH_PUBLIC_PORT),)
+BASE_URL ?= $(AUTH_PUBLIC_BASE_URL)
+AUTH_PASSKEY_HOST := $(AUTH_PUBLIC_CANONICAL_HOST)
+
+AUTH_PRODUCTION_MODE ?= false
+AUTH_REQUIRE_TRUSTED_INGRESS ?= false
+AUTH_TRUSTED_INGRESS_KEY_BASE64 ?=
+AUTH_TRUSTED_INGRESS_AUDIENCE ?= buwiz-server
+AUTH_TRUSTED_INGRESS_MAX_AGE_SECONDS ?= 5
+AUTH_INGRESS_POSTGRES_POOL_SIZE ?= 16
+AUTH_INGRESS_TOKEN_CACHE_CAPACITY ?= 4096
+AUTH_INGRESS_CACHE_REVALIDATE_MS ?= 1000
+AUTH_ENABLE_PASSWORD_LOGIN ?= true
+AUTH_PASSWORD_MIN_LENGTH ?= 15
+AUTH_JWT_ISSUER ?= $(AUTH_PUBLIC_BASE_URL)
+AUTH_JWT_AUDIENCE ?= buwiz-server
+AUTH_JWT_KID ?= buwiz-server-dev-hs256
+AUTH_JWT_SECRET ?=
+AUTH_JWT_ALGORITHM ?= HS256
+AUTH_JWT_PRIVATE_KEY_DER_BASE64 ?=
+AUTH_JWT_PUBLIC_JWKS_JSON ?=
+AUTH_JWT_KEY_RING_JSON ?=
+AUTH_BOOTSTRAP_ADMIN_EMAILS ?=
+# Per-project secrets. `ddd init` writes AUTH_ROOT_KEY_BASE64 into .env; when
+# it is absent these persist a random key beside the project so restarts do
+# not invalidate sessions, MFA secrets, or sealed mail. Never commit them.
+local_key = $(shell test -s $(1) || { umask 077 && head -c 32 /dev/urandom | base64 | tr -d '\n' > $(1); }; cat $(1))
+AUTH_ROOT_KEY_BASE64 ?= $(call local_key,.auth-root-key)
+AUTH_CSRF_SECRET ?=
+AUTH_VAULT_KEY_BASE64 ?=
+AUTH_VAULT_KEY_VERSION ?= development-v1
+AUTH_VAULT_KEY_RING_JSON ?=
+AUTH_OUTBOX_KEY_BASE64 ?= $(call local_key,.auth-outbox-key)
+AUTH_OUTBOX_KEY_VERSION ?= development-v1
+AUTH_OUTBOX_POSTGRES_POOL_SIZE ?= 4
+AUTH_OUTBOX_MAIL_BATCH_SIZE ?= 25
+AUTH_OUTBOX_RELATIONSHIP_BATCH_SIZE ?= 100
+AUTH_OUTBOX_POLL_INTERVAL_MS ?= 500
+AUTH_RECOVERY_CODE_PEPPER_BASE64 ?=
+AUTH_MFA_ISSUER ?= Buwiz
+AUTH_DEV_TOOLS ?= true
+AUTH_DEV_AUTO_VERIFY ?= false
+AUTH_MAIL_TRANSPORT ?= capture
+AUTH_MAIL_HTTP_URL ?=
+AUTH_MAIL_HTTP_TOKEN ?=
+AUTH_MAIL_PRODUCT_NAME ?= Buwiz
+AUTH_RESEND_API_KEY ?=
+AUTH_RESEND_FROM ?=
+# Strip quotes only; keep Name <email> intact. Always pass through single-quoted shell assignment.
+AUTH_RESEND_FROM_VALUE = $(subst ",,$(strip $(AUTH_RESEND_FROM)))
+AUTH_SPICEDB_ENABLED ?= false
+AUTH_SPICEDB_CHECK_URL ?=
+AUTH_SPICEDB_WRITE_URL ?=
+AUTH_SPICEDB_TOKEN ?=
+AUTH_SPICEDB_CHECK_TOKEN ?=
+AUTH_SPICEDB_MEMBERSHIP_PERMISSION ?= member
+AUTH_SESSION_TTL_SECONDS ?= 3600
+AUTH_ACCESS_TOKEN_TTL_SECONDS ?= 900
+AUTH_REFRESH_TOKEN_TTL_SECONDS ?= 2592000
+AUTH_COOKIE_SECURE ?= false
+AUTH_ENABLE_OAUTH ?= false
+AUTH_OAUTH_DEVELOPMENT_CALLBACK_BYPASS ?= false
+AUTH_ENABLE_PASSKEYS ?= false
+AUTH_PASSKEY_RP_ID ?= $(AUTH_PASSKEY_HOST)
+AUTH_PASSKEY_RP_NAME ?= Buwiz
+AUTH_PASSKEY_ORIGIN ?= $(if $(filter 127.0.0.1 ::1,$(AUTH_PUBLIC_HOST)),$(AUTH_PUBLIC_SCHEME)://localhost$(if $(AUTH_PUBLIC_PORT),:$(AUTH_PUBLIC_PORT),),$(AUTH_PUBLIC_BASE_URL))
+AUTH_PASSKEY_REQUIRE_USER_VERIFICATION ?= true
+AUTH_PASSKEY_REQUIRE_USER_HANDLE ?= false
+AUTH_PASSKEY_STRICT_BASE64 ?= true
+# "any" is the reliable default for local + multi-device SaaS: platform-only
+# (Touch ID / Hello) fails immediately on many desktops with NotAllowedError.
+AUTH_PASSKEY_AUTHENTICATOR_ATTACHMENT ?= any
+AUTH_PASSKEY_CHALLENGE_TTL_SECONDS ?= 300
+AUTH_GOOGLE_ENABLED ?= false
+AUTH_GOOGLE_CLIENT_ID ?=
+AUTH_GOOGLE_CLIENT_SECRET ?=
+AUTH_GOOGLE_ISSUER ?= https://accounts.google.com
+AUTH_GOOGLE_AUTHORIZATION_URL ?= https://accounts.google.com/o/oauth2/v2/auth
+AUTH_GOOGLE_TOKEN_URL ?= https://oauth2.googleapis.com/token
+AUTH_GOOGLE_JWKS_URL ?= https://www.googleapis.com/oauth2/v3/certs
+AUTH_GOOGLE_JWKS_JSON ?=
+AUTH_GOOGLE_USERINFO_URL ?= https://openidconnect.googleapis.com/v1/userinfo
+AUTH_GOOGLE_SCOPES ?= openid email profile
+AUTH_GOOGLE_REDIRECT_URI ?= $(AUTH_PUBLIC_BASE_URL)/api/auth/oauth/google/callback
+AUTH_FACEBOOK_ENABLED ?= false
+AUTH_FACEBOOK_CLIENT_ID ?=
+AUTH_FACEBOOK_CLIENT_SECRET ?=
+AUTH_FACEBOOK_ISSUER ?= https://www.facebook.com
+AUTH_FACEBOOK_AUTHORIZATION_URL ?= https://www.facebook.com/v20.0/dialog/oauth
+AUTH_FACEBOOK_TOKEN_URL ?= https://graph.facebook.com/v20.0/oauth/access_token
+AUTH_FACEBOOK_USERINFO_URL ?= https://graph.facebook.com/v20.0/me?fields=id,email,name
+AUTH_FACEBOOK_SCOPES ?= email public_profile
+AUTH_FACEBOOK_REDIRECT_URI ?= $(AUTH_PUBLIC_BASE_URL)/api/auth/oauth/facebook/callback
+AUTH_APPLE_ENABLED ?= false
+AUTH_APPLE_CLIENT_ID ?=
+AUTH_APPLE_GENERATED_CLIENT_SECRET ?=
+AUTH_APPLE_TEAM_ID ?=
+AUTH_APPLE_KEY_ID ?=
+AUTH_APPLE_PRIVATE_KEY ?=
+AUTH_APPLE_CLIENT_SECRET_TTL_SECONDS ?= 86400
+AUTH_APPLE_ISSUER ?= https://appleid.apple.com
+AUTH_APPLE_AUTHORIZATION_URL ?= https://appleid.apple.com/auth/authorize
+AUTH_APPLE_TOKEN_URL ?= https://appleid.apple.com/auth/token
+AUTH_APPLE_JWKS_URL ?= https://appleid.apple.com/auth/keys
+AUTH_APPLE_JWKS_JSON ?=
+AUTH_APPLE_SCOPES ?= openid email name
+AUTH_APPLE_REDIRECT_URI ?= $(AUTH_PUBLIC_BASE_URL)/api/auth/oauth/apple/callback
+POSTGRES_URL ?= postgres://wasi_auth:wasi_auth_dev@127.0.0.1:54329/wasi_auth
+REDIS_URL ?= redis://127.0.0.1:6379
+REDIS_CHANNEL ?= buwiz-tax-profiles
+ORUS_FAKE_VERIFIER ?= false
+WEBMCP_ENABLED ?= true
+DESKTOP_OAUTH_REDIRECT_URIS ?=
+
+# Propagated into smoke scripts so port changes stay consistent.
+PUBLIC_ORIGIN_ENV = \
+	BASE_URL='$(BASE_URL)' \
+	AUTH_PUBLIC_BASE_URL='$(AUTH_PUBLIC_BASE_URL)' \
+	AUTH_JWT_ISSUER='$(AUTH_JWT_ISSUER)' \
+	AUTH_ROOT_KEY_BASE64='$(AUTH_ROOT_KEY_BASE64)' \
+	AUTH_JWT_SECRET='$(AUTH_JWT_SECRET)' \
+	AUTH_JWT_AUDIENCE='$(AUTH_JWT_AUDIENCE)'
+
+AUTH_DATABASE_URL :=
+ifeq ($(db),postgres)
+AUTH_DATABASE_URL := $(POSTGRES_URL)
+endif
+
+MAIL_FEATURE := mail-http
+ifeq ($(AUTH_MAIL_TRANSPORT),capture)
+MAIL_FEATURE := mail-capture
+endif
+OPTIONAL_SPICEDB_FEATURE :=
+ifeq ($(AUTH_SPICEDB_ENABLED),true)
+OPTIONAL_SPICEDB_FEATURE := ,spicedb
+endif
+BASE_FEATURES := ssr,$(db),$(MAIL_FEATURE)$(OPTIONAL_SPICEDB_FEATURE)
+GRPC_FEATURES := ssr,$(db),spin-grpc,$(MAIL_FEATURE)$(OPTIONAL_SPICEDB_FEATURE)
+SPIN_VARIABLE_ARGS = \
+	--variable database_backend=$(db) \
+	--variable database_url='$(AUTH_DATABASE_URL)' \
+	--variable auth_transport=$(transport) \
+	--variable auth_production_mode=$(AUTH_PRODUCTION_MODE) \
+	--variable auth_require_trusted_ingress=$(AUTH_REQUIRE_TRUSTED_INGRESS) \
+	--variable auth_trusted_ingress_key_base64='$(AUTH_TRUSTED_INGRESS_KEY_BASE64)' \
+	--variable auth_trusted_ingress_audience='$(AUTH_TRUSTED_INGRESS_AUDIENCE)' \
+	--variable auth_trusted_ingress_max_age_seconds=$(AUTH_TRUSTED_INGRESS_MAX_AGE_SECONDS) \
+	--variable auth_enable_password_login=$(AUTH_ENABLE_PASSWORD_LOGIN) \
+	--variable auth_password_min_length=$(AUTH_PASSWORD_MIN_LENGTH) \
+	--variable auth_jwt_issuer=$(AUTH_JWT_ISSUER) \
+	--variable auth_jwt_audience=$(AUTH_JWT_AUDIENCE) \
+	--variable auth_jwt_kid=$(AUTH_JWT_KID) \
+	--variable auth_jwt_secret=$(AUTH_JWT_SECRET) \
+	--variable auth_jwt_algorithm=$(AUTH_JWT_ALGORITHM) \
+	--variable auth_jwt_private_key_der_base64=$(AUTH_JWT_PRIVATE_KEY_DER_BASE64) \
+	--variable auth_jwt_public_jwks_json='$(AUTH_JWT_PUBLIC_JWKS_JSON)' \
+	--variable auth_jwt_key_ring_json='$(AUTH_JWT_KEY_RING_JSON)' \
+	--variable auth_bootstrap_admin_emails='$(AUTH_BOOTSTRAP_ADMIN_EMAILS)' \
+	--variable auth_root_key_base64='$(AUTH_ROOT_KEY_BASE64)' \
+	--variable auth_csrf_secret='$(AUTH_CSRF_SECRET)' \
+	--variable auth_vault_key_base64='$(AUTH_VAULT_KEY_BASE64)' \
+	--variable auth_vault_key_version='$(AUTH_VAULT_KEY_VERSION)' \
+	--variable auth_vault_key_ring_json='$(AUTH_VAULT_KEY_RING_JSON)' \
+	--variable auth_outbox_key_base64='$(AUTH_OUTBOX_KEY_BASE64)' \
+	--variable auth_outbox_key_version='$(AUTH_OUTBOX_KEY_VERSION)' \
+	--variable auth_recovery_code_pepper_base64='$(AUTH_RECOVERY_CODE_PEPPER_BASE64)' \
+	--variable auth_mfa_issuer='$(AUTH_MFA_ISSUER)' \
+	--variable auth_session_ttl_seconds=$(AUTH_SESSION_TTL_SECONDS) \
+	--variable auth_access_token_ttl_seconds=$(AUTH_ACCESS_TOKEN_TTL_SECONDS) \
+	--variable auth_refresh_token_ttl_seconds=$(AUTH_REFRESH_TOKEN_TTL_SECONDS) \
+	--variable auth_cookie_secure=$(AUTH_COOKIE_SECURE) \
+	--variable auth_public_base_url=$(AUTH_PUBLIC_BASE_URL) \
+	--variable auth_dev_tools=$(AUTH_DEV_TOOLS) \
+	--variable auth_dev_auto_verify=$(AUTH_DEV_AUTO_VERIFY) \
+	--variable auth_mail_transport=$(AUTH_MAIL_TRANSPORT) \
+	--variable auth_spicedb_enabled=$(AUTH_SPICEDB_ENABLED) \
+	--variable auth_spicedb_check_url='$(AUTH_SPICEDB_CHECK_URL)' \
+	--variable auth_spicedb_check_token='$(AUTH_SPICEDB_CHECK_TOKEN)' \
+	--variable auth_spicedb_membership_permission='$(AUTH_SPICEDB_MEMBERSHIP_PERMISSION)' \
+	--variable auth_enable_oauth=$(AUTH_ENABLE_OAUTH) \
+	--variable auth_oauth_development_callback_bypass=$(AUTH_OAUTH_DEVELOPMENT_CALLBACK_BYPASS) \
+	--variable auth_enable_passkeys=$(AUTH_ENABLE_PASSKEYS) \
+	--variable auth_passkey_rp_id=$(AUTH_PASSKEY_RP_ID) \
+	--variable auth_passkey_rp_name=$(AUTH_PASSKEY_RP_NAME) \
+	--variable auth_passkey_origin=$(AUTH_PASSKEY_ORIGIN) \
+	--variable auth_passkey_require_user_verification=$(AUTH_PASSKEY_REQUIRE_USER_VERIFICATION) \
+	--variable auth_passkey_require_user_handle=$(AUTH_PASSKEY_REQUIRE_USER_HANDLE) \
+	--variable auth_passkey_strict_base64=$(AUTH_PASSKEY_STRICT_BASE64) \
+	--variable auth_passkey_authenticator_attachment=$(AUTH_PASSKEY_AUTHENTICATOR_ATTACHMENT) \
+	--variable auth_passkey_challenge_ttl_seconds=$(AUTH_PASSKEY_CHALLENGE_TTL_SECONDS) \
+	--variable auth_google_enabled=$(AUTH_GOOGLE_ENABLED) \
+	--variable auth_google_client_id=$(AUTH_GOOGLE_CLIENT_ID) \
+	--variable auth_google_client_secret=$(AUTH_GOOGLE_CLIENT_SECRET) \
+	--variable auth_google_issuer=$(AUTH_GOOGLE_ISSUER) \
+	--variable auth_google_authorization_url=$(AUTH_GOOGLE_AUTHORIZATION_URL) \
+	--variable auth_google_token_url=$(AUTH_GOOGLE_TOKEN_URL) \
+	--variable auth_google_jwks_url=$(AUTH_GOOGLE_JWKS_URL) \
+	--variable auth_google_jwks_json='$(AUTH_GOOGLE_JWKS_JSON)' \
+	--variable auth_google_userinfo_url=$(AUTH_GOOGLE_USERINFO_URL) \
+	--variable auth_google_scopes='$(AUTH_GOOGLE_SCOPES)' \
+	--variable auth_google_redirect_uri=$(AUTH_GOOGLE_REDIRECT_URI) \
+	--variable auth_facebook_enabled=$(AUTH_FACEBOOK_ENABLED) \
+	--variable auth_facebook_client_id=$(AUTH_FACEBOOK_CLIENT_ID) \
+	--variable auth_facebook_client_secret=$(AUTH_FACEBOOK_CLIENT_SECRET) \
+	--variable auth_facebook_issuer=$(AUTH_FACEBOOK_ISSUER) \
+	--variable auth_facebook_authorization_url=$(AUTH_FACEBOOK_AUTHORIZATION_URL) \
+	--variable auth_facebook_token_url=$(AUTH_FACEBOOK_TOKEN_URL) \
+	--variable auth_facebook_userinfo_url='$(AUTH_FACEBOOK_USERINFO_URL)' \
+	--variable auth_facebook_scopes='$(AUTH_FACEBOOK_SCOPES)' \
+	--variable auth_facebook_redirect_uri=$(AUTH_FACEBOOK_REDIRECT_URI) \
+	--variable auth_apple_enabled=$(AUTH_APPLE_ENABLED) \
+	--variable auth_apple_client_id=$(AUTH_APPLE_CLIENT_ID) \
+	--variable auth_apple_generated_client_secret=$(AUTH_APPLE_GENERATED_CLIENT_SECRET) \
+	--variable auth_apple_team_id=$(AUTH_APPLE_TEAM_ID) \
+	--variable auth_apple_key_id=$(AUTH_APPLE_KEY_ID) \
+	--variable auth_apple_private_key='$(AUTH_APPLE_PRIVATE_KEY)' \
+	--variable auth_apple_client_secret_ttl_seconds=$(AUTH_APPLE_CLIENT_SECRET_TTL_SECONDS) \
+	--variable auth_apple_issuer=$(AUTH_APPLE_ISSUER) \
+	--variable auth_apple_authorization_url=$(AUTH_APPLE_AUTHORIZATION_URL) \
+	--variable auth_apple_token_url=$(AUTH_APPLE_TOKEN_URL) \
+	--variable auth_apple_jwks_url=$(AUTH_APPLE_JWKS_URL) \
+	--variable auth_apple_jwks_json='$(AUTH_APPLE_JWKS_JSON)' \
+	--variable auth_apple_scopes='$(AUTH_APPLE_SCOPES)' \
+	--variable auth_apple_redirect_uri=$(AUTH_APPLE_REDIRECT_URI) \
+	--variable redis_url='$(REDIS_URL)' \
+	--variable redis_channel='$(REDIS_CHANNEL)' \
+	--variable orus_fake_verifier=$(ORUS_FAKE_VERIFIER) \
+	--variable webmcp_enabled=$(WEBMCP_ENABLED) \
+	--variable desktop_oauth_redirect_uris='$(DESKTOP_OAUTH_REDIRECT_URIS)'
+
+.PHONY: help validate-toolchain validate-mail db-up db-down migration-preflight db-migrate db-verify check grpc-check dev spin spin-backend spin-backend-prebuilt trusted-ingress install-outbox-worker outbox-worker fresh smoke oauth-credentials oauth-preflight oauth-evidence oauth-callback oauth-browser-smoke oauth-dev-browser-smoke browser-smoke passkey-browser-smoke workspace-settings-smoke
+
+help:
+	@echo "Fullstack targets:"
+	@echo "  make check                 Compile Spin HTTP/Leptos shell with db=$(db)"
+	@echo "  make grpc-check            Compile Spin gRPC services with db=$(db)"
+	@echo "  make db-up                Start local PostgreSQL + Redis containers"
+	@echo "  make migration-preflight Verify the migration binary before destructive resets"
+	@echo "  make db-migrate           Apply lock-protected wasi-auth migrations"
+	@echo "  make db-verify            Verify migration history and required tables"
+	@echo "  make dev                   Run Spin + outbox worker (use this for register/verify mail)"
+	@echo "  make spin transport=both   Spin only on $(listen) — does NOT deliver mail"
+	@echo "  make spin-backend          Run loopback Spin backend on $(backend_listen)"
+	@echo "  make spin-backend-prebuilt Run the already verified component without rebuilding"
+	@echo "  make trusted-ingress       Run native ingress on $(listen) in a second terminal"
+	@echo "  make outbox-worker         Native mail/SpiceDB delivery (required beside spin for email)"
+	@echo ""
+	@echo "Mail note: default is AUTH_MAIL_TRANSPORT=capture + AUTH_DEV_TOOLS=true."
+	@echo "  After register, use Verify now / Skip verification (dev) on this host."
+	@echo "  Resend needs a reachable AUTH_PUBLIC_BASE_URL (not localhost from a remote inbox)."
+	@echo "  make fresh db=postgres     Erase PostgreSQL data using POSTGRES_URL"
+	@echo "  make smoke                 Run REST/web route smoke checks against BASE_URL=$(BASE_URL)"
+	@echo "  make oauth-credentials     Check required live OAuth credential variables"
+	@echo "  make oauth-preflight       Validate live OAuth provider start URLs against BASE_URL"
+	@echo "  make oauth-evidence        Report redacted OAuth storage evidence"
+	@echo "  make oauth-callback        Verify live OAuth callback session and storage evidence"
+	@echo "  make oauth-browser-smoke   Open browser, complete live OAuth, and verify evidence"
+	@echo "  make oauth-dev-browser-smoke Verify OAuth UI with development callback bypass"
+	@echo "  make browser-smoke         Run Playwright page and middleware checks"
+	@echo "  make passkey-browser-smoke Run Playwright WebAuthn virtual authenticator checks"
+	@echo "  make workspace-settings-smoke  Playwright workspace settings pages (needs make dev)"
+	@echo "                                 optional ALLOW_MUTATING_SMOKE=1 for rename; prefer make fresh first"
+	@echo ""
+	@echo "Public origin (derived from listen unless overridden):"
+	@echo "  listen=$(listen)"
+	@echo "  AUTH_PUBLIC_BASE_URL=$(AUTH_PUBLIC_BASE_URL)"
+	@echo "  AUTH_JWT_ISSUER=$(AUTH_JWT_ISSUER)"
+	@echo "  BASE_URL=$(BASE_URL)"
+	@echo "  Example: make spin listen=127.0.0.1:3000"
+
+validate-toolchain:
+	bash scripts/verify_toolchain.sh
+
+db-up:
+	docker compose up -d --wait postgres redis
+
+db-down:
+	docker compose down
+
+migration-preflight:
+	cargo $(CARGO_CONFIG_ARGS) check --locked --no-default-features --features migrate --bin wasi-auth-migrate
+
+# Local compose Postgres (127.0.0.1:54329) must be up before migrations/Spin.
+# Without this, login/register fail with HTTP 503 "auth storage is unavailable"
+# (rate-limit / session store cannot open a connection).
+db-migrate: db-up
+	DATABASE_URL='$(POSTGRES_URL)' cargo $(CARGO_CONFIG_ARGS) run --quiet --no-default-features --features migrate --bin wasi-auth-migrate -- apply
+
+db-verify: db-up
+	DATABASE_URL='$(POSTGRES_URL)' cargo $(CARGO_CONFIG_ARGS) run --quiet --no-default-features --features migrate --bin wasi-auth-migrate -- verify-database
+
+validate-mail:
+	@case "$(AUTH_MAIL_TRANSPORT)" in \
+		capture|http) ;; \
+		resend) \
+			test -n "$(AUTH_RESEND_API_KEY)" || { echo "Error: AUTH_RESEND_API_KEY is required for Resend."; exit 2; }; \
+			test -n "$(AUTH_RESEND_FROM_VALUE)" || { echo "Error: AUTH_RESEND_FROM is required for Resend."; exit 2; } ;; \
+		*) echo "Error: unsupported AUTH_MAIL_TRANSPORT=$(AUTH_MAIL_TRANSPORT). Use capture, resend, or http."; exit 2 ;; \
+	esac
+
+check: validate-toolchain validate-mail
+	WASI_RUNTIME=spin AUTH_TRANSPORT=$(transport) cargo check --target wasm32-wasip2 --no-default-features --features $(BASE_FEATURES)
+
+grpc-check: validate-toolchain validate-mail
+	WASI_RUNTIME=spin AUTH_TRANSPORT=grpc cargo check --target wasm32-wasip2 --no-default-features --features $(GRPC_FEATURES)
+
+dev: install-outbox-worker
+	@set -eu; \
+		$(MAKE) --no-print-directory outbox-worker & worker_pid=$$!; \
+		trap 'kill $$worker_pid 2>/dev/null || true; wait $$worker_pid 2>/dev/null || true' EXIT INT TERM; \
+		$(MAKE) --no-print-directory spin transport=$(transport)
+
+spin: validate-toolchain validate-mail db-migrate
+	@case "$(db)" in \
+		postgres) \
+			if [ -z "$$POSTGRES_URL" ]; then \
+				echo "Error: POSTGRES_URL is required for make spin db=postgres."; \
+				exit 1; \
+			fi ;; \
+		*) echo "Error: unsupported db=$(db). Fullstack authentication requires postgres."; exit 2 ;; \
+	esac
+	FULLSTACK_FEATURES=$(GRPC_FEATURES) AUTH_TRANSPORT=$(transport) "$(SPIN_BIN)" up $(SPIN_UP_BUILD_FLAG) --listen $(listen) $(SPIN_VARIABLE_ARGS)
+
+spin-backend: override AUTH_REQUIRE_TRUSTED_INGRESS := true
+spin-backend: listen=$(backend_listen)
+spin-backend: spin
+
+spin-backend-prebuilt: override AUTH_REQUIRE_TRUSTED_INGRESS := true
+spin-backend-prebuilt: SPIN_UP_BUILD_FLAG=
+spin-backend-prebuilt: spin-backend
+
+trusted-ingress: db-migrate
+	@test -n "$(AUTH_TRUSTED_INGRESS_KEY_BASE64)" || \
+		(echo "Error: AUTH_TRUSTED_INGRESS_KEY_BASE64 must be a base64-encoded 32-byte key."; exit 2)
+	@command -v "$(WASI_AUTH_INGRESS_BIN)" >/dev/null 2>&1 || \
+		(echo "Error: $(WASI_AUTH_INGRESS_BIN) is not installed or WASI_AUTH_INGRESS_BIN is incorrect."; exit 2)
+	@DATABASE_URL='$(POSTGRES_URL)' \
+	AUTH_PRODUCTION_MODE=$(AUTH_PRODUCTION_MODE) \
+	AUTH_TRUSTED_INGRESS_KEY_BASE64='$(AUTH_TRUSTED_INGRESS_KEY_BASE64)' \
+	AUTH_TRUSTED_INGRESS_AUDIENCE='$(AUTH_TRUSTED_INGRESS_AUDIENCE)' \
+	AUTH_TRUSTED_INGRESS_MAX_AGE_SECONDS=$(AUTH_TRUSTED_INGRESS_MAX_AGE_SECONDS) \
+	AUTH_INGRESS_LISTEN='$(listen)' \
+	AUTH_INGRESS_BACKEND_ORIGIN='http://$(backend_listen)' \
+	AUTH_INGRESS_POSTGRES_POOL_SIZE=$(AUTH_INGRESS_POSTGRES_POOL_SIZE) \
+	AUTH_INGRESS_TOKEN_CACHE_CAPACITY=$(AUTH_INGRESS_TOKEN_CACHE_CAPACITY) \
+	AUTH_INGRESS_CACHE_REVALIDATE_MS=$(AUTH_INGRESS_CACHE_REVALIDATE_MS) \
+	AUTH_PUBLIC_BASE_URL='$(AUTH_PUBLIC_BASE_URL)' \
+	"$(WASI_AUTH_INGRESS_BIN)"
+
+# FORCE_OUTBOX_REBUILD=1 make install-outbox-worker  — reinstall even if present
+install-outbox-worker:
+	@if [ ! -x "$(WASI_AUTH_OUTBOX_WORKER_BIN)" ] || [ "$(FORCE_OUTBOX_REBUILD)" = "1" ]; then \
+		if [ -n "$(WASI_AUTH_SOURCE)" ]; then \
+			echo "Installing local wasi-auth-outbox-worker from $(WASI_AUTH_SOURCE)..."; \
+			cargo install --path "$(WASI_AUTH_SOURCE)" --locked --force --root "$(WASI_AUTH_TOOLS_ROOT)" \
+				--features outbox-worker --bin wasi-auth-outbox-worker; \
+		else \
+			echo "Installing wasi-auth-outbox-worker $(WASI_AUTH_VERSION) into $(WASI_AUTH_TOOLS_ROOT)..."; \
+			cargo install wasi-auth --version '=$(WASI_AUTH_VERSION)' --locked --force \
+				--root "$(WASI_AUTH_TOOLS_ROOT)" --features outbox-worker \
+				--bin wasi-auth-outbox-worker; \
+		fi; \
+	fi
+
+outbox-worker: validate-mail db-migrate install-outbox-worker
+	@test -n "$(AUTH_OUTBOX_KEY_BASE64)" || \
+		(echo "Error: AUTH_OUTBOX_KEY_BASE64 must be a base64-encoded 32-byte key."; exit 2)
+	@test -x "$(WASI_AUTH_OUTBOX_WORKER_BIN)" || \
+		(echo "Error: $(WASI_AUTH_OUTBOX_WORKER_BIN) is not executable."; exit 2)
+	@DATABASE_URL='$(POSTGRES_URL)' \
+	AUTH_PRODUCTION_MODE=$(AUTH_PRODUCTION_MODE) \
+	AUTH_PUBLIC_BASE_URL='$(AUTH_PUBLIC_BASE_URL)' \
+	AUTH_OUTBOX_KEY_BASE64='$(AUTH_OUTBOX_KEY_BASE64)' \
+	AUTH_OUTBOX_KEY_VERSION='$(AUTH_OUTBOX_KEY_VERSION)' \
+	AUTH_OUTBOX_POSTGRES_POOL_SIZE=$(AUTH_OUTBOX_POSTGRES_POOL_SIZE) \
+	AUTH_OUTBOX_MAIL_BATCH_SIZE=$(AUTH_OUTBOX_MAIL_BATCH_SIZE) \
+	AUTH_OUTBOX_RELATIONSHIP_BATCH_SIZE=$(AUTH_OUTBOX_RELATIONSHIP_BATCH_SIZE) \
+	AUTH_OUTBOX_POLL_INTERVAL_MS=$(AUTH_OUTBOX_POLL_INTERVAL_MS) \
+	AUTH_MAIL_TRANSPORT=$(AUTH_MAIL_TRANSPORT) \
+	AUTH_MAIL_HTTP_URL='$(AUTH_MAIL_HTTP_URL)' \
+	AUTH_MAIL_HTTP_TOKEN='$(AUTH_MAIL_HTTP_TOKEN)' \
+	AUTH_MAIL_PRODUCT_NAME='$(AUTH_MAIL_PRODUCT_NAME)' \
+	AUTH_RESEND_API_KEY='$(AUTH_RESEND_API_KEY)' \
+	AUTH_RESEND_FROM='$(AUTH_RESEND_FROM_VALUE)' \
+	AUTH_SPICEDB_ENABLED=$(AUTH_SPICEDB_ENABLED) \
+	AUTH_SPICEDB_WRITE_URL='$(AUTH_SPICEDB_WRITE_URL)' \
+	AUTH_SPICEDB_TOKEN='$(AUTH_SPICEDB_TOKEN)' \
+	"$(WASI_AUTH_OUTBOX_WORKER_BIN)"
+
+fresh: migration-preflight
+	@case "$(db)" in \
+		postgres) \
+			if [ -z "$$POSTGRES_URL" ]; then \
+				echo "Error: POSTGRES_URL is required for db=postgres."; \
+				exit 1; \
+			fi; \
+			AUTH_DB=postgres DATABASE_URL="$$POSTGRES_URL" bash scripts/reset_db.sh ;; \
+		*) echo "Error: unsupported db=$(db). Fullstack authentication requires postgres."; exit 2 ;; \
+	esac
+	$(MAKE) db-migrate
+
+smoke:
+	$(PUBLIC_ORIGIN_ENV) bash scripts/verify_fullstack.sh
+
+oauth-credentials:
+	$(PUBLIC_ORIGIN_ENV) bash scripts/verify_oauth_credentials.sh
+
+oauth-preflight: oauth-credentials
+	$(PUBLIC_ORIGIN_ENV) bash scripts/verify_live_oauth_preflight.sh
+
+oauth-evidence:
+	$(PUBLIC_ORIGIN_ENV) bash scripts/report_oauth_evidence.sh
+
+oauth-callback: oauth-credentials
+	$(PUBLIC_ORIGIN_ENV) bash scripts/verify_live_oauth_callback.sh
+
+oauth-browser-smoke: oauth-preflight
+	npm install
+	npm exec -- playwright install chromium
+	$(PUBLIC_ORIGIN_ENV) npm run live-oauth-smoke
+
+oauth-dev-browser-smoke:
+	npm install
+	npm exec -- playwright install chromium
+	$(PUBLIC_ORIGIN_ENV) npm run oauth-dev-smoke
+
+browser-smoke:
+	npm install
+	npm exec -- playwright install chromium
+	$(PUBLIC_ORIGIN_ENV) npm run browser-smoke
+
+passkey-browser-smoke:
+	npm install
+	npm exec -- playwright install chromium
+	$(PUBLIC_ORIGIN_ENV) npm run passkey-smoke
+
+# Optional Playwright smoke for /org/{slug}/settings/* (creates a workspace).
+# Requires a running server (make dev). Skips cleanly if server/session unavailable.
+# Prefer `make fresh db=postgres` before ALLOW_MUTATING_SMOKE=1 on a shared DB.
+workspace-settings-smoke:
+	npm install
+	npm exec -- playwright install chromium
+	$(PUBLIC_ORIGIN_ENV) npm run workspace-settings-smoke

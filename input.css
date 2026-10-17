@@ -1,0 +1,320 @@
+/*
+ * Fullstack Tailwind entry (v4) — pure utilities.
+ *
+ * Markup uses Tailwind utilities via `src/ui/classes.rs` constants.
+ * Tracker: TAILWIND_MIGRATION.md
+ */
+@import "tailwindcss";
+@source "./src/**/*.{rs,html,css}";
+@source "./public/**/*.{html,js}";
+
+/*
+ * Dark mode: explicit data-theme on <html>, or system preference when
+ * data-theme="system" / unset. ThemeToggle cycles light → dark → system.
+ */
+@custom-variant dark {
+  &:where(html[data-theme="dark"] &, html[data-theme="dark"] & *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where(
+      html[data-theme="system"] &,
+      html[data-theme="system"] & *,
+      html:not([data-theme]) &,
+      html:not([data-theme]) & *
+    ) {
+      @slot;
+    }
+  }
+}
+
+/*
+ * Workspace shell mode variants (desktop ≥961px).
+ * Mirror both live `data-sidebar` on the shell and the FOUC
+ * `html[data-sidebar-pref]` set by the head script before hydrate.
+ * Mobile drawer ignores these — it always uses the checkbox peer drawer.
+ *
+ * Leading `&:where(...)` is required: it keeps the utility class as the
+ * subject so specificity stays (0,1,0) and beats base utilities on the same
+ * node (e.g. shell-mini:w-[68px] wins over w-[260px]). Bare `:where(anc &)`
+ * zeros specificity after Lightning flatten and is dead in practice.
+ */
+@custom-variant shell-mini {
+  @media (min-width: 961px) {
+    &:where(
+      [data-sidebar="mini"],
+      [data-sidebar="mini"] *,
+      html[data-sidebar-pref="mini"] [data-testid="workspace-shell"],
+      html[data-sidebar-pref="mini"] [data-testid="workspace-shell"] *
+    ) {
+      @slot;
+    }
+  }
+}
+
+@custom-variant shell-hidden {
+  @media (min-width: 961px) {
+    &:where(
+      [data-sidebar="hidden"],
+      [data-sidebar="hidden"] *,
+      html[data-sidebar-pref="hidden"] [data-testid="workspace-shell"],
+      html[data-sidebar-pref="hidden"] [data-testid="workspace-shell"] *
+    ) {
+      @slot;
+    }
+  }
+}
+
+/* Width transition only after JS adds `.is-sidebar-animated` (avoids FOUC flash). */
+@custom-variant shell-animated {
+  &:where(.is-sidebar-animated, .is-sidebar-animated *) {
+    @slot;
+  }
+}
+
+/* Mobile drawer band: width ≤960 (pairs with desktop min-width: 961px; no 960px hole). */
+@custom-variant shell-mobile (@media (max-width: 960px));
+
+/* Settings shell mobile band: width ≤900 (inclusive; Tailwind max-[900px] is exclusive). */
+@custom-variant settings-mobile (@media (max-width: 900px));
+
+/*
+ * Theme colors bridge to CSS custom properties so:
+ * - Tailwind utilities: bg-canvas, text-secondary, border-subtle, …
+ * - any residual var(--bg-canvas) references stay pixel-aligned.
+ */
+@theme inline {
+  --color-canvas: var(--bg-canvas);
+  --color-sidebar: var(--bg-sidebar);
+  --color-surface: var(--bg-surface);
+  --color-surface-subtle: var(--bg-surface-subtle);
+  --color-surface-hover: var(--bg-surface-hover);
+  --color-surface-active: var(--bg-surface-active);
+  --color-elevated: var(--bg-elevated);
+  --color-inverse: var(--bg-inverse);
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-tertiary: var(--text-tertiary);
+  --color-disabled: var(--text-disabled);
+  --color-on-inverse: var(--text-inverse);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+  --color-focus: var(--focus-ring);
+  --color-accent: var(--accent);
+  --color-accent-contrast: var(--accent-contrast);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-danger: var(--danger);
+  --color-warning: var(--warning);
+  --color-success: var(--success);
+  --color-code: var(--code-bg);
+  --color-overlay-scrim: var(--overlay-scrim);
+  --color-overlay-scrim-strong: var(--overlay-scrim-strong);
+  /* Optional utility shade (Porzio hack); prefer semantic bg-canvas in product UI */
+  --color-zinc-25: oklch(99.2% 0 0);
+  --shadow-soft: var(--shadow-soft);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/*
+ * Fullstack example visual system — see DESIGN.md (source of truth).
+ *
+ * Content-first neutral surfaces. Tokens stay semantic so a user-selected
+ * accent can land later without rewriting every component.
+ *
+ * Light elevation (zinc-25 pattern — Porzio / ChatGPT):
+ *   canvas  ≈ zinc-25  — airy page field (not pure white, not zinc-50 dingy)
+ *   sidebar ≈ zinc-50  — subtle chrome frame next to the field
+ *   surface / elevated = pure white — cards, inputs, modals float on canvas
+ *   surface-subtle     — inset wells only (not full-bleed backgrounds)
+ * Never paint large regions pure white or zinc-50; keep one pure-white layer.
+ */
+
+:root,
+html[data-theme="light"] {
+  color-scheme: light;
+  /* Page field — “feels white” but pure-white cards still pop */
+  --bg-canvas: oklch(99.2% 0 0);
+  /* Shell rail — half-step greyer frame (≈ zinc-50), not dingy */
+  --bg-sidebar: oklch(98.5% 0 0);
+  /* Elevated UI — pure white over the airy canvas */
+  --bg-surface: #ffffff;
+  --bg-surface-subtle: oklch(97.5% 0 0);
+  --bg-surface-hover: oklch(96% 0 0);
+  --bg-surface-active: oklch(94.5% 0 0);
+  --bg-elevated: #ffffff;
+  --bg-inverse: #0d0d0d;
+  --text-primary: #0d0d0d;
+  --text-secondary: #5d5d5d;
+  --text-tertiary: #8f8f8f;
+  --text-disabled: #b4b4b4;
+  --text-inverse: #ffffff;
+  /* Soft edges so white cards read cleanly on canvas-25 */
+  --border-subtle: oklch(92% 0 0);
+  --border-strong: oklch(86% 0 0);
+  --focus-ring: #737373;
+  --accent: #0d0d0d;
+  --accent-contrast: #ffffff;
+  --accent-subtle: oklch(97.5% 0 0);
+  --danger: #d00e17;
+  --warning: #a05a00;
+  --success: #0f7b58;
+  --code-bg: oklch(98% 0 0);
+  --shadow: rgba(0, 0, 0, 0.08);
+  --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.08);
+  /*
+   * Modal / drawer scrim — always near-black, never --bg-inverse.
+   * Using inverse in dark mode made a milky white fog over the UI.
+   * Industry baseline (Material / Apple / Linear): black @ ~40–55% light,
+   * slightly stronger in dark so elevated surfaces still read as “above”.
+   */
+  --overlay-scrim: rgba(13, 13, 13, 0.48);
+  --overlay-scrim-strong: rgba(13, 13, 13, 0.58);
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-canvas: #212121;
+  --bg-sidebar: #171717;
+  --bg-surface: #2f2f2f;
+  --bg-surface-subtle: #262626;
+  --bg-surface-hover: #303030;
+  --bg-surface-active: #383838;
+  --bg-elevated: #2f2f2f;
+  --bg-inverse: #ffffff;
+  --text-primary: #ececec;
+  --text-secondary: #b4b4b4;
+  --text-tertiary: #8b8b8b;
+  --text-disabled: #666666;
+  --text-inverse: #0d0d0d;
+  --border-subtle: #3a3a3a;
+  --border-strong: #555555;
+  --focus-ring: #a0a0a0;
+  --accent: #ffffff;
+  --accent-contrast: #0d0d0d;
+  --accent-subtle: #2f2f2f;
+  --danger: #ff5a65;
+  --warning: #f0a54a;
+  --success: #4bc49a;
+  --code-bg: #171717;
+  --shadow: rgba(0, 0, 0, 0.35);
+  --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --overlay-scrim: rgba(0, 0, 0, 0.62);
+  --overlay-scrim-strong: rgba(0, 0, 0, 0.72);
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-theme="system"],
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --bg-canvas: #212121;
+    --bg-sidebar: #171717;
+    --bg-surface: #2f2f2f;
+    --bg-surface-subtle: #262626;
+    --bg-surface-hover: #303030;
+    --bg-surface-active: #383838;
+    --bg-elevated: #2f2f2f;
+    --bg-inverse: #ffffff;
+    --text-primary: #ececec;
+    --text-secondary: #b4b4b4;
+    --text-tertiary: #8b8b8b;
+    --text-disabled: #666666;
+    --text-inverse: #0d0d0d;
+    --border-subtle: #3a3a3a;
+    --border-strong: #555555;
+    --focus-ring: #a0a0a0;
+    --accent: #ffffff;
+    --accent-contrast: #0d0d0d;
+    --accent-subtle: #2f2f2f;
+    --danger: #ff5a65;
+    --warning: #f0a54a;
+    --success: #4bc49a;
+    --code-bg: #171717;
+    --shadow: rgba(0, 0, 0, 0.35);
+    --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.35);
+    --overlay-scrim: rgba(0, 0, 0, 0.62);
+    --overlay-scrim-strong: rgba(0, 0, 0, 0.72);
+  }
+}
+
+/*
+ * Base layer: Preflight covers most resets. Keep app canvas + focus + form
+ * inheritance so utilities share one baseline.
+ */
+@layer base {
+  html {
+    background: var(--bg-canvas);
+    font-family: var(--font-sans);
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background: var(--bg-canvas);
+    color: var(--text-primary);
+    margin: 0;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    color: inherit;
+    font: inherit;
+  }
+
+  a {
+    color: inherit;
+  }
+
+  button,
+  a {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 3px;
+  }
+
+  /* Class rules must not override the HTML hidden attribute. */
+  [hidden] {
+    display: none !important;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* ── Minimal residuals (cannot express cleanly as utilities) ─────────────── */
+
+/* Mobile drawer scroll locks (checkbox peer drawers). */
+body:has(#workspace-nav-toggle:checked),
+body:has(#workspace-settings-nav-toggle:checked) {
+  overflow: hidden;
+}
+
+/* Page scroll locked while board/org create modal is open (JS toggles class on <html>). */
+html.board-modal-open,
+html.board-modal-open body {
+  overflow: hidden !important;
+  overscroll-behavior: none;
+}
+
+/* Pulse used by board metric live dot (utility animate-[board-pulse_…]). */
+@keyframes board-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 35%, transparent); }
+  70% { box-shadow: 0 0 0 8px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
