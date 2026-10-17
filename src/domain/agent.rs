@@ -66,7 +66,7 @@ pub fn validate_registration(
     let client_name: String = client_name
         .unwrap_or("")
         .chars()
-        .filter(|ch| !ch.is_control())
+        .filter(|ch| !ch.is_control() && !is_invisible_format(*ch))
         .collect::<String>()
         .trim()
         .chars()
@@ -97,18 +97,35 @@ pub fn validate_registration(
     })
 }
 
+/// Schemes a browser would run or hand to another app in ways a redirect
+/// must never reach.
+const DENIED_SCHEMES: [&str; 17] = [
+    "javascript", "data", "file", "vbscript", "about", "blob", "ftp", "ws", "wss",
+    "mailto", "tel", "sms", "intent", "chrome", "view-source", "jar", "filesystem",
+];
+
 /// A redirect URI an agent may register: `https://`, loopback `http://`
-/// (RFC 8252 §7.3), or an app's own scheme (RFC 8252 §7.1). No fragments, no
-/// credentials, and nothing a browser would run.
+/// (RFC 8252 §7.3), or an app's own scheme (RFC 8252 §7.1). ASCII only, no
+/// fragment, no credentials, no backslash or percent-escape in the
+/// authority, and nothing a browser would run.
+///
+/// The same check runs on the URI presented at authorize time, so a URI
+/// that parses differently in a browser can never match.
 pub fn redirect_uri_registrable(uri: &str) -> Result<(), String> {
     if uri.is_empty() || uri.len() > 512 {
         return Err("redirect_uri must be 1 to 512 characters".to_owned());
     }
-    if uri.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+    if !uri.is_ascii() {
+        return Err("redirect_uri must be ASCII (percent-encode anything else)".to_owned());
+    }
+    if uri.chars().any(|ch| ch.is_ascii_whitespace() || ch.is_ascii_control()) {
         return Err("redirect_uri must not contain spaces".to_owned());
     }
     if uri.contains('#') {
         return Err("redirect_uri must not have a fragment".to_owned());
+    }
+    if uri.contains('\\') {
+        return Err("redirect_uri must not contain a backslash".to_owned());
     }
     let Some((scheme, rest)) = uri.split_once(':') else {
         return Err("redirect_uri needs a scheme".to_owned());
@@ -126,80 +143,119 @@ pub fn redirect_uri_registrable(uri: &str) -> Result<(), String> {
     }
     match scheme.as_str() {
         "https" => {
-            let host = authority_host(rest).ok_or("redirect_uri needs a host")?;
-            if host.is_empty() {
-                return Err("redirect_uri needs a host".to_owned());
-            }
-            Ok(())
+            let authority = authority(rest).ok_or("redirect_uri needs a host")?;
+            parse_authority(authority)
+                .filter(|(host, _)| !host.is_empty())
+                .map(|_| ())
+                .ok_or_else(|| "redirect_uri has an invalid host".to_owned())
         }
-        "http" => match authority_host(rest) {
-            Some(host) if is_loopback(&host) => Ok(()),
-            _ => Err("http redirect_uri must be a loopback address (127.0.0.1, [::1] or localhost)".to_owned()),
-        },
-        "javascript" | "data" | "file" | "vbscript" | "about" | "blob" | "ftp" | "ws" | "wss" => {
+        "http" => loopback_parts(uri).map(|_| ()).ok_or_else(|| {
+            "http redirect_uri must be a loopback address (127.0.0.1, [::1] or localhost)"
+                .to_owned()
+        }),
+        denied if DENIED_SCHEMES.contains(&denied) => {
             Err(format!("redirect_uri scheme `{scheme}` is not allowed"))
         }
         _ => Ok(()),
     }
 }
 
-/// Whether `presented` matches one of `registered`. Exact match, except a
-/// loopback URI may use any port (native apps pick a free one each time).
+/// Whether `presented` matches one of `registered`. `presented` must itself
+/// pass [`redirect_uri_registrable`]; then it matches exactly, or, for a
+/// loopback URI, with any port (native apps pick a free one each time).
 pub fn redirect_uri_matches(registered: &[String], presented: &str) -> bool {
+    if redirect_uri_registrable(presented).is_err() {
+        return false;
+    }
+    let presented_loopback = loopback_parts(presented);
     registered.iter().any(|candidate| {
         candidate == presented
-            || (loopback_parts(candidate).is_some()
-                && loopback_parts(candidate) == loopback_parts(presented))
+            || (presented_loopback.is_some() && loopback_parts(candidate) == presented_loopback)
     })
 }
 
-/// `(scheme, host, path-and-query)` of a loopback http URI, port dropped.
-fn loopback_parts(uri: &str) -> Option<(String, String, String)> {
-    let rest = uri.strip_prefix("http://")?;
-    let (authority, tail) = match rest.find(['/', '?']) {
-        Some(index) => (&rest[..index], &rest[index..]),
-        None => (rest, ""),
-    };
-    let host = host_without_port(authority);
-    is_loopback(&host).then(|| ("http".to_owned(), host, tail.to_owned()))
-}
-
-fn authority_host(rest: &str) -> Option<String> {
-    let rest = rest.strip_prefix("//")?;
-    let authority = rest.split(['/', '?']).next().unwrap_or("");
-    if authority.contains('@') {
+/// `(host, path-and-query)` of a loopback `http` URI, port dropped and host
+/// lowercased. `None` for anything else, including an authority with
+/// userinfo, a percent-escape, or junk after the port.
+fn loopback_parts(uri: &str) -> Option<(String, String)> {
+    let (scheme, rest) = uri.split_once(':')?;
+    if !scheme.eq_ignore_ascii_case("http") {
         return None;
     }
-    Some(host_without_port(authority))
+    let authority = authority(rest)?;
+    let (host, _) = parse_authority(authority)?;
+    let tail = &rest[2 + authority.len()..];
+    is_loopback(&host).then(|| (host, tail.to_owned()))
 }
 
-fn host_without_port(authority: &str) -> String {
-    let host = if authority.starts_with('[') {
-        authority
-            .split_once(']')
-            .map(|(host, _)| format!("{host}]"))
-            .unwrap_or_else(|| authority.to_owned())
+/// The authority of `//authority/path?query` (the part after `scheme:`).
+fn authority(rest: &str) -> Option<&str> {
+    let rest = rest.strip_prefix("//")?;
+    Some(rest.split(['/', '?']).next().unwrap_or(""))
+}
+
+/// `(lowercased host, port)` when `authority` is exactly a host and an
+/// optional numeric port: no userinfo, no percent-escapes, an IPv6 literal
+/// only in brackets.
+fn parse_authority(authority: &str) -> Option<(String, Option<u16>)> {
+    if authority.contains(['@', '%', '\\']) {
+        return None;
+    }
+    let (host, port) = if let Some(inner) = authority.strip_prefix('[') {
+        let (literal, after) = inner.split_once(']')?;
+        let port = match after {
+            "" => None,
+            _ => Some(after.strip_prefix(':')?),
+        };
+        (format!("[{literal}]"), port)
     } else {
-        authority
-            .rsplit_once(':')
-            .filter(|(_, port)| port.chars().all(|ch| ch.is_ascii_digit()))
-            .map(|(host, _)| host.to_owned())
-            .unwrap_or_else(|| authority.to_owned())
+        match authority.split_once(':') {
+            Some((host, port)) => (host.to_owned(), Some(port)),
+            None => (authority.to_owned(), None),
+        }
     };
-    host.to_ascii_lowercase()
+    let port = match port {
+        None => None,
+        Some(digits) if (1..=5).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit()) => {
+            Some(digits.parse::<u16>().ok()?)
+        }
+        Some(_) => return None,
+    };
+    let host_ok = host.starts_with('[')
+        || host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
+    host_ok.then(|| (host.to_ascii_lowercase(), port))
 }
 
 fn is_loopback(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "[::1]")
 }
 
+/// Bidi controls, zero-width and other invisible format characters (Unicode
+/// category Cf) that could make a self-chosen app name read as another
+/// (`"Claude\u{202e}edoC"`).
+fn is_invisible_format(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{00ad}'
+            | '\u{061c}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+    )
+}
+
 /// Permissions as chosen on the Allow screen. Publishing to BIR is never
-/// available to an agent.
+/// available to an agent: it is not in the list `from_choice` accepts and
+/// its switch is always off here.
 pub fn agent_permissions_from_choice(ids: &[String]) -> Result<PassPermissions, String> {
     let set = PassPermissions::from_choice(ids, false)?;
-    if set.contains(PassPermission::FilingsPublish) {
-        return Err("an agent can never publish to BIR".to_owned());
-    }
+    debug_assert!(!set.contains(PassPermission::FilingsPublish));
     Ok(set)
 }
 
@@ -277,6 +333,17 @@ mod tests {
     }
 
     #[test]
+    fn invisible_characters_cannot_disguise_the_name() {
+        let reg = validate_registration(
+            Some("Claude\u{202e}edoC\u{200b} Code\u{feff}"),
+            &uris(&["http://[::1]/cb"]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(reg.client_name, "ClaudeedoC Code");
+    }
+
+    #[test]
     fn registration_cleans_the_name() {
         let reg =
             validate_registration(Some("  Grok\u{7}Bot  "), &uris(&["http://[::1]:9/cb"]), None)
@@ -307,6 +374,125 @@ mod tests {
             &registered,
             "https://claude.ai:444/api/mcp/auth_callback"
         ));
+    }
+
+    #[test]
+    fn userinfo_and_junk_after_a_loopback_host_never_match() {
+        // Each of these sends the browser (and the code) somewhere else.
+        let registered = uris(&["http://[::1]:5000/cb", "http://127.0.0.1/cb", "http://localhost/cb"]);
+        for attack in [
+            "http://[::1]@evil.com/cb",
+            "http://[::1]:5000@evil.com/cb",
+            "http://127.0.0.1@evil.com/cb",
+            "http://localhost:80@evil.com/cb",
+            "http://127.0.0.1:5000\\@evil.com/cb",
+            "http://[::1].evil.com/cb",
+            "http://[::1]x/cb",
+            "http://[::1]:5000:6000/cb",
+            "http://127.0.0.1%2f@evil.com/cb",
+            "http://127.0.0.1:99999/cb",
+            "http://evil.com/cb",
+        ] {
+            assert!(!redirect_uri_matches(&registered, attack), "{attack} must not match");
+        }
+    }
+
+    #[test]
+    fn loopback_scheme_and_host_ignore_case() {
+        let registered = uris(&["http://localhost/cb"]);
+        assert!(redirect_uri_matches(&registered, "HTTP://LOCALHOST:9/cb"));
+        assert!(!redirect_uri_matches(&registered, "http://localhost:9/CB"), "path stays exact");
+    }
+
+    #[test]
+    fn non_ascii_and_extra_schemes_are_refused() {
+        for bad in ["https://exämple.com/cb", "mailto:x@example.com", "intent://x", "tel:123"] {
+            assert!(redirect_uri_registrable(bad).is_err(), "{bad} should be refused");
+        }
+    }
+
+    /// Oracle: the WHATWG URL parser (what browsers follow). Whatever this
+    /// module lets match a loopback registration must, to a browser, be that
+    /// loopback host with no credentials and the registered path.
+    #[cfg(feature = "ssr")]
+    mod browser_agrees {
+        use super::super::*;
+        use proptest::prelude::*;
+
+        const HOSTS: [&str; 6] = ["[::1]", "127.0.0.1", "localhost", "LocalHost", "evil.com", ""];
+        const SUFFIXES: [&str; 14] = [
+            "", ":5000", ":0", ":65535", ":99999", "@evil.com", ":5000@evil.com", ".evil.com",
+            "x", "%2f@evil.com", "\\\\@evil.com", ":5000:1", "]", ":",
+        ];
+        const TAILS: [&str; 5] = ["/cb", "/cb?x=1", "/CB", "", "/cb/.."];
+
+        fn registered() -> Vec<String> {
+            vec![
+                "http://[::1]:5000/cb".to_owned(),
+                "http://127.0.0.1/cb".to_owned(),
+                "http://localhost/cb".to_owned(),
+            ]
+        }
+
+        fn browser_agrees(presented: &str) -> Result<(), String> {
+            let parsed = url::Url::parse(presented).map_err(|e| format!("{presented}: {e}"))?;
+            let host = parsed.host_str().unwrap_or_default().to_owned();
+            let ok = parsed.scheme() == "http"
+                && parsed.username().is_empty()
+                && parsed.password().is_none()
+                && matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]")
+                && parsed.path() == "/cb";
+            if ok { Ok(()) } else { Err(format!("{presented}: browser goes to {parsed}")) }
+        }
+
+        /// Exhaustive over hosts × suffixes × tails × schemes (6·14·5·3 = 1,260
+        /// URIs): every match is the loopback host to a browser, and the
+        /// legitimate shapes do match (so the check is not vacuous).
+        #[test]
+        fn every_match_in_the_grid_is_loopback_to_a_browser() {
+            let mut matches = 0;
+            for scheme in ["http://", "HTTP://", "https://"] {
+                for host in HOSTS {
+                    for suffix in SUFFIXES {
+                        for tail in TAILS {
+                            let presented = format!("{scheme}{host}{suffix}{tail}");
+                            if redirect_uri_matches(&registered(), &presented) {
+                                matches += 1;
+                                browser_agrees(&presented).unwrap();
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(matches >= 12, "only {matches} legitimate matches; grid too weak");
+        }
+
+        fn uri() -> impl Strategy<Value = String> {
+            (
+                prop_oneof![Just("http://"), Just("HTTP://"), Just("https://"), Just("http:/")],
+                prop::sample::select(HOSTS.to_vec()),
+                "[a-zA-Z0-9.:@%\\[\\]\\\\_-]{0,12}",
+                prop::sample::select(TAILS.to_vec()),
+            )
+                .prop_map(|(scheme, host, junk, tail)| format!("{scheme}{host}{junk}{tail}"))
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(4096))]
+            #[test]
+            fn a_match_is_the_loopback_host_to_a_browser(presented in uri()) {
+                let registered = registered();
+                if redirect_uri_matches(&registered, &presented) {
+                    prop_assert!(browser_agrees(&presented).is_ok(), "{:?}", browser_agrees(&presented));
+                }
+            }
+
+            #[test]
+            fn validation_never_panics(raw in "\\PC{0,64}") {
+                let _ = redirect_uri_registrable(&raw);
+                let _ = redirect_uri_matches(&["http://localhost/cb".to_owned()], &raw);
+            }
+        }
     }
 
     #[test]

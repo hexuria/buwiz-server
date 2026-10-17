@@ -58,8 +58,7 @@ pub async fn serve(req: McpRequest) -> AuthStackResult<McpResponse> {
             &[],
         );
     }
-    let token = header(&headers, "authorization")
-        .and_then(|value| value.strip_prefix("Bearer ").map(|t| t.trim().to_owned()));
+    let token = header(&headers, "authorization").and_then(|value| bearer(&value));
     let agent = match token.as_deref() {
         None => return unauthorized(&base, None),
         Some(token) => match crate::application::agent_from_bearer(token).await {
@@ -68,7 +67,8 @@ pub async fn serve(req: McpRequest) -> AuthStackResult<McpResponse> {
             Err(error) => return Err(error),
         },
     };
-    let (messages, batch) = match protocol::parse_body(&body) {
+    let header_version = header(&headers, "mcp-protocol-version");
+    let (messages, batch) = match protocol::parse_body(&body, header_version.as_deref()) {
         Ok(parsed) => parsed,
         Err(reply) => return respond(StatusCode::OK, Some(reply), &[]),
     };
@@ -193,6 +193,14 @@ fn unauthorized(base: &str, error: Option<&str>) -> AuthStackResult<McpResponse>
     )
 }
 
+/// The token of an `Authorization: Bearer <token>` value; the scheme name is
+/// case-insensitive (RFC 9110 §11.1).
+fn bearer(value: &str) -> Option<String> {
+    let (scheme, token) = value.split_once(' ')?;
+    let token = token.trim();
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then(|| token.to_owned())
+}
+
 fn header(headers: &http::HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
@@ -252,6 +260,14 @@ fn respond(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bearer_scheme_is_case_insensitive() {
+        assert_eq!(bearer("Bearer bwa_x").as_deref(), Some("bwa_x"));
+        assert_eq!(bearer("bearer  bwa_x ").as_deref(), Some("bwa_x"));
+        assert_eq!(bearer("Basic abc"), None);
+        assert_eq!(bearer("Bearer "), None);
+    }
 
     #[test]
     fn only_the_mcp_path_is_claimed() {

@@ -59,6 +59,8 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"], optio
 
 [dev-dependencies]
 serde_json = "1.0"
+proptest = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [target.wasm32-unknown-unknown.dependencies]
 getrandom03 = { package = "getrandom", version = "0.3.4", features = ["wasm_js"] }

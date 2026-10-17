@@ -61,9 +61,8 @@ pub(crate) struct AgentActor {
     pub profile_ids: Vec<String>,
 }
 
-/// Registrations in the last hour, and a sweep of apps that registered over
-/// a week ago and were never allowed.
-pub(crate) async fn agent_registrations_last_hour() -> AuthStackResult<i64> {
+/// Drops apps that registered over a week ago and were never allowed.
+pub(crate) async fn sweep_unused_agent_clients() -> AuthStackResult<()> {
     initialize_schema_async().await?;
     execute_sql(
         "DELETE FROM buwiz_server.agent_clients c \
@@ -73,6 +72,14 @@ pub(crate) async fn agent_registrations_last_hour() -> AuthStackResult<i64> {
         vec![],
     )
     .await?;
+    Ok(())
+}
+
+/// Registrations in the last hour, for the server-wide cap. Known downside:
+/// the cap is global, so a flood of anonymous registrations can hold off new
+/// apps for up to an hour; existing connections keep working.
+pub(crate) async fn agent_registrations_last_hour() -> AuthStackResult<i64> {
+    initialize_schema_async().await?;
     let rows = execute_sql(
         "SELECT count(*)::bigint AS n FROM buwiz_server.agent_clients \
          WHERE created_at > CURRENT_TIMESTAMP - INTERVAL '1 hour'",
@@ -273,50 +280,120 @@ pub(crate) async fn insert_agent_tokens(
     Ok(())
 }
 
-/// Swaps a refresh token for a new pair. `Ok(None)` when the refresh token
-/// is unknown, expired, revoked or its connection ended. A refresh token
-/// that was already used ends every token of its connection (RFC 9700
-/// §4.14.2), so a stolen copy stops working for both sides.
+/// A refresh token still good for `client_id`: unexpired, not revoked, its
+/// connection open, and the taxpayer's account active and unchanged since
+/// the Allow.
+const LIVE_REFRESH: &str = "t.token_hash = ?1 AND t.kind = 'refresh' AND t.revoked_at IS NULL \
+     AND t.expires_at > CURRENT_TIMESTAMP \
+     AND c.connection_id = t.connection_id AND c.revoked_at IS NULL AND c.client_id = ?2 \
+     AND u.user_id = c.user_id AND u.status = 'active' \
+     AND u.security_revision = c.security_revision";
+
+fn insert_rotated_statement(
+    old_refresh_hash: &str,
+    token_hash: &str,
+    kind: &str,
+    ttl_seconds: i64,
+) -> AtomicSqlStatement {
+    AtomicSqlStatement::execute(
+        "INSERT INTO buwiz_server.agent_tokens (token_hash, connection_id, kind, expires_at) \
+         SELECT ?2, connection_id, ?3, CURRENT_TIMESTAMP + (?4::bigint * INTERVAL '1 second') \
+         FROM buwiz_server.agent_tokens WHERE token_hash = ?1",
+        vec![
+            json!(old_refresh_hash),
+            json!(token_hash),
+            json!(kind),
+            json!(ttl_seconds),
+        ],
+    )
+}
+
+/// Swaps a refresh token issued to `client_id` for a new pair, in one
+/// transaction: the old refresh token is revoked only if the new pair is
+/// stored. `Ok(None)` when the refresh token is unknown, expired, revoked,
+/// for another app, or its connection ended.
+///
+/// A refresh token that was already used ends its whole connection (RFC
+/// 9700 §4.14.2): one copy is in the wrong hands, and the taxpayer allows
+/// the app again to recover.
 pub(crate) async fn rotate_agent_refresh(
     refresh_hash: &str,
+    client_id: &str,
     access_hash: &str,
     access_ttl_seconds: i64,
     new_refresh_hash: &str,
     refresh_ttl_seconds: i64,
 ) -> AuthStackResult<Option<String>> {
     initialize_schema_async().await?;
-    let rows = execute_sql(
-        "UPDATE buwiz_server.agent_tokens t SET revoked_at = CURRENT_TIMESTAMP \
-         FROM buwiz_server.agent_connections c, auth_users u \
-         WHERE t.token_hash = ?1 AND t.kind = 'refresh' AND t.revoked_at IS NULL \
-           AND t.expires_at > CURRENT_TIMESTAMP \
-           AND c.connection_id = t.connection_id AND c.revoked_at IS NULL \
-           AND u.user_id = c.user_id AND u.status = 'active' \
-           AND u.security_revision = c.security_revision \
-         RETURNING t.connection_id::text AS connection_id",
+    let rotated = execute_sql_atomic(vec![
+        AtomicSqlStatement::guard(
+            format!(
+                "UPDATE buwiz_server.agent_tokens t SET revoked_at = CURRENT_TIMESTAMP \
+                 FROM buwiz_server.agent_connections c, auth_users u \
+                 WHERE {LIVE_REFRESH} \
+                 RETURNING t.connection_id::text AS connection_id"
+            ),
+            vec![json!(refresh_hash), json!(client_id)],
+        ),
+        insert_rotated_statement(refresh_hash, access_hash, "access", access_ttl_seconds),
+        insert_rotated_statement(refresh_hash, new_refresh_hash, "refresh", refresh_ttl_seconds),
+    ])
+    .await;
+    match rotated {
+        Ok(results) => Ok(results
+            .first()
+            .and_then(|rows| rows.first())
+            .and_then(|row| row_string(row, "connection_id"))),
+        Err(error) => refresh_refused_or(error, refresh_hash, client_id).await,
+    }
+}
+
+/// After a failed rotation: `Ok(None)` when the refresh token was simply not
+/// usable (and a reused one ends its connection); the original error when
+/// the token was fine, so a database failure is not reported as a bad token.
+async fn refresh_refused_or(
+    error: AuthStackError,
+    refresh_hash: &str,
+    client_id: &str,
+) -> AuthStackResult<Option<String>> {
+    let reused = execute_sql(
+        "SELECT connection_id::text AS connection_id FROM buwiz_server.agent_tokens \
+         WHERE token_hash = ?1 AND kind = 'refresh' AND revoked_at IS NOT NULL",
         vec![json!(refresh_hash)],
     )
     .await?;
-    let Some(connection_id) = rows.first().and_then(|row| row_string(row, "connection_id")) else {
-        execute_sql(
-            "UPDATE buwiz_server.agent_tokens SET revoked_at = CURRENT_TIMESTAMP \
-             WHERE revoked_at IS NULL AND connection_id = ( \
-                 SELECT connection_id FROM buwiz_server.agent_tokens \
-                 WHERE token_hash = ?1 AND kind = 'refresh' AND revoked_at IS NOT NULL)",
-            vec![json!(refresh_hash)],
-        )
-        .await?;
+    if let Some(connection_id) = reused.first().and_then(|row| row_string(row, "connection_id")) {
+        end_connection(&connection_id).await?;
         return Ok(None);
-    };
-    insert_agent_tokens(
-        &connection_id,
-        access_hash,
-        access_ttl_seconds,
-        new_refresh_hash,
-        refresh_ttl_seconds,
+    }
+    let live = execute_sql(
+        &format!(
+            "SELECT 1 AS live FROM buwiz_server.agent_tokens t, \
+                    buwiz_server.agent_connections c, auth_users u \
+             WHERE {LIVE_REFRESH}"
+        ),
+        vec![json!(refresh_hash), json!(client_id)],
     )
     .await?;
-    Ok(Some(connection_id))
+    if live.is_empty() { Ok(None) } else { Err(error) }
+}
+
+/// Ends a connection and every token it holds.
+async fn end_connection(connection_id: &str) -> AuthStackResult<()> {
+    execute_sql_atomic(vec![
+        AtomicSqlStatement::execute(
+            "UPDATE buwiz_server.agent_connections SET revoked_at = CURRENT_TIMESTAMP \
+             WHERE connection_id::text = ?1 AND revoked_at IS NULL",
+            vec![json!(connection_id)],
+        ),
+        AtomicSqlStatement::execute(
+            "UPDATE buwiz_server.agent_tokens SET revoked_at = CURRENT_TIMESTAMP \
+             WHERE connection_id::text = ?1 AND revoked_at IS NULL",
+            vec![json!(connection_id)],
+        ),
+    ])
+    .await?;
+    Ok(())
 }
 
 /// The agent behind an access token, or `None` when the token is unknown,
@@ -382,7 +459,9 @@ pub(crate) async fn list_agent_connections(
                           WHERE cp.connection_id = c.connection_id), '[]'::jsonb) AS profiles \
          FROM buwiz_server.agent_connections c \
          JOIN buwiz_server.agent_clients ac ON ac.client_id = c.client_id \
+         JOIN auth_users u ON u.user_id = c.user_id \
          WHERE c.user_id = ?1::uuid AND c.revoked_at IS NULL \
+           AND u.status = 'active' AND u.security_revision = c.security_revision \
          ORDER BY c.created_at DESC"
     );
     let rows = execute_sql(&sql, vec![json!(user_id)]).await?;
@@ -430,20 +509,13 @@ pub(crate) async fn revoke_agent_connection(
 ) -> AuthStackResult<()> {
     initialize_schema_async().await?;
     let rows = execute_sql(
-        "UPDATE buwiz_server.agent_connections SET revoked_at = CURRENT_TIMESTAMP \
-         WHERE connection_id::text = ?1 AND user_id = ?2::uuid AND revoked_at IS NULL \
-         RETURNING connection_id",
+        "SELECT 1 AS mine FROM buwiz_server.agent_connections \
+         WHERE connection_id::text = ?1 AND user_id = ?2::uuid AND revoked_at IS NULL",
         vec![json!(connection_id), json!(user_id)],
     )
     .await?;
     if rows.is_empty() {
         return Err(AuthStackError::not_found("agent connection not found"));
     }
-    execute_sql(
-        "UPDATE buwiz_server.agent_tokens SET revoked_at = CURRENT_TIMESTAMP \
-         WHERE connection_id::text = ?1 AND revoked_at IS NULL",
-        vec![json!(connection_id)],
-    )
-    .await?;
-    Ok(())
+    end_connection(connection_id).await
 }

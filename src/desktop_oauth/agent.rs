@@ -109,6 +109,7 @@ pub(super) async fn register(req: RestRequest) -> AuthStackResult<RestResponse> 
             return oauth_error(StatusCode::BAD_REQUEST, code, &message);
         }
     };
+    crate::store::sweep_unused_agent_clients().await?;
     if crate::store::agent_registrations_last_hour().await? >= REGISTRATIONS_PER_HOUR {
         return oauth_error(
             StatusCode::TOO_MANY_REQUESTS,
@@ -212,11 +213,8 @@ pub(super) async fn authorize_get(
             ),
         );
     }
-    let csrf = crate::store::csrf_token_for_session(
-        session.session_id.as_deref().unwrap_or_default(),
-    )
-    .await
-    .unwrap_or_default();
+    let session_id = session.session_id.as_deref().ok_or(AuthStackError::AuthRequired)?;
+    let csrf = crate::store::csrf_token_for_session(session_id).await?;
     let only_one = profiles.len() == 1;
     let profile_boxes: String = profiles
         .iter()
@@ -297,7 +295,11 @@ pub(super) async fn authorize_post(
         .ok_or(AuthStackError::AuthRequired)?;
     let user_id = session.user_id.clone().ok_or(AuthStackError::AuthRequired)?;
     let pairs = form_pairs(body);
-    let single: HashMap<String, String> = pairs.iter().cloned().collect();
+    // First value wins, as in the dispatcher that routed this form here.
+    let mut single: HashMap<String, String> = HashMap::new();
+    for (key, value) in &pairs {
+        single.entry(key.clone()).or_insert_with(|| value.clone());
+    }
     crate::application::validate_csrf_token_for_session(
         Some(session_id),
         single.get("csrf").cloned(),
@@ -314,17 +316,22 @@ pub(super) async fn authorize_post(
             &[("error", "access_denied"), ("state", &checked.state)],
         ));
     }
+    // Only profiles the taxpayer owns can be connected. The store checks
+    // again inside the transaction; filtering here keeps a real database
+    // error from being reported as "nothing to connect".
+    let owned = crate::store::list_owned_profiles(&user_id).await?;
     let profile_ids: Vec<String> = pairs
         .iter()
         .filter(|(key, _)| key == "profile")
         .map(|(_, value)| value.clone())
+        .filter(|id| owned.iter().any(|profile| &profile.profile_id == id))
         .collect();
     if profile_ids.is_empty() {
         return html(
             StatusCode::BAD_REQUEST,
             &oauth_page(
                 "Pick at least one profile",
-                "Go back and tick the profiles the agent may reach.",
+                "Go back and tick the profiles of yours the agent may reach.",
                 "",
             ),
         );
@@ -348,11 +355,7 @@ pub(super) async fn authorize_post(
         &checked.challenge,
         AGENT_CODE_TTL_SECONDS,
     )
-    .await
-    .map_err(|error| {
-        tracing::warn!(error = %error, "agent connection was not created");
-        AuthStackError::validation("none of the chosen profiles can be connected")
-    })?;
+    .await?;
     redirect(&with_query(
         &checked.redirect_uri,
         &[("code", &code), ("state", &checked.state)],
@@ -404,10 +407,24 @@ pub(super) async fn authorization_code_grant(
     token_response(&access, &refresh)
 }
 
-pub(super) async fn refresh_grant(refresh: &str) -> AuthStackResult<RestResponse> {
+pub(super) async fn refresh_grant(
+    refresh: &str,
+    form: &HashMap<String, String>,
+) -> AuthStackResult<RestResponse> {
+    // Public clients must name themselves (RFC 6749 §3.2.1); the refresh
+    // token only works for the app it was issued to.
+    let client_id = form.get("client_id").map(String::as_str).unwrap_or_default();
+    if !is_agent_client(client_id) {
+        return oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "client_id is required",
+        );
+    }
     let (access, new_refresh) = new_token_pair()?;
     let rotated = crate::store::rotate_agent_refresh(
         &crate::store::sha256_b64url(refresh),
+        client_id,
         &crate::store::sha256_b64url(&access),
         AGENT_ACCESS_TTL_SECONDS,
         &crate::store::sha256_b64url(&new_refresh),
