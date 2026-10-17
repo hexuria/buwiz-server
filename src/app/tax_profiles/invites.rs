@@ -62,13 +62,7 @@ pub fn FirmPanel() -> impl IntoView {
         let org_for_profiles = org.clone();
         leptos::task::spawn_local(async move {
             if let Ok(list) = list_tax_profiles(Some(org_for_profiles)).await {
-                drafts.set(
-                    list.profiles
-                        .into_iter()
-                        .filter(|p| p.access == "holding_org")
-                        .map(|p| (p.profile_id, format!("{} ····{}", p.display_name, p.tin_last4)))
-                        .collect(),
-                );
+                drafts.set(draft_choices(list.profiles));
             }
             if let Ok(list) = list_firm_publishers(org).await {
                 publishers.set(Some(list));
@@ -96,7 +90,7 @@ pub fn FirmPanel() -> impl IntoView {
             format!("{origin}{}", created.link_path)
         })
     };
-    let has_orgs = move || orgs.get().and_then(Result::ok).is_some_and(|l| !l.organizations.is_empty());
+    let has_orgs = move || has_any_org(orgs.get().and_then(Result::ok).as_ref());
 
     view! {
         <Show when=has_orgs>
@@ -314,7 +308,40 @@ pub fn OwnerInviteAccept() -> impl IntoView {
     }
 }
 
-/// `(invite_id, secret)` from `/invites/{id}#t={secret}`.
+/// The firm's drafts (profiles it holds that no taxpayer owns yet) as
+/// `(profile_id, label)` choices for the invite form.
+fn draft_choices(profiles: Vec<crate::contracts::TaxProfileView>) -> Vec<(String, String)> {
+    profiles
+        .into_iter()
+        .filter(|p| p.access == "holding_org")
+        .map(|p| (p.profile_id, format!("{} ····{}", p.display_name, p.tin_last4)))
+        .collect()
+}
+
+/// Whether the caller belongs to any workspace (the firm panel shows only then).
+fn has_any_org(list: Option<&crate::contracts::OrganizationListResponse>) -> bool {
+    list.is_some_and(|l| !l.organizations.is_empty())
+}
+
+/// `(invite_id, secret)` from the path and fragment of
+/// `/invites/{id}#t={secret}`.
+fn parse_invite_location(path: &str, hash: &str) -> (String, String) {
+    let invite_id = path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let token = hash
+        .trim_start_matches('#')
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("t="))
+        .unwrap_or_default()
+        .to_owned();
+    (invite_id, token)
+}
+
+/// `(invite_id, secret)` from the browser's location.
 fn invite_from_location() -> (String, String) {
     #[cfg(feature = "hydrate")]
     {
@@ -327,19 +354,7 @@ fn invite_from_location() -> (String, String) {
             .as_ref()
             .and_then(|l| l.hash().ok())
             .unwrap_or_default();
-        let invite_id = path
-            .trim_end_matches('/')
-            .rsplit('/')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
-        let token = hash
-            .trim_start_matches('#')
-            .split('&')
-            .find_map(|pair| pair.strip_prefix("t="))
-            .unwrap_or_default()
-            .to_owned();
-        (invite_id, token)
+        parse_invite_location(&path, &hash)
     }
     #[cfg(not(feature = "hydrate"))]
     {
@@ -357,5 +372,68 @@ fn browser_origin() -> String {
     #[cfg(not(feature = "hydrate"))]
     {
         String::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_invite_link_gives_its_id_and_secret() {
+        assert_eq!(
+            parse_invite_location("/invites/i-1", "#t=s3cret"),
+            ("i-1".to_owned(), "s3cret".to_owned())
+        );
+        assert_eq!(
+            parse_invite_location("/invites/i-1/", "#x=1&t=abc&y=2"),
+            ("i-1".to_owned(), "abc".to_owned())
+        );
+        assert_eq!(parse_invite_location("/invites/i-1", ""), ("i-1".to_owned(), String::new()));
+    }
+
+    #[test]
+    fn only_the_firms_own_drafts_are_offered() {
+        let view = |id: &str, access: &str| -> crate::contracts::TaxProfileView {
+            let text = |key: &str| (key.to_owned(), serde_json::json!(""));
+            let mut fields: serde_json::Map<String, serde_json::Value> = [
+                "id", "full_name", "rdo_code", "address", "line_of_business", "zip_code", "phone",
+                "email", "taxpayer_type", "holder_kind", "ownership_status", "verification_status",
+                "claim_status",
+            ]
+            .into_iter()
+            .map(text)
+            .collect();
+            fields.extend([
+                ("profile_id".to_owned(), serde_json::json!(id)),
+                ("access".to_owned(), serde_json::json!(access)),
+                ("display_name".to_owned(), serde_json::json!("Client")),
+                ("tin_last4".to_owned(), serde_json::json!("1234")),
+                ("is_vat_registered".to_owned(), serde_json::json!(false)),
+                ("revision".to_owned(), serde_json::json!(1)),
+            ]);
+            serde_json::from_value(serde_json::Value::Object(fields)).expect("view")
+        };
+        assert_eq!(
+            draft_choices(vec![view("a", "holding_org"), view("b", "owner"), view("c", "pass")]),
+            vec![("a".to_owned(), "Client ····1234".to_owned())]
+        );
+    }
+
+    #[test]
+    fn the_firm_panel_needs_a_workspace() {
+        use crate::contracts::{OrganizationListResponse, OrganizationSummary};
+        assert!(!has_any_org(None));
+        assert!(!has_any_org(Some(&OrganizationListResponse { organizations: vec![] })));
+        let org = OrganizationSummary {
+            organization_id: "o".into(),
+            name: "Firm".into(),
+            slug: String::new(),
+            status: "active".into(),
+            current_user_role: "owner".into(),
+            permissions: vec![],
+            created_at_ms: 0,
+        };
+        assert!(has_any_org(Some(&OrganizationListResponse { organizations: vec![org] })));
     }
 }

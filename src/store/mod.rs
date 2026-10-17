@@ -23,6 +23,8 @@ mod sql;
 mod tax_profile;
 mod desktop_oauth;
 mod vault;
+#[cfg(all(test, not(runtime_spin)))]
+pub(crate) mod test_pg;
 
 pub(crate) use agent::*;
 pub(crate) use board::*;

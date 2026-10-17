@@ -502,6 +502,18 @@ pub(crate) async fn execute_sql_atomic(
             .map_err(AuthStackError::store)
     }
 
+    #[cfg(all(test, not(runtime_spin)))]
+    if let Some(url) = env_non_empty("DATABASE_URL") {
+        let statements = statements
+            .into_iter()
+            .map(|statement| {
+                let sql = postgres_sql(&statement.sql).into_owned();
+                (sql, statement.params, statement.returns_rows, statement.minimum_rows)
+            })
+            .collect();
+        return super::test_pg::execute_atomic(&url, statements).await;
+    }
+
     #[cfg(not(all(runtime_spin, feature = "postgres")))]
     {
         let _ = statements;
@@ -519,6 +531,11 @@ pub(crate) async fn execute_postgres(sql: &str, params: Vec<Value>) -> AuthStack
         ddd_cqrs_es::adapters::execute_spin_pg(&url, sql.as_ref(), params)
             .await
             .map_err(AuthStackError::store)
+    }
+
+    #[cfg(all(test, not(runtime_spin)))]
+    if let Some(url) = env_non_empty("DATABASE_URL") {
+        return super::test_pg::execute(&url, postgres_sql(sql).as_ref(), params).await;
     }
 
     #[cfg(not(all(feature = "postgres", runtime_spin)))]

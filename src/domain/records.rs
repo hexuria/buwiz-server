@@ -274,6 +274,33 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn payload_limit_is_200_kib() {
+        assert_eq!(MAX_PAYLOAD_BYTES, 204_800);
+    }
+
+    #[test]
+    fn filing_steps_parse_by_name() {
+        assert_eq!(FilingStep::parse("submitted"), Some(FilingStep::Submitted));
+        assert_eq!(FilingStep::parse("confirmed"), Some(FilingStep::Confirmed));
+        assert_eq!(FilingStep::parse("failed"), Some(FilingStep::Failed));
+        assert_eq!(FilingStep::parse("paid"), Some(FilingStep::Paid));
+        assert_eq!(FilingStep::parse("Paid"), None);
+        assert_eq!(FilingStep::parse("queued"), None);
+    }
+
+    #[test]
+    fn a_paid_filing_says_so() {
+        for step in [FilingStep::Submitted, FilingStep::Confirmed, FilingStep::Failed, FilingStep::Paid] {
+            assert_eq!(
+                next_filing_status(FilingStatus::Paid, step),
+                Err(RecordError::FilingState {
+                    reason: "this filing is already paid"
+                })
+            );
+        }
+    }
+
+    #[test]
     fn form_codes_years_and_periods() {
         assert_eq!(form_code(" 1701q ").unwrap(), "1701Q");
         assert_eq!(form_code("0619E").unwrap(), "0619E");

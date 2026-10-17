@@ -44,6 +44,8 @@ Plan item A3 ("tokens carry a scope that is never checked") is settled by design
 ```bash
 cargo test --lib      # domain rules, no Spin needed
 cargo test --lib --features ssr,postgres   # plus OAuth, MCP, REST routes, SQL placeholders
+DATABASE_URL=postgres://wasi_auth:wasi_auth_dev@127.0.0.1:54329/wasi_auth scripts/test_db.sh
+                      # database tests: store + application against Postgres (after make db-migrate)
 make check            # wasm32-wasip2 build
 make grpc-check
 make db-up && make db-migrate && make smoke   # needs Docker

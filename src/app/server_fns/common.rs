@@ -35,6 +35,10 @@ pub(crate) fn current_session_id_from_cookie() -> Option<String> {
 
 #[cfg(feature = "ssr")]
 pub(crate) fn server_fn_request_auth() -> crate::application::RequestAuth {
+    #[cfg(all(test, not(runtime_spin)))]
+    if let Some(auth) = crate::db_tests::acting() {
+        return auth;
+    }
     if let Ok(context) = wasi_auth::leptos::current_verified_request_context() {
         return crate::application::RequestAuth::from_verified(context);
     }

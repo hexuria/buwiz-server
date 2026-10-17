@@ -326,12 +326,7 @@ pub(super) async fn authorize_post(
     // again inside the transaction; filtering here keeps a real database
     // error from being reported as "nothing to connect".
     let reachable = crate::store::list_connectable_profiles(&user_id).await?;
-    let profile_ids: Vec<String> = pairs
-        .iter()
-        .filter(|(key, _)| key == "profile")
-        .map(|(_, value)| value.clone())
-        .filter(|id| reachable.iter().any(|profile| &profile.profile_id == id))
-        .collect();
+    let profile_ids = chosen_reachable(&pairs, &reachable);
     if profile_ids.is_empty() {
         return html(
             StatusCode::BAD_REQUEST,
@@ -468,6 +463,19 @@ fn token_response(access: &str, refresh: &str) -> AuthStackResult<RestResponse> 
     )
 }
 
+/// The ticked `profile` values that are in `reachable`, in form order.
+fn chosen_reachable(
+    pairs: &[(String, String)],
+    reachable: &[crate::store::ConnectableProfile],
+) -> Vec<String> {
+    pairs
+        .iter()
+        .filter(|(key, _)| key == "profile")
+        .map(|(_, value)| value.clone())
+        .filter(|id| reachable.iter().any(|profile| &profile.profile_id == id))
+        .collect()
+}
+
 fn form_pairs(body: Vec<u8>) -> Vec<(String, String)> {
     form_urlencoded::parse(&body).into_owned().collect()
 }
@@ -515,6 +523,30 @@ fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_ticked_reachable_profiles_are_connected() {
+        let reachable = |id: &str| crate::store::ConnectableProfile {
+            profile_id: id.to_owned(),
+            profile_name: String::new(),
+            tin_last4: String::new(),
+            via: None,
+        };
+        let pairs: Vec<(String, String)> = [
+            ("profile", "b"),
+            ("preset", "a"),
+            ("profile", "forged"),
+            ("profile", "a"),
+        ]
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect();
+        assert_eq!(
+            chosen_reachable(&pairs, &[reachable("a"), reachable("b"), reachable("c")]),
+            ["b", "a"]
+        );
+        assert!(chosen_reachable(&pairs, &[reachable("c")]).is_empty());
+    }
 
     #[test]
     fn query_is_appended_and_empty_state_skipped() {

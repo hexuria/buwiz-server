@@ -3198,6 +3198,36 @@ mod tests {
     }
 
     #[test]
+    fn accepting_needs_a_fresh_firm_pass_id() {
+        let mut store = firm_draft();
+        store.execute("tp-1", invite("i1", "ana@example.ph", &["firm-1"]), 1).unwrap();
+        let mut accept = accept_invite("i1", "hash-i1", "ana", "ana@example.ph", NOW);
+        if let TaxProfileCommand::AcceptOwnerInvite { firm_pass_id, .. } = &mut accept {
+            *firm_pass_id = "  ".into();
+        }
+        assert!(matches!(
+            store.execute("tp-1", accept, 2).unwrap_err(),
+            TaxProfileError::InvalidFacts { .. }
+        ));
+        store
+            .execute("tp-1", accept_invite("i1", "hash-i1", "ana", "ana@example.ph", NOW), 2)
+            .unwrap();
+    }
+
+    #[test]
+    fn errors_say_what_went_wrong() {
+        for error in [
+            TaxProfileError::NotFound,
+            TaxProfileError::NotHolder,
+            TaxProfileError::OwnerOnly,
+            TaxProfileError::InvalidFacts { reason: "bad TIN".into() },
+        ] {
+            assert!(!error.to_string().is_empty(), "{error:?}");
+        }
+        assert_eq!(TaxProfileError::InvalidFacts { reason: "bad TIN".into() }.to_string(), "bad TIN");
+    }
+
+    #[test]
     fn only_the_firm_managing_a_draft_can_invite() {
         let mut store = firm_draft();
         assert_eq!(

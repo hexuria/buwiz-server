@@ -16,7 +16,6 @@ use crate::ui::classes::{
 use crate::ui::page_shell;
 use leptos::prelude::*;
 
-#[cfg(feature = "hydrate")]
 use crate::domain::ownership_claim::{MAX_PARTS, PART_BYTES};
 
 #[island]
@@ -127,6 +126,17 @@ pub fn OwnershipClaimPanel() -> impl IntoView {
     }
 }
 
+/// Why a file of `len` bytes can't be sent, checked before any part goes.
+fn file_size_problem(len: usize) -> Option<&'static str> {
+    if len == 0 {
+        Some("The file is empty.")
+    } else if len > MAX_PARTS * PART_BYTES {
+        Some("The file is larger than 5 MB.")
+    } else {
+        None
+    }
+}
+
 fn claim_status_label(status: &str) -> &'static str {
     match status {
         "awaiting_file" => "waiting for your file",
@@ -149,11 +159,8 @@ async fn send_claim(
 ) -> Result<(), String> {
     use base64::Engine as _;
     let bytes = read_file(&file).await?;
-    if bytes.is_empty() {
-        return Err("The file is empty.".into());
-    }
-    if bytes.len() > MAX_PARTS * PART_BYTES {
-        return Err("The file is larger than 5 MB.".into());
+    if let Some(problem) = file_size_problem(bytes.len()) {
+        return Err(problem.into());
     }
     let claim = start_ownership_claim(tin_root, branch_code)
         .await
@@ -309,5 +316,39 @@ pub fn OwnershipClaimQueue() -> impl IntoView {
                 />
             </ul>
         </section>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_claim_status_has_its_own_label() {
+        let labels: Vec<&str> = ["awaiting_file", "pending", "approved", "rejected", "withdrawn"]
+            .into_iter()
+            .map(claim_status_label)
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "waiting for your file",
+                "waiting for staff",
+                "approved: the profile is yours",
+                "rejected",
+                "withdrawn"
+            ]
+        );
+        assert_eq!(claim_status_label("other"), "unknown");
+    }
+
+    #[test]
+    fn a_file_is_one_byte_to_the_last_full_part() {
+        let limit = MAX_PARTS * PART_BYTES;
+        assert_eq!(limit, 5 * 1024 * 1024, "the page promises 5 MB");
+        assert_eq!(file_size_problem(0), Some("The file is empty."));
+        assert_eq!(file_size_problem(1), None);
+        assert_eq!(file_size_problem(limit), None);
+        assert_eq!(file_size_problem(limit + 1), Some("The file is larger than 5 MB."));
     }
 }

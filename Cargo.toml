@@ -61,6 +61,10 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"], optio
 serde_json = "1.0"
 proptest = "1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+# Native Postgres for the database tests (`src/store/test_pg.rs`).
+bytes = "1"
+tokio = { version = "1.52", features = ["macros", "rt"] }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
 
 [target.wasm32-unknown-unknown.dependencies]
 getrandom03 = { package = "getrandom", version = "0.3.4", features = ["wasm_js"] }

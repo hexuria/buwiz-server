@@ -183,6 +183,10 @@ pub async fn organization_for_session(
     session_id: &str,
     organization_id: &str,
 ) -> AuthStackResult<OrganizationSummary> {
+    #[cfg(test)]
+    if let Some(summary) = crate::db_tests::organization(session_id, organization_id) {
+        return summary;
+    }
     let session_id = bounded_session_id(session_id)?;
     management_service()
         .await?
