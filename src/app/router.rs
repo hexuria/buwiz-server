@@ -17,7 +17,7 @@ use crate::app::{
     OrganizationPermissionsPage, OrganizationRolesPage, OrganizationSettingsPage,
     OrganizationsPage, PasskeyUnsupportedPage, PublicProfilePage, RedirectAllowlistPage,
     RegisterPage, ResendVerificationPage, ResetPasswordPage, SessionExpiredPage,
-    SigningKeyAdminPage, TaxProfilesPage, VerificationPendingPage, VerifyEmailPage,
+    OwnerInvitePage, SigningKeyAdminPage, TaxProfilesPage, VerificationPendingPage, VerifyEmailPage,
 };
 use leptos::prelude::*;
 use leptos_meta::*;
@@ -90,6 +90,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/verify-email/resend") view=ResendVerificationPage />
                     <Route path=path!("/dashboard") view=DashboardPage />
                     <Route path=path!("/tax-profiles") view=TaxProfilesPage />
+                    <Route path=path!("/invites/:invite") view=OwnerInvitePage />
                     <Route path=path!("/invitations/accept") view=InvitationAcceptPage />
                     <Route path=path!("/auth/callback/:provider") view=OAuthCallbackPage />
                     <Route path=path!("/auth/callback/:provider/error") view=OAuthCallbackErrorPage />

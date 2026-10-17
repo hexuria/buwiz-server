@@ -31,7 +31,7 @@ Plan item A3 ("tokens carry a scope that is never checked") is settled by design
 ## Next (agreed order, 2026-10-17)
 
 1. Done: the taxpayer always wins, passes only (this change).
-2. Firm creates a draft and invites the taxpayer by email; only an account with that verified email accepts and becomes owner (the firm keeps a pass). A firm "Publish to BIR" permission: publishing needs the owner's switch on the pass *and* that firm permission.
+2. Done: firm drafts and owner invites bound to a verified email (the firm keeps a Full pass without publishing), and a workspace publishers list; publishing needs the owner's switch on the pass *and* the firm's pick. Migration `0008`, `src/domain/invite.rs`, Tax profiles page → "For your firm", `/invites/{id}`.
 3. Ownership claims with Form 2303: encrypted upload, C2PA check (an AI mark means "upload a plain scan"), a staff review queue, the file deleted after the decision (decision, reviewer and file hash kept). Form 2303 is never used to choose forms.
 4. HTTP for tax years, drafts and filings (commands and tables exist; see [docs/sync-api.md](docs/sync-api.md)); then MCP read tools for them.
 5. Notices on the firm's page, a change-pass screen, pass expiry recorded in history, agents for firm members (needs membership checks without a browser session).

@@ -70,6 +70,10 @@ async fn apply_or_verify_app_schema(
             "0007_agent_connections",
             include_str!("../../migrations/postgres/0007_agent_connections.sql"),
         ),
+        (
+            "0008_owner_invites_and_publishers",
+            include_str!("../../migrations/postgres/0008_owner_invites_and_publishers.sql"),
+        ),
     ];
     let (mut client, connection) =
         tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;

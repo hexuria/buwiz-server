@@ -201,6 +201,82 @@ pub struct PassListResponse {
     /// never part of a preset.
     pub permission_catalog: Vec<PassPermissionInfo>,
     pub presets: Vec<PassPresetInfo>,
+    /// Open owner invites the caller's workspaces sent for their drafts.
+    #[serde(default)]
+    pub invites: Vec<OwnerInviteView>,
+}
+
+/// A firm's invite for a taxpayer to own one of its drafts.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OwnerInviteView {
+    pub invite_id: String,
+    pub profile_id: String,
+    pub organization_id: String,
+    pub profile_name: String,
+    pub tin_last4: String,
+    /// Only an account with this verified email can accept.
+    pub email: String,
+    /// `open` or `expired` in lists; `accepted` or `withdrawn` once decided.
+    pub status: String,
+    pub expires_at: String,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OwnerInviteCreateRequest {
+    pub email: String,
+    /// How many days the link works (1 to 14; default 14).
+    #[serde(default)]
+    pub days: Option<u32>,
+}
+
+/// The new invite and its link. The secret is in the fragment (`#t=`), so
+/// it never reaches server logs; the firm shares the link itself and it is
+/// shown only this once.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OwnerInviteCreated {
+    pub invite: OwnerInviteView,
+    pub link_path: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OwnerInviteTokenRequest {
+    pub token: String,
+}
+
+/// What the invited taxpayer sees before accepting.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OwnerInvitePreview {
+    pub invite_id: String,
+    pub profile_name: String,
+    pub tin_last4: String,
+    pub firm_name: String,
+    pub email: String,
+    /// `open`, `expired`, `accepted` or `withdrawn`.
+    pub status: String,
+    pub expires_at: String,
+    /// True when the caller's verified email is the invited one.
+    pub email_matches: bool,
+}
+
+/// A member a firm picked to publish to BIR. Publishing also needs the
+/// owner's switch on the firm's pass.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FirmPublisherView {
+    pub user_id: String,
+    pub email: String,
+    pub added_at: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FirmPublisherListResponse {
+    pub publishers: Vec<FirmPublisherView>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FirmPublisherAddRequest {
+    /// The member's sign-in email.
+    pub email: String,
 }
 
 /// What a pass allows. Give a `preset`, or a `permissions` list, or both

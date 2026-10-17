@@ -47,7 +47,9 @@ contract it should use when cloud backup and sharing are wired in.
    through a pass appear with `?organization_id=<workspace>`.
 3. **Before filing with BIR**, the app must check that `permissions` contains
    `filings.publish`. The server only records this right; the app enforces
-   it, because only the app can reach BIR.
+   it, because only the app can reach BIR. For a firm member this already
+   folds in both sides: the owner's switch on the firm's pass and the firm's
+   own publishers list, so the app checks this one list and nothing else.
 4. **Sync** of tax years, drafts and filings: the commands and tables exist,
    the HTTP endpoints are still stubs. See [sync-api.md](sync-api.md).
 5. **Never send** local secrets: the profile PIN, TOTP secret, IMAP passwords

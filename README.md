@@ -252,6 +252,7 @@ V1 commands (past-tense event mirrors). Keep them small.
 | `SetYearForms` / `ActivateYearForm` / `DeactivateYearForm` | year-forms events |
 | `UpsertFormDraft` / `MarkDraftSaved` / `MarkDraftReviewed` | `FormDraftUpserted` / `DraftSaved` / `DraftReviewed` |
 | `OfferPass` / `RequestPass` / `AcceptPass` / `ApprovePass` / `ChangePass` / `EndPass` | `PassOffered` / `PassRequested` / `PassActivated` / `PassChanged` / `PassEnded` |
+| `InviteOwner` / `WithdrawOwnerInvite` / `AcceptOwnerInvite` | `OwnerInvited` / `OwnerInviteWithdrawn` / `OwnerInviteAccepted` |
 | `EnqueueFiling` | `FilingQueued` |
 | `MarkFilingSubmitted` / `ConfirmFilingFromReceipt` / `FailFiling` / `MarkFilingPaid` | filing events |
 | `RegisterDevice` / `RevokeDevice` / `IssueDesktopSession` | device-session events (no PIN/TOTP) |
@@ -280,9 +281,13 @@ The owner decides, always. Registering a profile grants nothing by itself (`acco
 | Caller | View | Edit | Publish to BIR | Archive / restore | Share (passes) |
 |---|---|---|---|---|---|
 | The owner | yes | yes | yes, always | yes | yes |
-| Member of a workspace with an active pass | `profile.view` | `profile.edit` | only if the owner switched on `filings.publish` | no | no |
+| Member of a workspace with an active pass | `profile.view` | `profile.edit` | only if the owner switched on `filings.publish` **and** the workspace picked this member as a publisher | no | no |
 | Member of the firm that created a draft nobody owns yet | yes | yes | no | yes | no |
 | Anyone else, including the original registrant after a claim | no | no | no | no | no |
+
+**Firm drafts and owner invites.** A firm that creates a profile for a client holds it as a draft. It invites the taxpayer by email (`InviteOwner`) and shares the link itself; no new email kinds are sent. The link is `/invites/{id}#t={secret}`; only the secret's SHA-256 is stored, and the secret sits in the fragment so it never reaches server logs. Only a signed-in account whose **verified** email is the invited one can accept. Accepting makes that person the owner and gives the firm an active Full pass without publishing, which the owner can change or end like any other. A newer invite replaces the open one, a claim withdraws it, and an invite lasts 1 to 14 days. Downside accepted: a firm could invite an address it controls; the real taxpayer still takes the profile with a claim.
+
+**Publishers.** A workspace keeps its own list of members who may publish to BIR (`buwiz_server.firm_publishers`; wasi-auth's role catalog is fixed, so this is not a role permission). Changing the list needs `organization.update` and a step-up (AAL2). A member's `permissions` include `filings.publish` only when a working pass for that workspace has it and the member is on the list.
 
 Profiles moved to a firm under the old rules replay as: the owner keeps the profile, and the firm holds a Full pass (no publishing) the owner can change or end. After deploying this, run `POST /api/auth/storage/tax-profiles/reproject` once (storage admin) so the lists match.
 
@@ -326,6 +331,13 @@ Cloud field subset for sync: `full_name`, `rdo_code`, `address`, `taxpayer_type`
 | `POST /tax-profiles/{id}/passes/{pass}/approve` | `ApprovePass` (owner; `{}` keeps what was asked for) |
 | `PATCH /tax-profiles/{id}/passes/{pass}` | `ChangePass` (owner; publishing stays on only while `allow_publish` is sent; omit `ends_on` to keep the end date, `""` to remove it) |
 | `POST /tax-profiles/{id}/passes/{pass}/end` | `EndPass` (either side) |
+| `POST /tax-profiles/{id}/invites` | `InviteOwner` (holding workspace, `organization.update`; `{ email, days? }`; returns the link once) |
+| `POST /tax-profiles/{id}/invites/{invite}/withdraw` | `WithdrawOwnerInvite` (holding workspace) |
+| `POST /tax-profiles/invites/{invite}/preview` | What the invite is for (`{ token }`) |
+| `POST /tax-profiles/invites/{invite}/accept` | `AcceptOwnerInvite` (`{ token }`; caller's verified email must match) |
+| `GET /api/organizations/{org}/publishers` | Members the workspace lets publish to BIR (any member) |
+| `POST /api/organizations/{org}/publishers` | Add one by sign-in email (`organization.update`, step-up) |
+| `POST /api/organizations/{org}/publishers/{user}/remove` | Remove one (`organization.update`, step-up) |
 
 UI: `/tax-profiles` (HTML). Desktop `GET /tax-profiles` should send `Authorization: Bearer` or `Accept: application/json` so it is not treated as the page. `GET /api/tax-profiles` is always JSON.
 

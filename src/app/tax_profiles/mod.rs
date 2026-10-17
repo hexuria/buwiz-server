@@ -5,9 +5,11 @@
 #![allow(clippy::unit_arg)]
 
 mod agents;
+mod invites;
 mod passes;
 
 pub use agents::AgentsPanel;
+pub use invites::{FirmPanel, OwnerInviteAccept, OwnerInvitePage};
 pub use passes::PassesPanel;
 
 use crate::app::{
@@ -33,6 +35,7 @@ pub fn TaxProfilesPage() -> impl IntoView {
         view! {
             <TaxProfilesHome />
             <PassesPanel />
+            <FirmPanel />
             <AgentsPanel />
         },
     )
