@@ -813,7 +813,7 @@ pub(crate) fn new_uuid_v4() -> AuthStackResult<String> {
     ))
 }
 
-fn row_string_list(row: &Value, key: &str) -> Vec<String> {
+pub(crate) fn row_string_list(row: &Value, key: &str) -> Vec<String> {
     match row.get(key) {
         Some(Value::Array(items)) => items
             .iter()

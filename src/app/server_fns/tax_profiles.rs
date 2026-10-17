@@ -322,3 +322,35 @@ pub async fn pass_step(
         unreachable!()
     }
 }
+
+#[server(prefix = "/api/ui")]
+pub async fn list_agent_connections() -> Result<AgentConnectionListResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::list_agent_connections(server_fn_request_auth())
+            .await
+            .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        unreachable!()
+    }
+}
+
+/// Ends one of the caller's agent connections.
+#[server(prefix = "/api/ui")]
+pub async fn revoke_agent_connection(
+    connection_id: String,
+) -> Result<AgentConnectionListResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::revoke_agent_connection(connection_id, server_fn_request_auth())
+            .await
+            .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = connection_id;
+        unreachable!()
+    }
+}

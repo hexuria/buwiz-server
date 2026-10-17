@@ -6,6 +6,7 @@
 //! [`dashboard_storage_requires_postgres`] instead of empty stubs that look
 //! like success.
 
+mod agent;
 mod board;
 mod egress;
 mod health;
@@ -21,6 +22,7 @@ mod tax_profile;
 mod desktop_oauth;
 mod vault;
 
+pub(crate) use agent::*;
 pub(crate) use board::*;
 pub(crate) use egress::*;
 pub(crate) use health::*;

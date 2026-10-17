@@ -4,8 +4,10 @@
 #![allow(clippy::unused_unit)]
 #![allow(clippy::unit_arg)]
 
+mod agents;
 mod passes;
 
+pub use agents::AgentsPanel;
 pub use passes::PassesPanel;
 
 use crate::app::{
@@ -31,6 +33,7 @@ pub fn TaxProfilesPage() -> impl IntoView {
         view! {
             <TaxProfilesHome />
             <PassesPanel />
+            <AgentsPanel />
         },
     )
 }

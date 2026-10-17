@@ -132,6 +132,31 @@ curl -sS -X POST http://localhost:3008/auth/device/start \
 
 ---
 
+## AI agents (OAuth for MCP clients)
+
+Claude Code, Codex, Grok and other MCP clients sign in with standard OAuth and get their **own** tokens. They are never the taxpayer's session: ending an agent does not sign the taxpayer out, and an agent token is refused everywhere a user token is expected (REST, gRPC, `/api/auth/token/verify`).
+
+1. The client finds the server: `GET /.well-known/oauth-protected-resource` (RFC 9728; also `/.well-known/oauth-protected-resource/mcp`) names the resource (`{base}/mcp`) and this server as its authorization server. `GET /.well-known/oauth-authorization-server` lists `registration_endpoint`.
+2. It registers itself: `POST /oauth/register` (RFC 7591), public clients only (`token_endpoint_auth_method: none`). The answer carries a `client_id` starting with `agent_`. Registering grants nothing. Redirect URIs: `https://`, loopback `http://` (`127.0.0.1`, `localhost`, `[::1]`; any port at use time), or an app's own scheme; never `javascript:`, `data:`, `file:` or a fragment. Registrations are capped at 500 an hour, and apps never allowed are dropped after 7 days.
+3. It opens `GET /oauth/authorize?response_type=code&client_id=agent_…&redirect_uri=…&code_challenge=…&code_challenge_method=S256&state=…[&resource={base}/mcp]`. The signed-in taxpayer sees the **Allow** screen:
+   - which of **their own** profiles it may reach (held personally, or verified as theirs while a firm holds them);
+   - what it may do: Read-only (selected), Safe or Full, the same presets as access passes;
+   - the app's name is what it called itself, and the screen says so.
+4. It exchanges the code at `POST /oauth/token` (`grant_type=authorization_code`, `code_verifier`). Access tokens (`bwa_…`) last 1 hour. Refresh tokens (`bwr_…`) last 30 days and are replaced on every refresh. Reusing an old refresh token ends every token of that connection (RFC 9700).
+
+What an agent may do on a profile is the connection's permissions **narrowed by the taxpayer's access at that moment**: if a firm now holds the profile, the agent can only read; if the profile moved to someone else, nothing. An agent can never publish to BIR, share, archive or delete. Allowing the same app again replaces its earlier connection.
+
+The connection ends when the taxpayer presses **End** under Tax profiles → Connected agents, or on a password change or any other security change on the account (`auth_users.security_revision`), or when the account is disabled.
+
+| REST | |
+|------|--|
+| `GET /api/agents` | The caller's connected agents, with profiles and preset |
+| `POST /api/agents/{connection}/revoke` | End one (its tokens stop on the next call) |
+
+The MCP endpoint itself (`POST /mcp`) comes next; until then nothing accepts agent tokens.
+
+---
+
 ## Tax profiles
 
 Cloud subset of the desktop taxpayer profile. **`id` (UUID) is the server source of truth.** Clients must not treat TIN as the local identity key. Every read and write loads the profile by UUID and goes through one gatekeeper (`authorize` in `src/application/tax_profile.rs`, re-checked by `TaxProfile::access_for` in the domain). See **Who may do what** below.

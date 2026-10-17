@@ -66,6 +66,10 @@ async fn apply_or_verify_app_schema(
             "0006_tax_profile_passes",
             include_str!("../../migrations/postgres/0006_tax_profile_passes.sql"),
         ),
+        (
+            "0007_agent_connections",
+            include_str!("../../migrations/postgres/0007_agent_connections.sql"),
+        ),
     ];
     let (mut client, connection) =
         tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;

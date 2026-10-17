@@ -127,6 +127,16 @@ impl PassPermissions {
         Self(self.0 | other.0)
     }
 
+    #[must_use]
+    pub fn intersect(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    #[must_use]
+    pub fn without(self, permission: PassPermission) -> Self {
+        Self(self.0 & !permission.bit())
+    }
+
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
