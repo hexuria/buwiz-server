@@ -190,13 +190,18 @@ Claude Code, Codex, Grok and other MCP clients sign in with standard OAuth and g
 
 1. The client finds the server: `GET /.well-known/oauth-protected-resource` (RFC 9728; also `/.well-known/oauth-protected-resource/mcp`) names the resource (`{base}/mcp`) and this server as its authorization server. `GET /.well-known/oauth-authorization-server` lists `registration_endpoint`.
 2. It registers itself: `POST /oauth/register` (RFC 7591), public clients only (`token_endpoint_auth_method: none`). The answer carries a `client_id` starting with `agent_`. Registering grants nothing. Redirect URIs: `https://`, loopback `http://` (`127.0.0.1`, `localhost`, `[::1]`; any port at use time), or an app's own scheme; never `javascript:`, `data:`, `file:` or a fragment. Registrations are capped at 500 an hour, and apps never allowed are dropped after 7 days.
-3. It opens `GET /oauth/authorize?response_type=code&client_id=agent_…&redirect_uri=…&code_challenge=…&code_challenge_method=S256&state=…[&resource={base}/mcp]`. The signed-in taxpayer sees the **Allow** screen:
-   - which of **their own** profiles it may reach (held personally, or verified as theirs while a firm holds them);
+3. It opens `GET /oauth/authorize?response_type=code&client_id=agent_…&redirect_uri=…&code_challenge=…&code_challenge_method=S256&state=…[&resource={base}/mcp]`. The signed-in user sees the **Allow** screen:
+   - which profiles it may reach: their own, or ones a **working pass of their workspace** reaches (shown "through {firm}'s pass"). A firm's own draft that no taxpayer owns yet can't be connected;
    - what it may do: Read-only (selected), Safe or Full, the same presets as access passes;
    - the app's name is what it called itself, and the screen says so.
 4. It exchanges the code at `POST /oauth/token` (`grant_type=authorization_code`, `code_verifier`). Access tokens (`bwa_…`) last 1 hour. Refresh tokens (`bwr_…`) last 30 days and are replaced on every refresh. Reusing an old refresh token ends every token of that connection (RFC 9700).
 
-What an agent may do on a profile is the connection's permissions **narrowed by the taxpayer's access at that moment**: if a firm now holds the profile, the agent can only read; if the profile moved to someone else, nothing. An agent can never publish to BIR, share, archive or delete. Allowing the same app again replaces its earlier connection.
+What an agent may do on a profile is the connection's permissions **narrowed by its user's access at that moment**:
+- on their own profile, up to everything the owner may do;
+- through a firm's pass, no more than that pass, and nothing once the owner ends or changes the pass, the pass runs out, or the user leaves the workspace. An agent has no browser session, so its workspaces are read from the user's active memberships on every call;
+- on a profile that moved to someone else, nothing.
+
+An agent can never publish to BIR, share, archive or delete. Allowing the same app again replaces its earlier connection. The owner doesn't see a firm member's agents under Connected agents (those are the member's), but ending or changing the firm's pass bounds them at once.
 
 The connection ends when the taxpayer presses **End** under Tax profiles → Connected agents, or on a password change or any other security change on the account (`auth_users.security_revision`), or when the account is disabled.
 
