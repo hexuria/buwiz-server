@@ -3382,4 +3382,71 @@ mod tests {
             TaxProfileError::InvalidFacts { .. }
         ));
     }
+
+    // ── Replay ids and names ────────────────────────────────────────────────
+
+    #[test]
+    fn legacy_move_pass_ids_are_stable_v5_uuids() {
+        let id = legacy_move_pass_id("tp-1", "firm-1", 0);
+        assert_eq!(id, legacy_move_pass_id("tp-1", "firm-1", 0), "deterministic");
+        assert_eq!(id.len(), 36);
+        let parts: Vec<&str> = id.split('-').collect();
+        assert_eq!(parts.iter().map(|p| p.len()).collect::<Vec<_>>(), [8, 4, 4, 4, 12]);
+        assert!(id.chars().all(|c| c == '-' || c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        // Version 5 nibble and RFC 4122 variant bits.
+        assert!(parts[2].starts_with('5'), "{id}");
+        assert!(matches!(parts[3].as_bytes()[0], b'8' | b'9' | b'a' | b'b'), "{id}");
+        // Exactly the SHA-256 prefix, with only those bits forced.
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest("legacy-move|tp-1|firm-1|0");
+        let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
+        let plain = id.replace('-', "");
+        assert_eq!(&plain[..12], &hex[..12]);
+        assert_eq!(&plain[13..16], &hex[13..16]);
+        assert_eq!(&plain[17..], &hex[17..]);
+        let byte6 = u8::from_str_radix(&plain[12..14], 16).unwrap();
+        let byte8 = u8::from_str_radix(&plain[16..18], 16).unwrap();
+        assert_eq!(byte6, (digest[6] & 0x0f) | 0x50);
+        assert_eq!(byte8, (digest[8] & 0x3f) | 0x80);
+        for other in [
+            legacy_move_pass_id("tp-2", "firm-1", 0),
+            legacy_move_pass_id("tp-1", "firm-2", 0),
+            legacy_move_pass_id("tp-1", "firm-1", 1),
+        ] {
+            assert_ne!(id, other);
+        }
+    }
+
+    #[test]
+    fn an_old_move_ends_only_the_same_firms_open_pass() {
+        let mut store = alice_profile();
+        store
+            .execute("tp-1", offer("pass-1", "firm-1", "alice", PassPreset::Safe.permissions()), 1)
+            .unwrap();
+        store.execute("tp-1", accept("pass-1", "boss", &["firm-1"]), 2).unwrap();
+        store.push_event("tp-1", old_move("firm-2", "alice"));
+        let (state, _) = store.load("tp-1");
+        // firm-1 keeps its pass; firm-2 gets the replayed one.
+        assert_eq!(state.pass("pass-1").unwrap().status, PassStatus::Active);
+        assert_eq!(state.passes.len(), 2);
+        // A second old move to firm-2 replaces firm-2's pass, not firm-1's.
+        store.push_event("tp-1", old_move("firm-2", "alice"));
+        let (state, _) = store.load("tp-1");
+        assert_eq!(state.pass("pass-1").unwrap().status, PassStatus::Active);
+        let firm2: Vec<_> = state
+            .passes
+            .iter()
+            .filter(|pass| pass.grantee == firm("firm-2"))
+            .map(|pass| pass.status)
+            .collect();
+        assert_eq!(firm2, [PassStatus::Revoked, PassStatus::Active]);
+    }
+
+    #[test]
+    fn standings_have_stable_names() {
+        assert_eq!(ProfileAccess::Owner.as_str(), "owner");
+        assert_eq!(ProfileAccess::HoldingOrg.as_str(), "holding_org");
+        assert_eq!(ProfileAccess::Pass(PassPreset::Safe.permissions()).as_str(), "pass");
+        assert_eq!(ProfileAccess::None.as_str(), "none");
+    }
 }

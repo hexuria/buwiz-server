@@ -312,7 +312,7 @@ pub(crate) async fn reproject_all_tax_profiles() -> AuthStackResult<usize> {
     for row in &rows {
         let profile_id = required_string(row, "profile_id")?;
         let loaded = load_stream(&profile_id).await?;
-        if !loaded.state.exists || loaded.from_projection {
+        if !needs_reprojection(&loaded) {
             continue;
         }
         // `false`: a rebuild must not move updated_at (the desktop's
@@ -332,6 +332,12 @@ pub(crate) async fn reproject_all_tax_profiles() -> AuthStackResult<usize> {
         rebuilt += 1;
     }
     Ok(rebuilt)
+}
+
+/// Only profiles with their own event history are rebuilt; a row that was
+/// itself rebuilt from the projection has nothing newer to write.
+fn needs_reprojection(loaded: &LoadedTaxProfile) -> bool {
+    loaded.state.exists && !loaded.from_projection
 }
 
 /// The projection row. `touches_profile` is false for pass-only commits, so
@@ -883,9 +889,17 @@ fn set_list_access(
     user_id: &str,
     organization_id: Option<&str>,
 ) {
+    set_access(view, list_access(row, user_id, organization_id));
+}
+
+fn list_access(
+    row: &Value,
+    user_id: &str,
+    organization_id: Option<&str>,
+) -> crate::domain::ProfileAccess {
     let holder_user = row_string(row, "holder_user_id");
     let holder_org = row_string(row, "holder_organization_id");
-    let access = if holder_user.as_deref() == Some(user_id) {
+    if holder_user.as_deref() == Some(user_id) {
         crate::domain::ProfileAccess::Owner
     } else if holder_org.is_some() && holder_org.as_deref() == organization_id {
         crate::domain::ProfileAccess::HoldingOrg
@@ -901,8 +915,7 @@ fn set_list_access(
         } else {
             crate::domain::ProfileAccess::Pass(permissions)
         }
-    };
-    set_access(view, access);
+    }
 }
 
 pub(crate) fn set_access(
@@ -1186,5 +1199,105 @@ pub(crate) async fn publish_tax_profile_wake(stream_id: &str, revision: u64) {
     #[cfg(not(all(feature = "postgres", runtime_spin)))]
     {
         let _ = (url, channel, stream_id, revision);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{PassPermission, PassPreset, ProfileAccess};
+
+    const ME: &str = "11111111-1111-4111-8111-111111111111";
+    const FIRM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+    fn row(holder_user: Option<&str>, holder_org: Option<&str>, pass: &[&str], publisher: bool) -> Value {
+        json!({
+            "holder_user_id": holder_user,
+            "holder_organization_id": holder_org,
+            "pass_permissions": pass,
+            "is_publisher": publisher,
+        })
+    }
+
+    #[test]
+    fn listed_profiles_get_the_same_standing_as_a_loaded_one() {
+        assert_eq!(list_access(&row(Some(ME), None, &[], false), ME, None), ProfileAccess::Owner);
+        assert_eq!(
+            list_access(&row(None, Some(FIRM), &[], false), ME, Some(FIRM)),
+            ProfileAccess::HoldingOrg
+        );
+        // Another workspace's draft, viewed from a different workspace.
+        assert_eq!(
+            list_access(&row(None, Some(FIRM), &[], false), ME, Some("other")),
+            ProfileAccess::None
+        );
+        assert_eq!(list_access(&row(None, Some(FIRM), &[], false), ME, None), ProfileAccess::None);
+        assert_eq!(
+            list_access(&row(Some("someone"), None, &[], false), ME, Some(FIRM)),
+            ProfileAccess::None
+        );
+        let safe = PassPreset::Safe.permissions();
+        let ids = safe.ids();
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        assert_eq!(
+            list_access(&row(Some("someone"), None, &ids, false), ME, Some(FIRM)),
+            ProfileAccess::Pass(safe)
+        );
+    }
+
+    #[test]
+    fn a_listed_pass_publishes_only_for_a_picked_member() {
+        let with_publish = PassPreset::Full.permissions().with(PassPermission::FilingsPublish);
+        let ids = with_publish.ids();
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        assert_eq!(
+            list_access(&row(Some("owner"), None, &ids, true), ME, Some(FIRM)),
+            ProfileAccess::Pass(with_publish)
+        );
+        assert_eq!(
+            list_access(&row(Some("owner"), None, &ids, false), ME, Some(FIRM)),
+            ProfileAccess::Pass(PassPreset::Full.permissions())
+        );
+        // A publish-only pass for an unpicked member leaves nothing.
+        assert_eq!(
+            list_access(&row(Some("owner"), None, &["filings.publish"], false), ME, Some(FIRM)),
+            ProfileAccess::None
+        );
+    }
+
+    #[test]
+    fn set_list_access_writes_the_view() {
+        let mut view = tax_profile_view_from_row(
+            &json!({
+                "profile_id": FIRM,
+                "holder_kind": "personal",
+                "holder_user_id": ME,
+                "ownership_status": "personal_exclusive",
+                "verification_status": "unverified",
+                "registered_name": "Ana",
+                "rdo_code": "039",
+                "taxpayer_type": "individual",
+                "revision": 1,
+            }),
+            ME,
+        )
+        .expect("a minimal row builds a view");
+        set_list_access(&mut view, &row(Some(ME), None, &[], false), ME, None);
+        assert_eq!(view.access, "owner");
+        assert!(view.permissions.contains(&"filings.publish".to_owned()));
+    }
+
+    #[test]
+    fn only_profiles_with_history_are_reprojected() {
+        let mut state = TaxProfile::new();
+        let loaded = |state: &TaxProfile, from_projection| LoadedTaxProfile {
+            state: state.clone(),
+            revision: 1,
+            from_projection,
+        };
+        assert!(!needs_reprojection(&loaded(&state, false)), "missing profile");
+        state.exists = true;
+        assert!(needs_reprojection(&loaded(&state, false)));
+        assert!(!needs_reprojection(&loaded(&state, true)), "rebuilt from projection");
     }
 }
