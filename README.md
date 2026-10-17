@@ -240,24 +240,18 @@ The server stores `tin_last4` for display, persisted `branch_code` (head office 
 
 `claim_status`: `owned` | `pending_claim` | `read_only`.
 
-V1 commands (past-tense event mirrors). Keep them small.
+Tax profile commands (event-sourced; past-tense event mirrors). Keep them small.
 
 | Command | Event |
 |---------|--------|
 | `RegisterTaxProfile` | `TaxProfileRegistered` |
 | `UpdateTaxProfileIdentity` | `TaxProfileIdentityUpdated` |
 | `ArchiveTaxProfile` / `RestoreTaxProfile` | `TaxProfileArchived` / `TaxProfileRestored` |
-| `CloneProfileYear` | `ProfileYearCloned` (copy prior `per_year_forms` only if dest empty) |
-| `UpdateProfileYear` | `ProfileYearUpdated` (null = inherit) |
-| `SetYearForms` / `ActivateYearForm` / `DeactivateYearForm` | year-forms events |
-| `UpsertFormDraft` / `MarkDraftSaved` / `MarkDraftReviewed` | `FormDraftUpserted` / `DraftSaved` / `DraftReviewed` |
 | `OfferPass` / `RequestPass` / `AcceptPass` / `ApprovePass` / `ChangePass` / `EndPass` | `PassOffered` / `PassRequested` / `PassActivated` / `PassChanged` / `PassEnded` |
 | `InviteOwner` / `WithdrawOwnerInvite` / `AcceptOwnerInvite` | `OwnerInvited` / `OwnerInviteWithdrawn` / `OwnerInviteAccepted` |
-| `EnqueueFiling` | `FilingQueued` |
-| `MarkFilingSubmitted` / `ConfirmFilingFromReceipt` / `FailFiling` / `MarkFilingPaid` | filing events |
 | `RegisterDevice` / `RevokeDevice` / `IssueDesktopSession` | device-session events (no PIN/TOTP) |
 
-Queries: `GetTaxProfile`, `ListTaxProfilesForAccount`, `GetProfileYear`, `ListYearForms`, `GetFormDraft`, `ListDraftsForYear`, `ListFilings`, `GetFilingByPeriod`.
+Tax years, drafts and filings are plain rows, not event streams. The rules are in `src/domain/records.rs`, and the endpoints are in [docs/sync-api.md](docs/sync-api.md).
 
 Claim and reclaim remain for a taxpayer to take a firm's draft or a profile someone else registered. Moving a profile to a firm is gone: firms work through passes.
 
@@ -275,7 +269,6 @@ Claim and reclaim remain for a taxpayer to take a firm's draft or a profile some
 
 Form 2303 is used **only** to prove ownership, never to choose forms. The `c2pa` crate doesn't build for `wasm32-wasip2` on stable, so the screen reads the marks without verifying signatures. It only ever refuses, so a forged mark hurts nobody but its uploader. No mark found proves nothing: metadata can be stripped, and SynthID has no public detector. That's why staff review every claim.
 
-V1.1 stubs only: `SaveFormTemplate` / `ApplyFormTemplate`.
 
 Do **not** port COR/OCR/effective-date ledgers, inference flag updates, or IMAP/OAuth mailbox secrets. The only Form 2303 the server accepts is an ownership-claim upload (above). It is never read for form selection and is deleted once the claim is decided.
 
