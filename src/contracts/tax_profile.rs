@@ -38,6 +38,15 @@ pub struct TaxProfileView {
     pub revision: u64,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+    /// The caller's standing: `owner`, `holding_org`, `owner_read_only`,
+    /// `pass` or `none`.
+    #[serde(default)]
+    pub access: String,
+    /// What the caller may do, as pass permission ids. The installed
+    /// buwiz-forms app sends to BIR only when this includes
+    /// `filings.publish`.
+    #[serde(default)]
+    pub permissions: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -141,4 +150,111 @@ pub struct MeResponse {
     pub user_id: String,
     pub email: Option<String>,
     pub orgs: Vec<MeOrg>,
+}
+
+/// One access pass, as either side sees it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PassView {
+    pub pass_id: String,
+    pub profile_id: String,
+    pub profile_name: String,
+    pub tin_last4: String,
+    /// `organization` (agents come later).
+    pub grantee_kind: String,
+    pub grantee_id: String,
+    #[serde(default)]
+    pub grantee_name: Option<String>,
+    #[serde(default)]
+    pub grantee_slug: Option<String>,
+    pub permissions: Vec<String>,
+    /// `read_only`, `safe` or `full` when the permissions match one exactly.
+    #[serde(default)]
+    pub preset: Option<String>,
+    pub can_publish: bool,
+    /// `requested`, `offered`, `active` or `expired`.
+    pub status: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    /// `owner` when the caller owns the profile, `grantee` when the caller's
+    /// workspace holds the pass.
+    pub my_side: String,
+    /// True when the next step is the caller's: approve a request (owner) or
+    /// accept an offer (workspace).
+    pub waiting_on_me: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PassPermissionInfo {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PassPresetInfo {
+    pub id: String,
+    pub label: String,
+    pub permissions: Vec<String>,
+    /// Selected when the give-access screen opens.
+    pub is_default: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PassListResponse {
+    /// Open passes (requested, offered, active, expired) on profiles the
+    /// caller owns or held by the caller's workspaces.
+    pub passes: Vec<PassView>,
+    /// Every permission, in display order. `filings.publish` is last and is
+    /// never part of a preset.
+    pub permission_catalog: Vec<PassPermissionInfo>,
+    pub presets: Vec<PassPresetInfo>,
+}
+
+/// What a pass allows. Give a `preset`, or a `permissions` list, or both
+/// (the list wins). Publishing to BIR is only ever `allow_publish`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PassChoice {
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub permissions: Option<Vec<String>>,
+    #[serde(default)]
+    pub allow_publish: bool,
+    /// Last day the pass works (`YYYY-MM-DD`, Philippine time). Empty or
+    /// missing: no end date.
+    #[serde(default)]
+    pub ends_on: Option<String>,
+}
+
+/// The owner offers a pass to a workspace.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PassOfferRequest {
+    /// The workspace URL name, e.g. `abc-firm`. Or give `organization_id`.
+    #[serde(default)]
+    pub organization_slug: Option<String>,
+    #[serde(default)]
+    pub organization_id: Option<String>,
+    #[serde(flatten)]
+    pub choice: PassChoice,
+}
+
+/// A workspace asks the owner for a pass, proving it knows the TIN.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PassAskRequest {
+    pub organization_id: String,
+    pub tin_root: String,
+    pub branch_code: String,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub permissions: Option<Vec<String>>,
+}
+
+/// The owner approves a request (`choice` empty keeps what was asked for)
+/// or changes an offered or active pass.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PassUpdateRequest {
+    #[serde(flatten)]
+    pub choice: PassChoice,
 }

@@ -13,7 +13,7 @@ use crate::contracts::{
     PasswordResetCompleteRequest, PasswordResetStartRequest, PolicyPublishRequest,
     RoleUpsertRequest, SessionRevokeRequest, SigningKeyRotateRequest, TokenRefreshRequest,
     TokenVerifyRequest, TaxProfileClaimRequest, TaxProfileCreateRequest, TaxProfilePatchRequest,
-    TaxProfileTransferRequest,
+    TaxProfileTransferRequest, PassAskRequest, PassOfferRequest, PassUpdateRequest,
 };
 use crate::error::{AuthStackError, AuthStackResult};
 
@@ -432,6 +432,53 @@ async fn dispatch(req: RestRequest) -> AuthStackResult<RestResponse> {
             let payload = parse_json::<TaxProfileCreateRequest>(req).await?;
             json_result(crate::application::create_tax_profile(payload, request_auth).await)
         }
+        (Method::GET, "/api/tax-profiles/passes") | (Method::GET, "/tax-profiles/passes") => {
+            json_result(crate::application::list_passes(request_auth).await)
+        }
+        (Method::POST, "/api/tax-profiles/passes/request")
+        | (Method::POST, "/tax-profiles/passes/request") => {
+            validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+            let payload = parse_json::<PassAskRequest>(req).await?;
+            json_result(crate::application::ask_for_pass(payload, request_auth).await)
+        }
+        (Method::POST, path) if matches!(pass_route(path), Some((_, None, None))) => {
+            validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+            let (profile_id, _, _) = pass_route(path).expect("checked");
+            let profile_id = profile_id.to_owned();
+            let payload = parse_json::<PassOfferRequest>(req).await?;
+            json_result(crate::application::offer_pass(profile_id, payload, request_auth).await)
+        }
+        (Method::PATCH, path) if matches!(pass_route(path), Some((_, Some(_), None))) => {
+            validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+            let (profile_id, pass_id, _) = pass_route(path).expect("checked");
+            let (profile_id, pass_id) = (profile_id.to_owned(), pass_id.unwrap_or_default().to_owned());
+            let payload = parse_json::<PassUpdateRequest>(req).await?;
+            json_result(
+                crate::application::change_pass(profile_id, pass_id, payload, request_auth).await,
+            )
+        }
+        (Method::POST, path) if matches!(pass_route(path), Some((_, Some(_), Some(_)))) => {
+            validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+            let (profile_id, pass_id, action) = pass_route(path).expect("checked");
+            let profile_id = profile_id.to_owned();
+            let pass_id = pass_id.unwrap_or_default().to_owned();
+            match action.unwrap_or_default() {
+                "accept" => json_result(
+                    crate::application::accept_pass(profile_id, pass_id, request_auth).await,
+                ),
+                "approve" => {
+                    let payload = parse_json::<PassUpdateRequest>(req).await?;
+                    json_result(
+                        crate::application::approve_pass(profile_id, pass_id, payload, request_auth)
+                            .await,
+                    )
+                }
+                "end" => json_result(
+                    crate::application::end_pass(profile_id, pass_id, request_auth).await,
+                ),
+                _ => auth_error_response(&AuthStackError::not_found("unknown access pass action")),
+            }
+        }
         (Method::GET, path)
             if tax_profile_id_from_path(path).is_some()
                 && !matches!(
@@ -442,6 +489,8 @@ async fn dispatch(req: RestRequest) -> AuthStackResult<RestResponse> {
                         | "/tax-profiles/reclaim"
                         | "/api/tax-profiles/transfer"
                         | "/tax-profiles/transfer"
+                        | "/api/tax-profiles/passes"
+                        | "/tax-profiles/passes"
                 ) =>
         {
             let id = tax_profile_id_from_path(path).expect("checked");
@@ -830,10 +879,32 @@ fn tax_profile_id_from_path(path: &str) -> Option<&str> {
     if rest.is_empty() || rest.contains('/') {
         return None;
     }
-    if matches!(rest, "claim" | "reclaim" | "transfer") {
+    if matches!(rest, "claim" | "reclaim" | "transfer" | "passes") {
         return None;
     }
     Some(rest)
+}
+
+/// `/api/tax-profiles/{profile}/passes[/{pass}[/{action}]]`, also without
+/// the `/api` prefix. Returns `(profile, pass, action)`.
+fn pass_route(path: &str) -> Option<(&str, Option<&str>, Option<&str>)> {
+    let rest = path
+        .strip_prefix("/tax-profiles/")
+        .or_else(|| path.strip_prefix("/api/tax-profiles/"))?;
+    let mut parts = rest.split('/');
+    let profile_id = parts.next().filter(|id| !id.is_empty())?;
+    if matches!(profile_id, "claim" | "reclaim" | "transfer" | "passes") {
+        return None;
+    }
+    if parts.next()? != "passes" {
+        return None;
+    }
+    let pass_id = parts.next().filter(|id| !id.is_empty());
+    let action = parts.next().filter(|action| !action.is_empty());
+    if parts.next().is_some() || (pass_id.is_none() && action.is_some()) {
+        return None;
+    }
+    Some((profile_id, pass_id, action))
 }
 
 fn tax_profile_action_from_path<'a>(path: &'a str, action: &str) -> Option<&'a str> {
@@ -844,7 +915,7 @@ fn tax_profile_action_from_path<'a>(path: &'a str, action: &str) -> Option<&'a s
     if suffix != action || id.is_empty() || id.contains('/') {
         return None;
     }
-    if matches!(id, "claim" | "reclaim" | "transfer") {
+    if matches!(id, "claim" | "reclaim" | "transfer" | "passes") {
         return None;
     }
     Some(id)
@@ -926,6 +997,26 @@ mod tests {
         let provider = oauth_provider_from_path("/api/auth/oauth/google/start", "/start").unwrap();
 
         assert_eq!(provider, "google");
+    }
+
+    #[test]
+    fn pass_route_reads_profile_pass_and_action() {
+        assert_eq!(
+            pass_route("/api/tax-profiles/p1/passes"),
+            Some(("p1", None, None))
+        );
+        assert_eq!(
+            pass_route("/tax-profiles/p1/passes/g1"),
+            Some(("p1", Some("g1"), None))
+        );
+        assert_eq!(
+            pass_route("/api/tax-profiles/p1/passes/g1/accept"),
+            Some(("p1", Some("g1"), Some("accept")))
+        );
+        assert_eq!(pass_route("/api/tax-profiles/p1"), None);
+        assert_eq!(pass_route("/api/tax-profiles/passes/request"), None);
+        assert_eq!(pass_route("/api/tax-profiles/p1/passes/g1/accept/x"), None);
+        assert_eq!(tax_profile_id_from_path("/api/tax-profiles/passes"), None);
     }
 
     #[test]

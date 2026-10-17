@@ -8,6 +8,7 @@
 pub mod desktop_session;
 pub mod oauth_client;
 pub mod orus;
+pub mod pass;
 pub mod queries;
 pub mod tax_profile;
 pub mod tin;
@@ -20,6 +21,10 @@ pub use desktop_session::{
 pub use orus::{
     FakeOrusVerifier, OrusError, OwnershipProof, ProofMethod, TinOwnershipVerifier,
     UnconfiguredOrusVerifier,
+};
+pub use pass::{
+    instant_before, pass_end_from_date, Pass, PassGrantee, PassPermission, PassPermissions,
+    PassPreset, PassStatus,
 };
 pub use queries::TaxProfileQuery;
 pub use tax_profile::{

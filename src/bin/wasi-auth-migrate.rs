@@ -62,6 +62,10 @@ async fn apply_or_verify_app_schema(
             "0005_device_interval_bigint",
             include_str!("../../migrations/postgres/0005_device_interval_bigint.sql"),
         ),
+        (
+            "0006_tax_profile_passes",
+            include_str!("../../migrations/postgres/0006_tax_profile_passes.sql"),
+        ),
     ];
     let (mut client, connection) =
         tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;

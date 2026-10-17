@@ -1,13 +1,16 @@
 //! Tax-profile application services (verified-email gate + exclusive ownership).
 
 use crate::contracts::{
-    MeOrg, MeResponse, TaxProfileClaimRequest, TaxProfileCreateRequest, TaxProfileListResponse,
-    TaxProfilePatchRequest, TaxProfileTransferRequest, TaxProfileView,
+    MeOrg, MeResponse, PassAskRequest, PassChoice, PassListResponse, PassOfferRequest,
+    PassPermissionInfo, PassPresetInfo, PassUpdateRequest, TaxProfileClaimRequest,
+    TaxProfileCreateRequest, TaxProfileListResponse, TaxProfilePatchRequest,
+    TaxProfileTransferRequest, TaxProfileView,
 };
 use crate::domain::{
-    tin_last4, AccountHolder, CloudTaxProfileFacts, FakeOrusVerifier, ProfileAction, TaxProfile,
-    TaxProfileCommand,
-    TaxpayerType, TinIdentityHash, TinOwnershipVerifier, UnconfiguredOrusVerifier,
+    pass_end_from_date, tin_last4, AccountHolder, CloudTaxProfileFacts, FakeOrusVerifier,
+    PassGrantee, PassPermission, PassPermissions, PassPreset, ProfileAccess, ProfileAction,
+    TaxProfile, TaxProfileCommand, TaxpayerType, TinIdentityHash, TinOwnershipVerifier,
+    UnconfiguredOrusVerifier,
 };
 use crate::domain::tin::RegistrationKey;
 use crate::error::{AuthStackError, AuthStackResult};
@@ -65,8 +68,8 @@ pub async fn get_tax_profile(
     if !loaded.state.exists {
         return Err(AuthStackError::not_found("tax profile not found"));
     }
-    authorize(&loaded.state, &user_id, session.session_id.as_deref(), Gate::View).await?;
-    crate::store::fetch_tax_profile_view(&profile_id, &user_id).await
+    let standing = authorize(&loaded.state, &user_id, session.session_id.as_deref(), Gate::View).await?;
+    view_for(&profile_id, &user_id, standing.access).await
 }
 
 pub async fn create_tax_profile(
@@ -123,7 +126,7 @@ pub async fn create_tax_profile(
         0,
     )
     .await?;
-    crate::store::fetch_tax_profile_view(&profile_id, &user_id).await
+    view_after(&profile_id, &user_id, session_id.as_deref()).await
 }
 
 pub async fn patch_tax_profile(
@@ -136,7 +139,7 @@ pub async fn patch_tax_profile(
     if !loaded.state.exists {
         return Err(AuthStackError::not_found("tax profile not found"));
     }
-    let actor_org = authorize(&loaded.state, &user_id, session_id.as_deref(), Gate::Edit).await?;
+    let standing = authorize(&loaded.state, &user_id, session_id.as_deref(), Gate::Edit).await?;
     if let (Some(tin_root), Some(branch_code)) = (
         request.tin_root.as_deref().filter(|value| !value.trim().is_empty()),
         request
@@ -179,13 +182,13 @@ pub async fn patch_tax_profile(
             facts: Some(facts),
             expected_updated_at: None,
             actor_user_id: user_id.clone(),
-            actor_org,
+            actor_orgs: standing.actor_orgs,
             occurred_at: crate::store::rfc3339_now(),
         },
         loaded.revision,
     )
     .await?;
-    crate::store::fetch_tax_profile_view(&profile_id, &user_id).await
+    view_after(&profile_id, &user_id, session_id.as_deref()).await
 }
 
 pub async fn archive_tax_profile(
@@ -197,19 +200,19 @@ pub async fn archive_tax_profile(
     if !loaded.state.exists {
         return Err(AuthStackError::not_found("tax profile not found"));
     }
-    let actor_org =
+    let standing =
         authorize(&loaded.state, &user_id, session_id.as_deref(), Gate::Archive).await?;
     crate::store::commit_tax_profile_command(
         &profile_id,
         TaxProfileCommand::ArchiveTaxProfile {
             actor_user_id: user_id.clone(),
-            actor_org,
+            actor_orgs: standing.actor_orgs,
             occurred_at: crate::store::rfc3339_now(),
         },
         loaded.revision,
     )
     .await?;
-    crate::store::fetch_tax_profile_view(&profile_id, &user_id).await
+    view_after(&profile_id, &user_id, session_id.as_deref()).await
 }
 
 pub async fn restore_tax_profile(
@@ -221,26 +224,26 @@ pub async fn restore_tax_profile(
     if !loaded.state.exists {
         return Err(AuthStackError::not_found("tax profile not found"));
     }
-    let actor_org =
+    let standing =
         authorize(&loaded.state, &user_id, session_id.as_deref(), Gate::Archive).await?;
     crate::store::commit_tax_profile_command(
         &profile_id,
         TaxProfileCommand::RestoreTaxProfile {
             actor_user_id: user_id.clone(),
-            actor_org,
+            actor_orgs: standing.actor_orgs,
             occurred_at: crate::store::rfc3339_now(),
         },
         loaded.revision,
     )
     .await?;
-    crate::store::fetch_tax_profile_view(&profile_id, &user_id).await
+    view_after(&profile_id, &user_id, session_id.as_deref()).await
 }
 
 pub async fn claim_tax_profile(
     request: TaxProfileClaimRequest,
     auth: RequestAuth,
 ) -> AuthStackResult<TaxProfileView> {
-    let (user_id, _) = require_verified_actor(auth).await?;
+    let (user_id, session_id) = require_verified_actor(auth).await?;
     let (profile_id, identity_hash, expected, proof_method) =
         attested_existing(&request, &user_id).await?;
     crate::store::commit_tax_profile_command(
@@ -256,14 +259,14 @@ pub async fn claim_tax_profile(
         expected,
     )
     .await?;
-    crate::store::fetch_tax_profile_view(&profile_id, &user_id).await
+    view_after(&profile_id, &user_id, session_id.as_deref()).await
 }
 
 pub async fn reclaim_tax_profile(
     request: TaxProfileClaimRequest,
     auth: RequestAuth,
 ) -> AuthStackResult<TaxProfileView> {
-    let (user_id, _) = require_verified_actor(auth).await?;
+    let (user_id, session_id) = require_verified_actor(auth).await?;
     let (profile_id, identity_hash, expected, proof_method) =
         attested_existing(&request, &user_id).await?;
     crate::store::commit_tax_profile_command(
@@ -276,7 +279,7 @@ pub async fn reclaim_tax_profile(
         expected,
     )
     .await?;
-    crate::store::fetch_tax_profile_view(&profile_id, &user_id).await
+    view_after(&profile_id, &user_id, session_id.as_deref()).await
 }
 
 pub async fn transfer_tax_profile(
@@ -295,7 +298,7 @@ pub async fn transfer_tax_profile(
         return Err(AuthStackError::not_found("tax profile not found"));
     }
     let actor_controls_org =
-        authorize(&loaded.state, &user_id, session_id.as_deref(), Gate::Transfer).await?;
+        authorize_transfer(&loaded.state, &user_id, session_id.as_deref()).await?;
     let expected = request.expected_revision.unwrap_or(loaded.revision);
     crate::store::commit_tax_profile_command(
         &request.id,
@@ -309,7 +312,7 @@ pub async fn transfer_tax_profile(
         expected,
     )
     .await?;
-    crate::store::fetch_tax_profile_view(&request.id, &user_id).await
+    view_after(&request.id, &user_id, session_id.as_deref()).await
 }
 
 async fn attested_existing(
@@ -368,69 +371,442 @@ async fn resolve_holder(
     })
 }
 
+// ── Access passes ───────────────────────────────────────────────────────────
+
+/// Open passes on profiles the caller owns or held by the caller's
+/// workspaces, plus the permission catalog and presets.
+pub async fn list_passes(auth: RequestAuth) -> AuthStackResult<PassListResponse> {
+    let session = authenticated_session_view(auth.clone()).await?;
+    let user_id = session.user_id.ok_or(AuthStackError::AuthRequired)?;
+    pass_list(&user_id, auth).await
+}
+
+/// The owner offers a pass to a workspace (named by its URL slug or id).
+pub async fn offer_pass(
+    profile_id: String,
+    request: PassOfferRequest,
+    auth: RequestAuth,
+) -> AuthStackResult<PassListResponse> {
+    let (user_id, _) = require_verified_actor(auth.clone()).await?;
+    let organization_id = match (
+        request
+            .organization_slug
+            .as_deref()
+            .map(str::trim)
+            .filter(|slug| !slug.is_empty()),
+        request
+            .organization_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty()),
+    ) {
+        (Some(slug), _) => {
+            crate::store::resolve_org_id_for_slug(&slug.to_ascii_lowercase()).await?
+        }
+        (None, Some(id)) => crate::store::active_organization_id(id)
+            .await?
+            .ok_or_else(|| AuthStackError::not_found("workspace not found"))?,
+        (None, None) => {
+            return Err(AuthStackError::validation(
+                "name the workspace to give access to",
+            ))
+        }
+    };
+    let loaded = load_existing(&profile_id).await?;
+    let permissions = permissions_from_choice(&request.choice, PassPermissions::empty())?;
+    let now = crate::store::rfc3339_now();
+    crate::store::commit_tax_profile_command(
+        &profile_id,
+        TaxProfileCommand::OfferPass {
+            pass_id: crate::store::new_uuid_v4()?,
+            grantee: PassGrantee::Organization { organization_id },
+            permissions,
+            expires_at: end_from_choice(&request.choice)?,
+            actor_user_id: user_id.clone(),
+            occurred_at: now,
+        },
+        loaded.revision,
+    )
+    .await?;
+    pass_list(&user_id, auth).await
+}
+
+/// A workspace asks the owner for a pass, proving it knows the TIN.
+pub async fn ask_for_pass(
+    request: PassAskRequest,
+    auth: RequestAuth,
+) -> AuthStackResult<PassListResponse> {
+    let (user_id, session_id) = require_verified_actor(auth.clone()).await?;
+    let organization_id = request.organization_id.trim().to_owned();
+    if !manages_passes_for(session_id.as_deref(), &organization_id).await {
+        return Err(AuthStackError::Forbidden);
+    }
+    let registration = parse_registration(&request.tin_root, &request.branch_code)?;
+    let pepper = crate::store::tin_identity_pepper().await?;
+    let identity_hash =
+        TinIdentityHash::compute(&pepper, &registration.tin_root, &registration.branch_code);
+    let loaded = crate::store::load_tax_profile_by_identity_hash(&identity_hash)
+        .await?
+        .filter(|loaded| loaded.state.exists)
+        .ok_or_else(|| AuthStackError::not_found("no tax profile for that TIN and branch"))?;
+    let profile_id = loaded
+        .state
+        .profile_id
+        .clone()
+        .ok_or_else(|| AuthStackError::not_found("tax profile not found"))?;
+    let choice = PassChoice {
+        preset: request.preset.clone(),
+        permissions: request.permissions.clone(),
+        allow_publish: false,
+        ends_on: None,
+    };
+    crate::store::commit_tax_profile_command(
+        &profile_id,
+        TaxProfileCommand::RequestPass {
+            pass_id: crate::store::new_uuid_v4()?,
+            grantee: PassGrantee::Organization {
+                organization_id: organization_id.clone(),
+            },
+            permissions: permissions_from_choice(&choice, PassPermissions::empty())?,
+            identity_hash,
+            actor_user_id: user_id.clone(),
+            actor_managed_orgs: vec![organization_id],
+            occurred_at: crate::store::rfc3339_now(),
+        },
+        loaded.revision,
+    )
+    .await?;
+    pass_list(&user_id, auth).await
+}
+
+/// The workspace accepts an offered pass.
+pub async fn accept_pass(
+    profile_id: String,
+    pass_id: String,
+    auth: RequestAuth,
+) -> AuthStackResult<PassListResponse> {
+    let (user_id, session_id) = require_verified_actor(auth.clone()).await?;
+    let loaded = load_existing(&profile_id).await?;
+    let managed = managed_grantee_orgs(&loaded.state, &pass_id, session_id.as_deref()).await?;
+    crate::store::commit_tax_profile_command(
+        &profile_id,
+        TaxProfileCommand::AcceptPass {
+            pass_id,
+            actor_user_id: user_id.clone(),
+            actor_managed_orgs: managed,
+            occurred_at: crate::store::rfc3339_now(),
+        },
+        loaded.revision,
+    )
+    .await?;
+    pass_list(&user_id, auth).await
+}
+
+/// The owner approves a request. An empty choice keeps what was asked for.
+pub async fn approve_pass(
+    profile_id: String,
+    pass_id: String,
+    request: PassUpdateRequest,
+    auth: RequestAuth,
+) -> AuthStackResult<PassListResponse> {
+    let (user_id, _) = require_verified_actor(auth.clone()).await?;
+    let loaded = load_existing(&profile_id).await?;
+    let current = current_pass_permissions(&loaded.state, &pass_id)?;
+    crate::store::commit_tax_profile_command(
+        &profile_id,
+        TaxProfileCommand::ApprovePass {
+            pass_id,
+            permissions: Some(permissions_from_choice(&request.choice, current)?),
+            expires_at: end_from_choice(&request.choice)?,
+            actor_user_id: user_id.clone(),
+            occurred_at: crate::store::rfc3339_now(),
+        },
+        loaded.revision,
+    )
+    .await?;
+    pass_list(&user_id, auth).await
+}
+
+/// The owner changes an offered or active pass. Publishing stays on only
+/// while `allow_publish` is sent as true.
+pub async fn change_pass(
+    profile_id: String,
+    pass_id: String,
+    request: PassUpdateRequest,
+    auth: RequestAuth,
+) -> AuthStackResult<PassListResponse> {
+    let (user_id, _) = require_verified_actor(auth.clone()).await?;
+    let loaded = load_existing(&profile_id).await?;
+    let current = current_pass_permissions(&loaded.state, &pass_id)?;
+    crate::store::commit_tax_profile_command(
+        &profile_id,
+        TaxProfileCommand::ChangePass {
+            pass_id,
+            permissions: permissions_from_choice(&request.choice, current)?,
+            expires_at: end_from_choice(&request.choice)?,
+            actor_user_id: user_id.clone(),
+            occurred_at: crate::store::rfc3339_now(),
+        },
+        loaded.revision,
+    )
+    .await?;
+    pass_list(&user_id, auth).await
+}
+
+/// Either side ends a pass: the owner revokes or declines; the workspace
+/// declines an offer, withdraws its request, or gives the pass back.
+pub async fn end_pass(
+    profile_id: String,
+    pass_id: String,
+    auth: RequestAuth,
+) -> AuthStackResult<PassListResponse> {
+    let (user_id, session_id) = require_verified_actor(auth.clone()).await?;
+    let loaded = load_existing(&profile_id).await?;
+    let managed = managed_grantee_orgs(&loaded.state, &pass_id, session_id.as_deref())
+        .await
+        .unwrap_or_default();
+    crate::store::commit_tax_profile_command(
+        &profile_id,
+        TaxProfileCommand::EndPass {
+            pass_id,
+            actor_user_id: user_id.clone(),
+            actor_managed_orgs: managed,
+            occurred_at: crate::store::rfc3339_now(),
+        },
+        loaded.revision,
+    )
+    .await?;
+    pass_list(&user_id, auth).await
+}
+
+async fn pass_list(user_id: &str, auth: RequestAuth) -> AuthStackResult<PassListResponse> {
+    let org_ids: Vec<String> = crate::application::list_organizations(auth)
+        .await?
+        .organizations
+        .into_iter()
+        .map(|org| org.organization_id)
+        .collect();
+    Ok(PassListResponse {
+        passes: crate::store::list_passes_for(user_id, &org_ids).await?,
+        permission_catalog: PassPermission::ALL
+            .into_iter()
+            .map(|permission| PassPermissionInfo {
+                id: permission.as_str().to_owned(),
+                label: permission.label().to_owned(),
+            })
+            .collect(),
+        presets: PassPreset::ALL
+            .into_iter()
+            .map(|preset| PassPresetInfo {
+                id: preset.as_str().to_owned(),
+                label: preset.label().to_owned(),
+                permissions: preset.permissions().ids(),
+                is_default: preset == PassPreset::DEFAULT,
+            })
+            .collect(),
+    })
+}
+
+async fn load_existing(profile_id: &str) -> AuthStackResult<crate::store::LoadedTaxProfile> {
+    let loaded = crate::store::load_tax_profile_by_id(profile_id).await?;
+    if !loaded.state.exists {
+        return Err(AuthStackError::not_found("tax profile not found"));
+    }
+    Ok(loaded)
+}
+
+/// The pass's permissions without publishing, as the base for an approve or
+/// change that names no new list.
+fn current_pass_permissions(state: &TaxProfile, pass_id: &str) -> AuthStackResult<PassPermissions> {
+    let pass = state
+        .pass(pass_id)
+        .ok_or_else(|| AuthStackError::not_found("access pass not found"))?;
+    Ok(PassPermissions::of(
+        &pass
+            .permissions
+            .iter()
+            .filter(|permission| *permission != PassPermission::FilingsPublish)
+            .collect::<Vec<_>>(),
+    ))
+}
+
+/// Permissions from a give-access choice: the explicit list, else the
+/// preset, else `base` (or the default preset when `base` is empty).
+fn permissions_from_choice(
+    choice: &PassChoice,
+    base: PassPermissions,
+) -> AuthStackResult<PassPermissions> {
+    let ids = match (&choice.permissions, choice.preset.as_deref().map(str::trim)) {
+        (Some(list), _) => list.clone(),
+        (None, Some(preset)) if !preset.is_empty() => PassPreset::parse(preset)
+            .ok_or_else(|| AuthStackError::validation(format!("unknown preset `{preset}`")))?
+            .permissions()
+            .ids(),
+        _ if !base.is_empty() => base.ids(),
+        _ => PassPreset::DEFAULT.permissions().ids(),
+    };
+    PassPermissions::from_choice(&ids, choice.allow_publish).map_err(AuthStackError::validation)
+}
+
+fn end_from_choice(choice: &PassChoice) -> AuthStackResult<Option<String>> {
+    choice
+        .ends_on
+        .as_deref()
+        .map(str::trim)
+        .filter(|date| !date.is_empty())
+        .map(|date| pass_end_from_date(date).map_err(AuthStackError::validation))
+        .transpose()
+}
+
+/// `[org]` when the pass is held by an organization in which the caller may
+/// manage passes (`organization.update`), else empty.
+async fn managed_grantee_orgs(
+    state: &TaxProfile,
+    pass_id: &str,
+    session_id: Option<&str>,
+) -> AuthStackResult<Vec<String>> {
+    let pass = state
+        .pass(pass_id)
+        .ok_or_else(|| AuthStackError::not_found("access pass not found"))?;
+    let org = pass.grantee.id().to_owned();
+    Ok(if manages_passes_for(session_id, &org).await {
+        vec![org]
+    } else {
+        Vec::new()
+    })
+}
+
+async fn manages_passes_for(session_id: Option<&str>, organization_id: &str) -> bool {
+    org_permissions(session_id, organization_id)
+        .await
+        .is_some_and(|permissions| {
+            permissions
+                .iter()
+                .any(|p| p == crate::access::PermissionId::ORGANIZATION_UPDATE.as_str())
+        })
+}
+
+// ── The gatekeeper ──────────────────────────────────────────────────────────
+
 /// What a caller wants to do with a tax profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Gate {
     View,
     Edit,
     Archive,
-    /// Move the profile to another holder.
-    Transfer,
+}
+
+/// The caller's standing on a profile and the organizations it was verified
+/// against (commands carry them so the domain re-checks the same rule).
+struct Standing {
+    access: ProfileAccess,
+    actor_orgs: Vec<String>,
 }
 
 /// The one gatekeeper for every tax-profile read and write.
 ///
-/// Control follows the holder: the personal holder, or a member of the
-/// holding organization (verified here through the caller's session). While
-/// an organization holds it, the verified owner may only read. Registering a
-/// profile grants nothing by itself. Moving a profile out of an organization
-/// also needs `ownership.transfer` in that organization.
-///
-/// Returns the holding organization the caller belongs to, which commands
-/// carry so the domain re-checks the same rule.
+/// Control follows the holder: the personal holder (the owner), or a member
+/// of the holding organization. While an organization holds it, the verified
+/// owner may only read. A working pass gives every member of the firm that
+/// holds it the pass's permissions. Registering a profile grants nothing by
+/// itself. Moving a profile is checked by [`authorize_transfer`].
 async fn authorize(
     state: &TaxProfile,
     user_id: &str,
     session_id: Option<&str>,
     gate: Gate,
+) -> AuthStackResult<Standing> {
+    let standing = standing(state, user_id, session_id).await;
+    let action = match gate {
+        Gate::View => ProfileAction::View,
+        Gate::Edit => ProfileAction::Edit,
+        Gate::Archive => ProfileAction::Archive,
+    };
+    if !standing.access.allows(action) {
+        return Err(AuthStackError::Forbidden);
+    }
+    Ok(standing)
+}
+
+async fn standing(state: &TaxProfile, user_id: &str, session_id: Option<&str>) -> Standing {
+    let now = crate::store::rfc3339_now();
+    let mut candidates: Vec<&str> = Vec::new();
+    if let Some(AccountHolder::Organization { organization_id }) = &state.holder {
+        candidates.push(organization_id);
+    }
+    for pass in state.passes.iter().filter(|pass| pass.is_usable(&now)) {
+        if !candidates.contains(&pass.grantee.id()) {
+            candidates.push(pass.grantee.id());
+        }
+    }
+    let mut actor_orgs = Vec::new();
+    for org in candidates {
+        if org_permissions(session_id, org).await.is_some() {
+            actor_orgs.push(org.to_owned());
+        }
+    }
+    Standing {
+        access: state.access_for(user_id, &actor_orgs, &now),
+        actor_orgs,
+    }
+}
+
+/// Moving a profile: the personal holder, or someone with
+/// `ownership.transfer` in the holding organization. Returns that
+/// organization for the domain to re-check.
+async fn authorize_transfer(
+    state: &TaxProfile,
+    user_id: &str,
+    session_id: Option<&str>,
 ) -> AuthStackResult<Option<String>> {
-    let membership = holding_org_membership(state, session_id).await;
-    let actor_org = membership.as_ref().map(|(id, _)| id.as_str());
-    let allowed = match gate {
-        Gate::View => state.access_for(user_id, actor_org).allows(ProfileAction::View),
-        Gate::Edit => state.access_for(user_id, actor_org).allows(ProfileAction::Edit),
-        Gate::Archive => state.access_for(user_id, actor_org).allows(ProfileAction::Archive),
-        Gate::Transfer => match &state.holder {
-            Some(AccountHolder::Personal { user_id: holder }) => holder == user_id,
-            Some(AccountHolder::Organization { .. }) => {
-                membership.as_ref().is_some_and(|(_, permissions)| {
+    match &state.holder {
+        Some(AccountHolder::Personal { user_id: holder }) if holder == user_id => Ok(None),
+        Some(AccountHolder::Organization { organization_id }) => {
+            let allowed = org_permissions(session_id, organization_id)
+                .await
+                .is_some_and(|permissions| {
                     permissions
                         .iter()
                         .any(|p| p == crate::access::PermissionId::OWNERSHIP_TRANSFER.as_str())
-                })
+                });
+            if allowed {
+                Ok(Some(organization_id.clone()))
+            } else {
+                Err(AuthStackError::Forbidden)
             }
-            None => false,
-        },
-    };
-    if !allowed {
-        return Err(AuthStackError::Forbidden);
+        }
+        _ => Err(AuthStackError::Forbidden),
     }
-    Ok(membership.map(|(id, _)| id))
 }
 
-/// The caller's membership (and permissions) in the organization that holds
-/// the profile, if an organization holds it and the caller belongs to it.
-async fn holding_org_membership(
-    state: &TaxProfile,
-    session_id: Option<&str>,
-) -> Option<(String, Vec<String>)> {
-    let Some(AccountHolder::Organization { organization_id }) = &state.holder else {
-        return None;
-    };
+/// The caller's permissions in `organization_id`, or `None` when the caller
+/// is not a member (checked through the caller's session).
+async fn org_permissions(session_id: Option<&str>, organization_id: &str) -> Option<Vec<String>> {
     let summary = crate::auth_product::organization_for_session(session_id?, organization_id)
         .await
         .ok()?;
-    Some((organization_id.clone(), summary.permissions))
+    Some(summary.permissions)
+}
+
+async fn view_for(
+    profile_id: &str,
+    user_id: &str,
+    access: ProfileAccess,
+) -> AuthStackResult<TaxProfileView> {
+    let mut view = crate::store::fetch_tax_profile_view(profile_id, user_id).await?;
+    crate::store::set_access(&mut view, access);
+    Ok(view)
+}
+
+/// The profile as the caller sees it after a write.
+async fn view_after(
+    profile_id: &str,
+    user_id: &str,
+    session_id: Option<&str>,
+) -> AuthStackResult<TaxProfileView> {
+    let loaded = crate::store::load_tax_profile_by_id(profile_id).await?;
+    let standing = standing(&loaded.state, user_id, session_id).await;
+    view_for(profile_id, user_id, standing.access).await
 }
 
 fn merge_facts(
