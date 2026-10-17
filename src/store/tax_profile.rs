@@ -40,6 +40,34 @@ pub(crate) fn rfc3339_now() -> String {
     unix_to_rfc3339(now.as_secs(), now.subsec_millis())
 }
 
+/// `days` whole days from now.
+pub(crate) fn rfc3339_in_days(days: u32) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    unix_to_rfc3339(now.as_secs() + u64::from(days) * 86_400, now.subsec_millis())
+}
+
+/// A 256-bit secret, base64url without padding.
+pub(crate) fn new_secret_token() -> AuthStackResult<String> {
+    use base64::Engine as _;
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|error| AuthStackError::store(format!("entropy unavailable: {error}")))?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
+}
+
+/// An active organization's display name.
+pub(crate) async fn organization_name(organization_id: &str) -> AuthStackResult<Option<String>> {
+    initialize_schema_async().await?;
+    let rows = execute_sql(
+        "SELECT name FROM auth_organizations WHERE organization_id::text = ?1 AND status = 'active'",
+        vec![json!(organization_id)],
+    )
+    .await?;
+    Ok(rows.first().and_then(|row| row_string(row, "name")))
+}
+
 fn unix_to_rfc3339(secs: u64, millis: u32) -> String {
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
@@ -192,8 +220,9 @@ fn tax_profile_from_row(row: &Value) -> AuthStackResult<TaxProfile> {
         verified_owner_user_id: row_string(row, "verified_owner_user_id"),
         is_archived: row_bool(row, "is_archived").unwrap_or(false),
         updated_at: row_string(row, "updated_at"),
-        // Rows without an event stream predate passes.
+        // Rows without an event stream predate passes and invites.
         passes: Vec::new(),
+        invites: Vec::new(),
     })
 }
 
@@ -248,6 +277,9 @@ pub(crate) async fn commit_tax_profile_command(
     for pass in &next.passes {
         statements.push(pass_upsert_statement(profile_id, pass));
     }
+    for invite in &next.invites {
+        statements.push(invite_upsert_statement(profile_id, invite));
+    }
     execute_sql_atomic(statements)
         .await
         .map_err(map_concurrency_store_error)?;
@@ -275,6 +307,13 @@ pub(crate) async fn reproject_all_tax_profiles() -> AuthStackResult<usize> {
         // last-write-wins token).
         let mut statements = vec![projection_upsert_statement(&loaded.state, loaded.revision, false)?];
         statements.extend(loaded.state.passes.iter().map(|pass| pass_upsert_statement(&profile_id, pass)));
+        statements.extend(
+            loaded
+                .state
+                .invites
+                .iter()
+                .map(|invite| invite_upsert_statement(&profile_id, invite)),
+        );
         execute_sql_atomic(statements)
             .await
             .map_err(map_concurrency_store_error)?;
@@ -463,6 +502,190 @@ fn pass_upsert_statement(profile_id: &str, pass: &Pass) -> AtomicSqlStatement {
     )
 }
 
+fn invite_upsert_statement(
+    profile_id: &str,
+    invite: &crate::domain::OwnerInvite,
+) -> AtomicSqlStatement {
+    AtomicSqlStatement::execute(
+        "INSERT INTO buwiz_server.tax_profile_owner_invites (\
+            invite_id, profile_id, organization_id, email, token_hash, status, expires_at, \
+            created_by, decided_by, created_at, updated_at \
+         ) VALUES (\
+            ?1::uuid, ?2::uuid, ?3::uuid, ?4, ?5, ?6, ?7::timestamptz, \
+            ?8::uuid, ?9::uuid, ?10::timestamptz, ?11::timestamptz \
+         ) \
+         ON CONFLICT (invite_id) DO UPDATE SET \
+            status = EXCLUDED.status, \
+            decided_by = EXCLUDED.decided_by, \
+            updated_at = EXCLUDED.updated_at",
+        vec![
+            json!(invite.invite_id),
+            json!(profile_id),
+            json!(invite.organization_id),
+            json!(invite.email),
+            json!(invite.token_hash),
+            json!(invite.status.as_str()),
+            json!(invite.expires_at),
+            json!(invite.created_by),
+            json!(invite.decided_by),
+            json!(invite.created_at),
+            json!(invite.updated_at),
+        ],
+    )
+}
+
+/// The profile an invite belongs to.
+pub(crate) async fn profile_id_for_invite(invite_id: &str) -> AuthStackResult<Option<String>> {
+    initialize_schema_async().await?;
+    if invite_id.len() != 36 {
+        return Ok(None);
+    }
+    let rows = execute_sql(
+        "SELECT profile_id::text AS profile_id FROM buwiz_server.tax_profile_owner_invites \
+         WHERE invite_id::text = ?1",
+        vec![json!(invite_id)],
+    )
+    .await?;
+    Ok(rows.first().and_then(|row| row_string(row, "profile_id")))
+}
+
+/// Open invites sent by any of `org_ids` (the firm's own list). The secret's
+/// hash never leaves the server.
+pub(crate) async fn list_owner_invites_for(
+    org_ids: &[String],
+) -> AuthStackResult<Vec<crate::contracts::OwnerInviteView>> {
+    initialize_schema_async().await?;
+    if org_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = execute_sql(
+        "SELECT i.invite_id::text AS invite_id, i.profile_id::text AS profile_id, \
+                i.organization_id::text AS organization_id, i.email, i.status, \
+                to_char(i.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS expires_at, \
+                to_char(i.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS created_at, \
+                (i.expires_at <= now()) AS expired, \
+                COALESCE(p.display_name, p.registered_name) AS profile_name, p.tin_last4 \
+         FROM buwiz_server.tax_profile_owner_invites i \
+         JOIN buwiz_server.tax_profiles p ON p.profile_id = i.profile_id \
+         WHERE i.status = 'open' \
+           AND i.organization_id::text IN (SELECT jsonb_array_elements_text(?1::jsonb)) \
+         ORDER BY i.created_at DESC",
+        vec![json!(org_ids)],
+    )
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok(crate::contracts::OwnerInviteView {
+                invite_id: required_string(row, "invite_id")?,
+                profile_id: required_string(row, "profile_id")?,
+                organization_id: required_string(row, "organization_id")?,
+                profile_name: row_string(row, "profile_name").unwrap_or_default(),
+                tin_last4: row_string(row, "tin_last4").unwrap_or_default(),
+                email: required_string(row, "email")?,
+                status: if row_bool(row, "expired").unwrap_or(false) {
+                    "expired".to_owned()
+                } else {
+                    required_string(row, "status")?
+                },
+                expires_at: required_string(row, "expires_at")?,
+                created_at: row_string(row, "created_at").unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+/// The account's email when it is verified (an active account), else `None`.
+pub(crate) async fn verified_email(user_id: &str) -> AuthStackResult<Option<String>> {
+    initialize_schema_async().await?;
+    let rows = execute_sql(
+        "SELECT normalized_email FROM auth_users \
+         WHERE user_id = ?1::uuid AND status = 'active'",
+        vec![json!(user_id)],
+    )
+    .await?;
+    Ok(rows.first().and_then(|row| row_string(row, "normalized_email")))
+}
+
+/// Of `org_ids`, the firms that picked `user_id` to publish to BIR.
+pub(crate) async fn publisher_orgs(user_id: &str, org_ids: &[String]) -> AuthStackResult<Vec<String>> {
+    initialize_schema_async().await?;
+    if org_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = execute_sql(
+        "SELECT organization_id::text AS organization_id FROM buwiz_server.firm_publishers \
+         WHERE user_id = ?1::uuid \
+           AND organization_id::text IN (SELECT jsonb_array_elements_text(?2::jsonb))",
+        vec![json!(user_id), json!(org_ids)],
+    )
+    .await?;
+    Ok(rows
+        .iter()
+        .filter_map(|row| row_string(row, "organization_id"))
+        .collect())
+}
+
+/// The members a firm picked to publish to BIR.
+pub(crate) async fn list_firm_publishers(
+    organization_id: &str,
+) -> AuthStackResult<Vec<crate::contracts::FirmPublisherView>> {
+    initialize_schema_async().await?;
+    let rows = execute_sql(
+        "SELECT f.user_id::text AS user_id, u.primary_email AS email, \
+                to_char(f.added_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS added_at \
+         FROM buwiz_server.firm_publishers f \
+         JOIN auth_users u ON u.user_id = f.user_id \
+         JOIN auth_memberships m ON m.organization_id = f.organization_id \
+                                AND m.user_id = f.user_id AND m.status = 'active' \
+         WHERE f.organization_id = ?1::uuid \
+         ORDER BY u.primary_email",
+        vec![json!(organization_id)],
+    )
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok(crate::contracts::FirmPublisherView {
+                user_id: required_string(row, "user_id")?,
+                email: row_string(row, "email").unwrap_or_default(),
+                added_at: row_string(row, "added_at").unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+/// Adds an active member of the firm (found by email) to its publishers.
+/// Returns false when no active member has that email.
+pub(crate) async fn add_firm_publisher(
+    organization_id: &str,
+    member_email: &str,
+    added_by: &str,
+) -> AuthStackResult<bool> {
+    initialize_schema_async().await?;
+    let rows = execute_sql(
+        "INSERT INTO buwiz_server.firm_publishers (organization_id, user_id, added_by, added_at) \
+         SELECT m.organization_id, m.user_id, ?3::uuid, CURRENT_TIMESTAMP \
+         FROM auth_memberships m JOIN auth_users u ON u.user_id = m.user_id \
+         WHERE m.organization_id = ?1::uuid AND m.status = 'active' \
+           AND u.normalized_email = ?2 \
+         ON CONFLICT (organization_id, user_id) DO UPDATE SET added_by = EXCLUDED.added_by \
+         RETURNING user_id::text AS user_id",
+        vec![json!(organization_id), json!(member_email), json!(added_by)],
+    )
+    .await?;
+    Ok(!rows.is_empty())
+}
+
+pub(crate) async fn remove_firm_publisher(organization_id: &str, user_id: &str) -> AuthStackResult<()> {
+    initialize_schema_async().await?;
+    execute_sql(
+        "DELETE FROM buwiz_server.firm_publishers \
+         WHERE organization_id = ?1::uuid AND user_id = ?2::uuid",
+        vec![json!(organization_id), json!(user_id)],
+    )
+    .await?;
+    Ok(())
+}
+
 /// `organization_id` if it names an active organization.
 pub(crate) async fn active_organization_id(organization_id: &str) -> AuthStackResult<Option<String>> {
     initialize_schema_async().await?;
@@ -599,7 +822,10 @@ pub(crate) async fn list_tax_profiles_for(
                             AND g.grantee_kind = 'organization' AND g.grantee_id = ?2 \
                             AND g.status = 'active' \
                             AND (g.expires_at IS NULL OR g.expires_at > now()) \
-                          LIMIT 1) AS pass_permissions \
+                          LIMIT 1) AS pass_permissions, \
+                        EXISTS (SELECT 1 FROM buwiz_server.firm_publishers f \
+                                 WHERE f.organization_id::text = ?2 \
+                                   AND f.user_id = ?1::uuid) AS is_publisher \
                  FROM buwiz_server.tax_profiles \
                  WHERE COALESCE(is_archived, false) = FALSE \
                    AND (holder_user_id = ?1::uuid OR owner_user_id = ?1::uuid \
@@ -652,7 +878,12 @@ fn set_list_access(
     } else if holder_org.is_some() && holder_org.as_deref() == organization_id {
         crate::domain::ProfileAccess::HoldingOrg
     } else {
-        let permissions = PassPermissions::from_stored(&row_string_list(row, "pass_permissions"));
+        let mut permissions =
+            PassPermissions::from_stored(&row_string_list(row, "pass_permissions"));
+        // Publishing needs the owner's switch and the firm's pick.
+        if !row_bool(row, "is_publisher").unwrap_or(false) {
+            permissions = permissions.without(crate::domain::PassPermission::FilingsPublish);
+        }
         if permissions.is_empty() {
             crate::domain::ProfileAccess::None
         } else {
@@ -891,6 +1122,8 @@ pub(crate) fn map_tax_profile_error(error: TaxProfileError) -> AuthStackError {
         TaxProfileError::PassAlreadyOpen | TaxProfileError::PassState { .. } => {
             AuthStackError::conflict(error.to_string())
         }
+        TaxProfileError::InviteNotFound => AuthStackError::not_found(error.to_string()),
+        TaxProfileError::InviteState { .. } => AuthStackError::conflict(error.to_string()),
     }
 }
 

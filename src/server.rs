@@ -27,6 +27,7 @@ use crate::app::{
     StartPasskeyRegistration,
     StartPasswordReset, StartTotpEnrollment, TestDashboardHttpSource,
     PatchTaxProfile,
+    ListPasses, OfferPass, AskForPass, PassStep, ListAgentConnections, RevokeAgentConnection, InviteOwner, WithdrawOwnerInvite, PreviewOwnerInvite, AcceptOwnerInvite, ListFirmPublishers, ChangeFirmPublisher,
     TransferWorkspaceOwnership,
     UpdateAccountProfile, UpdateDashboardNote, UpdateWorkspaceName, UpsertCurrentOrganizationRole,
     UpsertDashboardQuery, UpsertDashboardResource, UpsertDashboardSource, UpsertWorkspaceRole,
@@ -313,6 +314,18 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
             .with_server_fn::<PatchTaxProfile>()
             .with_server_fn::<ClaimTaxProfile>()
             .with_server_fn::<ReclaimTaxProfile>()
+            .with_server_fn::<ListPasses>()
+            .with_server_fn::<OfferPass>()
+            .with_server_fn::<AskForPass>()
+            .with_server_fn::<PassStep>()
+            .with_server_fn::<ListAgentConnections>()
+            .with_server_fn::<RevokeAgentConnection>()
+            .with_server_fn::<InviteOwner>()
+            .with_server_fn::<WithdrawOwnerInvite>()
+            .with_server_fn::<PreviewOwnerInvite>()
+            .with_server_fn::<AcceptOwnerInvite>()
+            .with_server_fn::<ListFirmPublishers>()
+            .with_server_fn::<ChangeFirmPublisher>()
             .with_server_fn::<WebmcpEnabled>()
             .with_server_fn::<ListAccountSessions>()
             .with_server_fn::<RevokeAccountSession>()

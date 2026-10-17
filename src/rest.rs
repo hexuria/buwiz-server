@@ -13,7 +13,8 @@ use crate::contracts::{
     PasswordResetCompleteRequest, PasswordResetStartRequest, PolicyPublishRequest,
     RoleUpsertRequest, SessionRevokeRequest, SigningKeyRotateRequest, TokenRefreshRequest,
     TokenVerifyRequest, TaxProfileClaimRequest, TaxProfileCreateRequest, TaxProfilePatchRequest,
-    PassAskRequest, PassOfferRequest, PassUpdateRequest,
+    PassAskRequest, PassOfferRequest, PassUpdateRequest, FirmPublisherAddRequest,
+    OwnerInviteCreateRequest, OwnerInviteTokenRequest,
 };
 use crate::error::{AuthStackError, AuthStackResult};
 
@@ -447,6 +448,72 @@ async fn dispatch(req: RestRequest) -> AuthStackResult<RestResponse> {
             json_result(
                 crate::application::revoke_agent_connection(connection_id, request_auth).await,
             )
+        }
+        (method, path) if invite_route(path).is_some() => {
+            let route = invite_route(path).expect("checked");
+            if method != Method::GET {
+                validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+            }
+            match (method, route) {
+                (Method::POST, InviteRoute::Create { profile_id }) => {
+                    let profile_id = profile_id.to_owned();
+                    let payload = parse_json::<OwnerInviteCreateRequest>(req).await?;
+                    json_result(
+                        crate::application::invite_owner(profile_id, payload, request_auth).await,
+                    )
+                }
+                (Method::POST, InviteRoute::Withdraw { profile_id, invite_id }) => json_result(
+                    crate::application::withdraw_owner_invite(
+                        profile_id.to_owned(),
+                        invite_id.to_owned(),
+                        request_auth,
+                    )
+                    .await,
+                ),
+                (Method::POST, InviteRoute::Preview { invite_id }) => {
+                    let invite_id = invite_id.to_owned();
+                    let payload = parse_json::<OwnerInviteTokenRequest>(req).await?;
+                    json_result(
+                        crate::application::preview_owner_invite(invite_id, payload.token, request_auth)
+                            .await,
+                    )
+                }
+                (Method::POST, InviteRoute::Accept { invite_id }) => {
+                    let invite_id = invite_id.to_owned();
+                    let payload = parse_json::<OwnerInviteTokenRequest>(req).await?;
+                    json_result(
+                        crate::application::accept_owner_invite(invite_id, payload.token, request_auth)
+                            .await,
+                    )
+                }
+                _ => auth_error_response(&AuthStackError::not_found("unknown invite route")),
+            }
+        }
+        (method, path) if publisher_route(path).is_some() => {
+            let (organization_id, member) = publisher_route(path).expect("checked");
+            let organization_id = organization_id.to_owned();
+            match (method, member) {
+                (Method::GET, None) => json_result(
+                    crate::application::list_firm_publishers(organization_id, request_auth).await,
+                ),
+                (Method::POST, None) => {
+                    validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+                    let payload = parse_json::<FirmPublisherAddRequest>(req).await?;
+                    json_result(
+                        crate::application::add_firm_publisher(organization_id, payload, request_auth)
+                            .await,
+                    )
+                }
+                (Method::POST, Some(user_id)) => {
+                    validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+                    let user_id = user_id.to_owned();
+                    json_result(
+                        crate::application::remove_firm_publisher(organization_id, user_id, request_auth)
+                            .await,
+                    )
+                }
+                _ => auth_error_response(&AuthStackError::not_found("unknown publishers route")),
+            }
         }
         (Method::GET, "/api/tax-profiles/passes") | (Method::GET, "/tax-profiles/passes") => {
             json_result(crate::application::list_passes(request_auth).await)
@@ -888,7 +955,7 @@ fn tax_profile_id_from_path(path: &str) -> Option<&str> {
     if rest.is_empty() || rest.contains('/') {
         return None;
     }
-    if matches!(rest, "claim" | "reclaim" | "transfer" | "passes") {
+    if matches!(rest, "claim" | "reclaim" | "transfer" | "passes" | "invites") {
         return None;
     }
     Some(rest)
@@ -908,7 +975,7 @@ fn pass_route(path: &str) -> Option<(&str, Option<&str>, Option<&str>)> {
         .or_else(|| path.strip_prefix("/api/tax-profiles/"))?;
     let mut parts = rest.split('/');
     let profile_id = parts.next().filter(|id| !id.is_empty())?;
-    if matches!(profile_id, "claim" | "reclaim" | "transfer" | "passes") {
+    if matches!(profile_id, "claim" | "reclaim" | "transfer" | "passes" | "invites") {
         return None;
     }
     if parts.next()? != "passes" {
@@ -922,6 +989,60 @@ fn pass_route(path: &str) -> Option<(&str, Option<&str>, Option<&str>)> {
     Some((profile_id, pass_id, action))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InviteRoute<'a> {
+    /// `POST /api/tax-profiles/{profile}/invites`
+    Create { profile_id: &'a str },
+    /// `POST /api/tax-profiles/{profile}/invites/{invite}/withdraw`
+    Withdraw { profile_id: &'a str, invite_id: &'a str },
+    /// `POST /api/tax-profiles/invites/{invite}/preview`
+    Preview { invite_id: &'a str },
+    /// `POST /api/tax-profiles/invites/{invite}/accept`
+    Accept { invite_id: &'a str },
+}
+
+fn invite_route(path: &str) -> Option<InviteRoute<'_>> {
+    let rest = path
+        .strip_prefix("/api/tax-profiles/")
+        .or_else(|| path.strip_prefix("/tax-profiles/"))?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.iter().any(|part| part.is_empty()) {
+        return None;
+    }
+    match parts.as_slice() {
+        ["invites", invite_id, "preview"] => Some(InviteRoute::Preview { invite_id }),
+        ["invites", invite_id, "accept"] => Some(InviteRoute::Accept { invite_id }),
+        [profile_id, "invites"] if !is_reserved_profile_segment(profile_id) => {
+            Some(InviteRoute::Create { profile_id })
+        }
+        [profile_id, "invites", invite_id, "withdraw"] if !is_reserved_profile_segment(profile_id) => {
+            Some(InviteRoute::Withdraw {
+                profile_id,
+                invite_id,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn is_reserved_profile_segment(segment: &str) -> bool {
+    matches!(segment, "claim" | "reclaim" | "transfer" | "passes" | "invites")
+}
+
+/// `/api/organizations/{org}/publishers[/{user}/remove]`.
+fn publisher_route(path: &str) -> Option<(&str, Option<&str>)> {
+    let rest = path.strip_prefix("/api/organizations/")?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.iter().any(|part| part.is_empty()) {
+        return None;
+    }
+    match parts.as_slice() {
+        [org, "publishers"] => Some((org, None)),
+        [org, "publishers", user, "remove"] => Some((org, Some(user))),
+        _ => None,
+    }
+}
+
 fn tax_profile_action_from_path<'a>(path: &'a str, action: &str) -> Option<&'a str> {
     let rest = path
         .strip_prefix("/tax-profiles/")
@@ -930,7 +1051,7 @@ fn tax_profile_action_from_path<'a>(path: &'a str, action: &str) -> Option<&'a s
     if suffix != action || id.is_empty() || id.contains('/') {
         return None;
     }
-    if matches!(id, "claim" | "reclaim" | "transfer" | "passes") {
+    if matches!(id, "claim" | "reclaim" | "transfer" | "passes" | "invites") {
         return None;
     }
     Some(id)
@@ -1040,6 +1161,66 @@ mod tests {
         assert_eq!(pass_route("/api/tax-profiles/passes/request"), None);
         assert_eq!(pass_route("/api/tax-profiles/p1/passes/g1/accept/x"), None);
         assert_eq!(tax_profile_id_from_path("/api/tax-profiles/passes"), None);
+    }
+
+    #[test]
+    fn invite_routes_parse_and_reject_junk() {
+        assert_eq!(
+            invite_route("/api/tax-profiles/p1/invites"),
+            Some(InviteRoute::Create { profile_id: "p1" })
+        );
+        assert_eq!(
+            invite_route("/tax-profiles/p1/invites/i1/withdraw"),
+            Some(InviteRoute::Withdraw {
+                profile_id: "p1",
+                invite_id: "i1"
+            })
+        );
+        assert_eq!(
+            invite_route("/api/tax-profiles/invites/i1/preview"),
+            Some(InviteRoute::Preview { invite_id: "i1" })
+        );
+        assert_eq!(
+            invite_route("/api/tax-profiles/invites/i1/accept"),
+            Some(InviteRoute::Accept { invite_id: "i1" })
+        );
+        for junk in [
+            "/api/tax-profiles/invites",
+            "/api/tax-profiles/invites/invites",
+            "/api/tax-profiles/passes/invites",
+            "/api/tax-profiles/p1/invites/",
+            "/api/tax-profiles//invites",
+            "/api/tax-profiles/p1/invites/i1",
+            "/api/tax-profiles/p1/invites/i1/accept",
+            "/api/tax-profiles/invites/i1/accept/x",
+            "/api/tax-profiles/p1",
+        ] {
+            assert_eq!(invite_route(junk), None, "{junk}");
+        }
+        assert_eq!(tax_profile_id_from_path("/api/tax-profiles/invites"), None);
+        assert_eq!(pass_route("/api/tax-profiles/invites/passes"), None);
+    }
+
+    #[test]
+    fn publisher_routes_parse_and_reject_junk() {
+        assert_eq!(
+            publisher_route("/api/organizations/o1/publishers"),
+            Some(("o1", None))
+        );
+        assert_eq!(
+            publisher_route("/api/organizations/o1/publishers/u1/remove"),
+            Some(("o1", Some("u1")))
+        );
+        for junk in [
+            "/api/organizations/publishers",
+            "/api/organizations/o1/publishers/",
+            "/api/organizations/o1/publishers/u1",
+            "/api/organizations//publishers",
+            "/api/organizations/members",
+            "/api/organizations/o1/publishers/u1/remove/x",
+        ] {
+            assert_eq!(publisher_route(junk), None, "{junk}");
+        }
     }
 
     #[test]

@@ -7,6 +7,7 @@
 
 pub mod agent;
 pub mod desktop_session;
+pub mod invite;
 pub mod oauth_client;
 pub mod orus;
 pub mod pass;
@@ -25,6 +26,7 @@ pub use agent::{
 pub use desktop_session::{
     DesktopGrant, DesktopSessionCommand, DesktopSessionError, DesktopSessionEvent,
 };
+pub use invite::{normalize_invite_email, InviteStatus, OwnerInvite, INVITE_LIFETIME_DAYS};
 pub use orus::{
     FakeOrusVerifier, OrusError, OwnershipProof, ProofMethod, TinOwnershipVerifier,
     UnconfiguredOrusVerifier,

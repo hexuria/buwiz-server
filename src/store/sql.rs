@@ -186,6 +186,7 @@ pub async fn initialize_schema_async() -> AuthStackResult<()> {
         "0005_device_interval_bigint",
         "0006_tax_profile_passes",
         "0007_agent_connections",
+        "0008_owner_invites_and_publishers",
     ] {
         let app_migration = execute_postgres(
             "SELECT version FROM buwiz_server.schema_migrations WHERE version = ?1",

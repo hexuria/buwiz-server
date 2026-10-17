@@ -1,6 +1,8 @@
 //! Tax-profile application services (verified-email gate + exclusive ownership).
 
 use crate::contracts::{
+    FirmPublisherAddRequest, FirmPublisherListResponse, OwnerInviteCreateRequest,
+    OwnerInviteCreated, OwnerInvitePreview, OwnerInviteView,
     MeOrg, MeResponse, PassAskRequest, PassChoice, PassListResponse, PassOfferRequest,
     PassPermissionInfo, PassPresetInfo, PassUpdateRequest, TaxProfileClaimRequest,
     TaxProfileCreateRequest, TaxProfileListResponse, TaxProfilePatchRequest,
@@ -562,6 +564,7 @@ async fn pass_list(user_id: &str, auth: RequestAuth) -> AuthStackResult<PassList
         .collect();
     Ok(PassListResponse {
         passes: crate::store::list_passes_for(user_id, &org_ids).await?,
+        invites: crate::store::list_owner_invites_for(&org_ids).await?,
         permission_catalog: PassPermission::ALL
             .into_iter()
             .map(|permission| PassPermissionInfo {
@@ -673,6 +676,236 @@ async fn manages_passes_for(session_id: Option<&str>, organization_id: &str) -> 
         })
 }
 
+// ── Owner invites ───────────────────────────────────────────────────────────
+
+/// The firm holding a draft invites the taxpayer (by email) to own it. The
+/// link carries the secret in its fragment and is returned only this once.
+pub async fn invite_owner(
+    profile_id: String,
+    request: OwnerInviteCreateRequest,
+    auth: RequestAuth,
+) -> AuthStackResult<OwnerInviteCreated> {
+    let (user_id, session_id) = require_verified_actor(auth).await?;
+    let days = request.days.unwrap_or(crate::domain::INVITE_LIFETIME_DAYS as u32);
+    if !(1..=crate::domain::INVITE_LIFETIME_DAYS as u32).contains(&days) {
+        return Err(AuthStackError::validation(format!(
+            "an invite works for 1 to {} days",
+            crate::domain::INVITE_LIFETIME_DAYS
+        )));
+    }
+    let loaded = load_existing(&profile_id).await?;
+    let managed = match loaded.state.org_id() {
+        Some(org) if manages_passes_for(session_id.as_deref(), &org).await => vec![org],
+        _ => Vec::new(),
+    };
+    let invite_id = crate::store::new_uuid_v4()?;
+    let token = crate::store::new_secret_token()?;
+    let (state, _) = crate::store::commit_tax_profile_command(
+        &profile_id,
+        TaxProfileCommand::InviteOwner {
+            invite_id: invite_id.clone(),
+            email: request.email,
+            token_hash: crate::store::sha256_b64url(&token),
+            expires_at: crate::store::rfc3339_in_days(days),
+            actor_user_id: user_id,
+            actor_managed_orgs: managed,
+            occurred_at: crate::store::rfc3339_now(),
+        },
+        loaded.revision,
+    )
+    .await?;
+    let invite = state
+        .invite(&invite_id)
+        .ok_or_else(|| AuthStackError::store("invite missing after commit"))?;
+    Ok(OwnerInviteCreated {
+        invite: OwnerInviteView {
+            invite_id: invite.invite_id.clone(),
+            profile_id: profile_id.clone(),
+            organization_id: invite.organization_id.clone(),
+            profile_name: state.display_name.clone().unwrap_or_default(),
+            tin_last4: state.tin_last4.clone().unwrap_or_default(),
+            email: invite.email.clone(),
+            status: invite.status.as_str().to_owned(),
+            expires_at: invite.expires_at.clone(),
+            created_at: invite.created_at.clone(),
+        },
+        link_path: format!("/invites/{invite_id}#t={token}"),
+    })
+}
+
+/// The firm withdraws an open invite.
+pub async fn withdraw_owner_invite(
+    profile_id: String,
+    invite_id: String,
+    auth: RequestAuth,
+) -> AuthStackResult<PassListResponse> {
+    let (user_id, session_id) = require_verified_actor(auth.clone()).await?;
+    let loaded = load_existing(&profile_id).await?;
+    let managed = match loaded.state.invite(&invite_id) {
+        Some(invite) if manages_passes_for(session_id.as_deref(), &invite.organization_id).await => {
+            vec![invite.organization_id.clone()]
+        }
+        _ => Vec::new(),
+    };
+    crate::store::commit_tax_profile_command(
+        &profile_id,
+        TaxProfileCommand::WithdrawOwnerInvite {
+            invite_id,
+            actor_user_id: user_id.clone(),
+            actor_managed_orgs: managed,
+            occurred_at: crate::store::rfc3339_now(),
+        },
+        loaded.revision,
+    )
+    .await?;
+    pass_list(&user_id, auth).await
+}
+
+/// The profile behind an invite, when `token` is its secret.
+async fn invited_profile(
+    invite_id: &str,
+    token: &str,
+) -> AuthStackResult<(crate::store::LoadedTaxProfile, crate::domain::OwnerInvite)> {
+    let not_found = || AuthStackError::not_found("invite not found");
+    let profile_id = crate::store::profile_id_for_invite(invite_id)
+        .await?
+        .ok_or_else(not_found)?;
+    let loaded = load_existing(&profile_id).await?;
+    let hash = crate::store::sha256_b64url(token.trim());
+    let invite = loaded
+        .state
+        .invite(invite_id)
+        .filter(|invite| !token.trim().is_empty() && invite.token_hash == hash)
+        .cloned()
+        .ok_or_else(not_found)?;
+    Ok((loaded, invite))
+}
+
+/// What the invited taxpayer sees before accepting.
+pub async fn preview_owner_invite(
+    invite_id: String,
+    token: String,
+    auth: RequestAuth,
+) -> AuthStackResult<OwnerInvitePreview> {
+    let (user_id, _) = require_verified_actor(auth).await?;
+    let (loaded, invite) = invited_profile(&invite_id, &token).await?;
+    let now = crate::store::rfc3339_now();
+    let status = if invite.status == crate::domain::InviteStatus::Open
+        && !crate::domain::instant_before(&now, &invite.expires_at)
+    {
+        "expired".to_owned()
+    } else {
+        invite.status.as_str().to_owned()
+    };
+    let email_matches =
+        crate::store::verified_email(&user_id).await?.as_deref() == Some(invite.email.as_str());
+    Ok(OwnerInvitePreview {
+        invite_id,
+        profile_name: loaded.state.display_name.clone().unwrap_or_default(),
+        tin_last4: loaded.state.tin_last4.clone().unwrap_or_default(),
+        firm_name: crate::store::organization_name(&invite.organization_id)
+            .await?
+            .unwrap_or_default(),
+        email: invite.email,
+        status,
+        expires_at: invite.expires_at,
+        email_matches,
+    })
+}
+
+/// The invited taxpayer accepts: they own the profile, and the firm keeps a
+/// Full pass without publishing that they can change or end.
+pub async fn accept_owner_invite(
+    invite_id: String,
+    token: String,
+    auth: RequestAuth,
+) -> AuthStackResult<TaxProfileView> {
+    let (user_id, session_id) = require_verified_actor(auth).await?;
+    let email = crate::store::verified_email(&user_id)
+        .await?
+        .ok_or_else(|| AuthStackError::validation("verify your email before accepting an invite"))?;
+    let (loaded, _) = invited_profile(&invite_id, &token).await?;
+    let profile_id = loaded
+        .state
+        .profile_id
+        .clone()
+        .ok_or_else(|| AuthStackError::not_found("tax profile not found"))?;
+    crate::store::commit_tax_profile_command(
+        &profile_id,
+        TaxProfileCommand::AcceptOwnerInvite {
+            invite_id,
+            token_hash: crate::store::sha256_b64url(token.trim()),
+            actor_user_id: user_id.clone(),
+            actor_verified_email: email,
+            firm_pass_id: crate::store::new_uuid_v4()?,
+            occurred_at: crate::store::rfc3339_now(),
+        },
+        loaded.revision,
+    )
+    .await?;
+    view_after(&profile_id, &user_id, session_id.as_deref()).await
+}
+
+// ── Firm publishers ─────────────────────────────────────────────────────────
+
+/// The members a firm picked to publish to BIR. Any member may look.
+pub async fn list_firm_publishers(
+    organization_id: String,
+    auth: RequestAuth,
+) -> AuthStackResult<FirmPublisherListResponse> {
+    let (_, session_id) = require_verified_actor(auth).await?;
+    if org_permissions(session_id.as_deref(), &organization_id).await.is_none() {
+        return Err(AuthStackError::Forbidden);
+    }
+    Ok(FirmPublisherListResponse {
+        publishers: crate::store::list_firm_publishers(&organization_id).await?,
+    })
+}
+
+/// Adds a member to the firm's publishers (`organization.update`, step-up).
+pub async fn add_firm_publisher(
+    organization_id: String,
+    request: FirmPublisherAddRequest,
+    auth: RequestAuth,
+) -> AuthStackResult<FirmPublisherListResponse> {
+    let user_id = require_publisher_manager(&organization_id, auth).await?;
+    let email = crate::domain::normalize_invite_email(&request.email)
+        .map_err(|_| AuthStackError::validation("enter the member's sign-in email"))?;
+    if !crate::store::add_firm_publisher(&organization_id, &email, &user_id).await? {
+        return Err(AuthStackError::not_found("no active member of this workspace has that email"));
+    }
+    Ok(FirmPublisherListResponse {
+        publishers: crate::store::list_firm_publishers(&organization_id).await?,
+    })
+}
+
+/// Removes a member from the firm's publishers (`organization.update`, step-up).
+pub async fn remove_firm_publisher(
+    organization_id: String,
+    member_user_id: String,
+    auth: RequestAuth,
+) -> AuthStackResult<FirmPublisherListResponse> {
+    require_publisher_manager(&organization_id, auth).await?;
+    crate::store::remove_firm_publisher(&organization_id, member_user_id.trim()).await?;
+    Ok(FirmPublisherListResponse {
+        publishers: crate::store::list_firm_publishers(&organization_id).await?,
+    })
+}
+
+async fn require_publisher_manager(organization_id: &str, auth: RequestAuth) -> AuthStackResult<String> {
+    crate::application::validate_identifier("organization_id", organization_id)?;
+    let (context, _) = crate::application::verified_context_and_permissions(auth, true).await?;
+    crate::application::enforce_organization_scope(&context, organization_id).await?;
+    crate::application::require_organization_permission(
+        &context,
+        organization_id,
+        crate::access::PermissionId::ORGANIZATION_UPDATE.as_str(),
+        crate::application::AssuranceRequirement::Aal2,
+    )
+    .await?;
+    Ok(context.principal().user_id().as_str().to_owned())
+}
+
 // ── The gatekeeper ──────────────────────────────────────────────────────────
 
 /// What a caller wants to do with a tax profile.
@@ -733,10 +966,16 @@ async fn standing(state: &TaxProfile, user_id: &str, session_id: Option<&str>) -
             actor_orgs.push(org.to_owned());
         }
     }
-    Standing {
-        access: state.access_for(user_id, &actor_orgs, &now),
-        actor_orgs,
+    let mut access = state.access_for(user_id, &actor_orgs, &now);
+    if access.has(PassPermission::FilingsPublish) && matches!(access, ProfileAccess::Pass(_)) {
+        // Publishing also needs the firm's pick; if that can't be read,
+        // publishing is off (fail closed).
+        let publishers = crate::store::publisher_orgs(user_id, &actor_orgs)
+            .await
+            .unwrap_or_default();
+        access = state.effective_access(user_id, &actor_orgs, &publishers, &now);
     }
+    Standing { access, actor_orgs }
 }
 
 /// The caller's permissions in `organization_id`, or `None` when the caller

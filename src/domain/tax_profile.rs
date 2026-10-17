@@ -9,6 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::invite::{normalize_invite_email, InviteStatus, OwnerInvite};
 use crate::domain::orus::ProofMethod;
 use crate::domain::pass::{
     instant_before, Pass, PassGrantee, PassPermission, PassPermissions, PassStatus,
@@ -311,6 +312,37 @@ pub enum TaxProfileCommand {
         actor_managed_orgs: Vec<String>,
         occurred_at: String,
     },
+    /// The firm holding a draft invites the taxpayer to own it. A newer
+    /// invite replaces any open one.
+    InviteOwner {
+        invite_id: String,
+        email: String,
+        /// SHA-256 (base64url) of the link's secret.
+        token_hash: String,
+        expires_at: String,
+        actor_user_id: String,
+        actor_managed_orgs: Vec<String>,
+        occurred_at: String,
+    },
+    /// The firm withdraws an open invite.
+    WithdrawOwnerInvite {
+        invite_id: String,
+        actor_user_id: String,
+        actor_managed_orgs: Vec<String>,
+        occurred_at: String,
+    },
+    /// The invited taxpayer accepts and becomes the owner; the firm keeps a
+    /// Full pass without publishing (`firm_pass_id`).
+    AcceptOwnerInvite {
+        invite_id: String,
+        token_hash: String,
+        actor_user_id: String,
+        /// The actor's verified email (`auth_users.normalized_email` of an
+        /// active account), looked up by the application.
+        actor_verified_email: String,
+        firm_pass_id: String,
+        occurred_at: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -408,6 +440,28 @@ pub enum TaxProfileEvent {
         actor_user_id: String,
         occurred_at: String,
     },
+    OwnerInvited {
+        invite_id: String,
+        organization_id: String,
+        email: String,
+        token_hash: String,
+        expires_at: String,
+        actor_user_id: String,
+        occurred_at: String,
+    },
+    OwnerInviteWithdrawn {
+        invite_id: String,
+        actor_user_id: String,
+        occurred_at: String,
+    },
+    OwnerInviteAccepted {
+        invite_id: String,
+        owner_user_id: String,
+        organization_id: String,
+        firm_pass_id: String,
+        firm_pass_permissions: Vec<String>,
+        occurred_at: String,
+    },
 }
 
 impl TaxProfileEvent {
@@ -423,6 +477,8 @@ impl TaxProfileEvent {
                 | Self::PassActivated { .. }
                 | Self::PassChanged { .. }
                 | Self::PassEnded { .. }
+                | Self::OwnerInvited { .. }
+                | Self::OwnerInviteWithdrawn { .. }
         )
     }
 
@@ -440,6 +496,9 @@ impl TaxProfileEvent {
             Self::PassActivated { .. } => "tax_profile.pass_activated",
             Self::PassChanged { .. } => "tax_profile.pass_changed",
             Self::PassEnded { .. } => "tax_profile.pass_ended",
+            Self::OwnerInvited { .. } => "tax_profile.owner_invited",
+            Self::OwnerInviteWithdrawn { .. } => "tax_profile.owner_invite_withdrawn",
+            Self::OwnerInviteAccepted { .. } => "tax_profile.owner_invite_accepted",
         }
     }
 }
@@ -465,6 +524,10 @@ pub enum TaxProfileError {
     PassAlreadyOpen,
     /// The pass is not in a state that allows this step.
     PassState { reason: String },
+    /// No invite with that id and secret.
+    InviteNotFound,
+    /// The invite or profile is not in a state that allows this step.
+    InviteState { reason: String },
 }
 
 impl std::fmt::Display for TaxProfileError {
@@ -510,6 +573,8 @@ impl std::fmt::Display for TaxProfileError {
                 "this workspace already has an access pass for this profile, or one is waiting"
             ),
             Self::PassState { reason } => write!(f, "{reason}"),
+            Self::InviteNotFound => write!(f, "invite not found"),
+            Self::InviteState { reason } => write!(f, "{reason}"),
         }
     }
 }
@@ -608,6 +673,8 @@ pub struct TaxProfile {
     pub updated_at: Option<String>,
     /// Every pass ever offered or asked for, open or ended.
     pub passes: Vec<Pass>,
+    /// Every owner invite the holding firm ever sent.
+    pub invites: Vec<OwnerInvite>,
 }
 
 impl Default for TaxProfile {
@@ -628,6 +695,7 @@ impl Default for TaxProfile {
             is_archived: false,
             updated_at: None,
             passes: Vec::new(),
+            invites: Vec::new(),
         }
     }
 }
@@ -799,6 +867,49 @@ impl TaxProfile {
                 actor_managed_orgs,
                 occurred_at,
             } => self.handle_end_pass(pass_id, actor_user_id, actor_managed_orgs, occurred_at),
+            TaxProfileCommand::InviteOwner {
+                invite_id,
+                email,
+                token_hash,
+                expires_at,
+                actor_user_id,
+                actor_managed_orgs,
+                occurred_at,
+            } => self.handle_invite_owner(
+                invite_id,
+                email,
+                token_hash,
+                expires_at,
+                actor_user_id,
+                actor_managed_orgs,
+                occurred_at,
+            ),
+            TaxProfileCommand::WithdrawOwnerInvite {
+                invite_id,
+                actor_user_id,
+                actor_managed_orgs,
+                occurred_at,
+            } => self.handle_withdraw_owner_invite(
+                invite_id,
+                actor_user_id,
+                actor_managed_orgs,
+                occurred_at,
+            ),
+            TaxProfileCommand::AcceptOwnerInvite {
+                invite_id,
+                token_hash,
+                actor_user_id,
+                actor_verified_email,
+                firm_pass_id,
+                occurred_at,
+            } => self.handle_accept_owner_invite(
+                invite_id,
+                token_hash,
+                actor_user_id,
+                actor_verified_email,
+                firm_pass_id,
+                occurred_at,
+            ),
         }
     }
 
@@ -860,8 +971,10 @@ impl TaxProfile {
                 ..
             } => {
                 // A claim or reclaim puts the proven owner in charge and ends
-                // every open pass, including a firm's pass from an old move.
+                // every open pass, including a firm's pass from an old move,
+                // and every open owner invite.
                 self.end_open_passes(actor_user_id);
+                self.withdraw_open_invites(actor_user_id, None);
                 self.holder = Some(holder.clone());
                 self.ownership = Some(*ownership);
                 self.verification = *verification;
@@ -974,6 +1087,99 @@ impl TaxProfile {
                     pass.ended_by = Some(actor_user_id.clone());
                     pass.updated_at = occurred_at.clone();
                 }
+            }
+            TaxProfileEvent::OwnerInvited {
+                invite_id,
+                organization_id,
+                email,
+                token_hash,
+                expires_at,
+                actor_user_id,
+                occurred_at,
+            } => self.invites.push(OwnerInvite {
+                invite_id: invite_id.clone(),
+                organization_id: organization_id.clone(),
+                email: email.clone(),
+                token_hash: token_hash.clone(),
+                status: InviteStatus::Open,
+                expires_at: expires_at.clone(),
+                created_by: actor_user_id.clone(),
+                created_at: occurred_at.clone(),
+                updated_at: occurred_at.clone(),
+                decided_by: None,
+            }),
+            TaxProfileEvent::OwnerInviteWithdrawn {
+                invite_id,
+                actor_user_id,
+                occurred_at,
+            } => {
+                if let Some(invite) = self.invite_mut(invite_id) {
+                    invite.status = InviteStatus::Withdrawn;
+                    invite.decided_by = Some(actor_user_id.clone());
+                    invite.updated_at = occurred_at.clone();
+                }
+            }
+            TaxProfileEvent::OwnerInviteAccepted {
+                invite_id,
+                owner_user_id,
+                organization_id,
+                firm_pass_id,
+                firm_pass_permissions,
+                occurred_at,
+            } => {
+                if let Some(invite) = self.invite_mut(invite_id) {
+                    invite.status = InviteStatus::Accepted;
+                    invite.decided_by = Some(owner_user_id.clone());
+                    invite.updated_at = occurred_at.clone();
+                }
+                self.withdraw_open_invites(owner_user_id, Some(occurred_at));
+                self.end_open_passes(owner_user_id);
+                self.holder = Some(AccountHolder::Personal {
+                    user_id: owner_user_id.clone(),
+                });
+                self.ownership = Some(OwnershipStatus::PersonalExclusive);
+                self.updated_at = Some(occurred_at.clone());
+                // The firm that prepared the draft keeps working, under a
+                // pass the new owner can change or end.
+                self.passes.push(Pass {
+                    pass_id: firm_pass_id.clone(),
+                    grantee: PassGrantee::Organization {
+                        organization_id: organization_id.clone(),
+                    },
+                    permissions: PassPermissions::from_stored(firm_pass_permissions),
+                    status: PassStatus::Active,
+                    expires_at: None,
+                    created_by: owner_user_id.clone(),
+                    created_at: occurred_at.clone(),
+                    updated_at: occurred_at.clone(),
+                    ended_by: None,
+                });
+            }
+        }
+    }
+
+    fn invite_mut(&mut self, invite_id: &str) -> Option<&mut OwnerInvite> {
+        self.invites
+            .iter_mut()
+            .find(|invite| invite.invite_id == invite_id)
+    }
+
+    pub fn invite(&self, invite_id: &str) -> Option<&OwnerInvite> {
+        self.invites.iter().find(|invite| invite.invite_id == invite_id)
+    }
+
+    /// Withdraws every open invite (the profile got an owner). `at` is the
+    /// time when the event carries one.
+    fn withdraw_open_invites(&mut self, actor_user_id: &str, at: Option<&String>) {
+        for invite in self
+            .invites
+            .iter_mut()
+            .filter(|invite| invite.status == InviteStatus::Open)
+        {
+            invite.status = InviteStatus::Withdrawn;
+            invite.decided_by = Some(actor_user_id.to_owned());
+            if let Some(at) = at {
+                invite.updated_at = at.clone();
             }
         }
     }
@@ -1531,6 +1737,197 @@ impl TaxProfile {
             permissions: permissions.with_needs().ids(),
             expires_at,
             actor_user_id,
+            occurred_at,
+        }])
+    }
+
+    /// [`Self::access_for`], with publishing kept only where both sides
+    /// said yes: the owner switched it on for a working pass, and that firm
+    /// picked the actor as one of its publishers (`publisher_orgs`).
+    #[must_use]
+    pub fn effective_access(
+        &self,
+        actor_user_id: &str,
+        actor_orgs: &[String],
+        publisher_orgs: &[String],
+        now: &str,
+    ) -> ProfileAccess {
+        let access = self.access_for(actor_user_id, actor_orgs, now);
+        let ProfileAccess::Pass(permissions) = access else {
+            return access;
+        };
+        let listed = |org: &str| {
+            actor_orgs.iter().any(|id| id == org) && publisher_orgs.iter().any(|id| id == org)
+        };
+        let picked = self.passes.iter().any(|pass| {
+            pass.is_usable(now)
+                && pass.permissions.contains(PassPermission::FilingsPublish)
+                && listed(pass.grantee.id())
+        });
+        if picked {
+            access
+        } else {
+            ProfileAccess::Pass(permissions.without(PassPermission::FilingsPublish))
+        }
+    }
+
+    /// The firm whose draft this is: the holding organization while no
+    /// taxpayer owns the profile.
+    fn draft_firm(&self) -> Option<&str> {
+        match &self.holder {
+            Some(AccountHolder::Organization { organization_id }) => Some(organization_id),
+            _ => None,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handle_invite_owner(
+        &self,
+        invite_id: String,
+        email: String,
+        token_hash: String,
+        expires_at: String,
+        actor_user_id: String,
+        actor_managed_orgs: Vec<String>,
+        occurred_at: String,
+    ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
+        if !self.exists {
+            return Err(TaxProfileError::NotFound);
+        }
+        let Some(organization_id) = self.draft_firm() else {
+            return Err(TaxProfileError::InviteState {
+                reason: "this profile already has an owner".to_owned(),
+            });
+        };
+        if !actor_managed_orgs.iter().any(|org| org == organization_id) {
+            return Err(TaxProfileError::NotHolder);
+        }
+        if self.is_archived {
+            return Err(TaxProfileError::AlreadyArchived);
+        }
+        if invite_id.trim().is_empty() || self.invite(&invite_id).is_some() {
+            return Err(TaxProfileError::InvalidFacts {
+                reason: "invite id is missing or already used".to_owned(),
+            });
+        }
+        if token_hash.trim().is_empty() {
+            return Err(TaxProfileError::InvalidFacts {
+                reason: "invite secret is missing".to_owned(),
+            });
+        }
+        let email =
+            normalize_invite_email(&email).map_err(|reason| TaxProfileError::InvalidFacts { reason })?;
+        if !instant_before(&occurred_at, &expires_at) {
+            return Err(TaxProfileError::InvalidFacts {
+                reason: "the invite must end in the future".to_owned(),
+            });
+        }
+        let mut events: Vec<TaxProfileEvent> = self
+            .invites
+            .iter()
+            .filter(|invite| invite.status == InviteStatus::Open)
+            .map(|invite| TaxProfileEvent::OwnerInviteWithdrawn {
+                invite_id: invite.invite_id.clone(),
+                actor_user_id: actor_user_id.clone(),
+                occurred_at: occurred_at.clone(),
+            })
+            .collect();
+        events.push(TaxProfileEvent::OwnerInvited {
+            invite_id,
+            organization_id: organization_id.to_owned(),
+            email,
+            token_hash,
+            expires_at,
+            actor_user_id,
+            occurred_at,
+        });
+        Ok(events)
+    }
+
+    fn handle_withdraw_owner_invite(
+        &self,
+        invite_id: String,
+        actor_user_id: String,
+        actor_managed_orgs: Vec<String>,
+        occurred_at: String,
+    ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
+        if !self.exists {
+            return Err(TaxProfileError::NotFound);
+        }
+        let invite = self.invite(&invite_id).ok_or(TaxProfileError::InviteNotFound)?;
+        if !actor_managed_orgs
+            .iter()
+            .any(|org| org == &invite.organization_id)
+        {
+            return Err(TaxProfileError::NotHolder);
+        }
+        if invite.status != InviteStatus::Open {
+            return Err(TaxProfileError::InviteState {
+                reason: "this invite is no longer open".to_owned(),
+            });
+        }
+        Ok(vec![TaxProfileEvent::OwnerInviteWithdrawn {
+            invite_id,
+            actor_user_id,
+            occurred_at,
+        }])
+    }
+
+    fn handle_accept_owner_invite(
+        &self,
+        invite_id: String,
+        token_hash: String,
+        actor_user_id: String,
+        actor_verified_email: String,
+        firm_pass_id: String,
+        occurred_at: String,
+    ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
+        if !self.exists {
+            return Err(TaxProfileError::NotFound);
+        }
+        // The secret first: without it, the caller learns nothing.
+        let invite = self
+            .invite(&invite_id)
+            .filter(|invite| !token_hash.is_empty() && invite.token_hash == token_hash)
+            .ok_or(TaxProfileError::InviteNotFound)?;
+        if invite.status != InviteStatus::Open {
+            return Err(TaxProfileError::InviteState {
+                reason: "this invite was already used or withdrawn".to_owned(),
+            });
+        }
+        if !instant_before(&occurred_at, &invite.expires_at) {
+            return Err(TaxProfileError::InviteState {
+                reason: "this invite has expired; ask the firm for a new one".to_owned(),
+            });
+        }
+        if normalize_invite_email(&actor_verified_email).as_deref() != Ok(invite.email.as_str()) {
+            return Err(TaxProfileError::InviteState {
+                reason: "this invite is for a different email address; sign in with the one the firm invited"
+                    .to_owned(),
+            });
+        }
+        if self.draft_firm() != Some(invite.organization_id.as_str()) {
+            return Err(TaxProfileError::InviteState {
+                reason: "this profile already has an owner".to_owned(),
+            });
+        }
+        if self.is_archived {
+            return Err(TaxProfileError::AlreadyArchived);
+        }
+        if firm_pass_id.trim().is_empty() || self.pass(&firm_pass_id).is_some() {
+            return Err(TaxProfileError::InvalidFacts {
+                reason: "pass id is missing or already used".to_owned(),
+            });
+        }
+        Ok(vec![TaxProfileEvent::OwnerInviteAccepted {
+            invite_id,
+            owner_user_id: actor_user_id,
+            organization_id: invite.organization_id.clone(),
+            firm_pass_id,
+            firm_pass_permissions: crate::domain::pass::PassPreset::Full
+                .permissions()
+                .with_needs()
+                .ids(),
             occurred_at,
         }])
     }
@@ -2553,5 +2950,359 @@ mod tests {
         assert_eq!(state.account_id.as_deref(), Some("alice"));
         assert_eq!(state.branch_code.as_deref(), Some("00000"));
         assert_eq!(state.identity_hash, Some(identity()));
+    }
+
+    // ── Owner invites ───────────────────────────────────────────────────────
+
+    const INVITE_ENDS: &str = "2026-02-15T00:00:00Z";
+
+    fn firm_draft() -> InMemoryTaxProfileStore {
+        let mut store = InMemoryTaxProfileStore::default();
+        store
+            .execute("tp-1", create("tp-1", org("firm-1"), "bookkeeper", "Client Co"), 0)
+            .unwrap();
+        store
+    }
+
+    fn invite(invite_id: &str, email: &str, managed: &[&str]) -> TaxProfileCommand {
+        TaxProfileCommand::InviteOwner {
+            invite_id: invite_id.into(),
+            email: email.into(),
+            token_hash: format!("hash-{invite_id}"),
+            expires_at: INVITE_ENDS.into(),
+            actor_user_id: "bookkeeper".into(),
+            actor_managed_orgs: orgs(managed),
+            occurred_at: NOW.into(),
+        }
+    }
+
+    fn accept_invite(invite_id: &str, token_hash: &str, user: &str, email: &str, at: &str) -> TaxProfileCommand {
+        TaxProfileCommand::AcceptOwnerInvite {
+            invite_id: invite_id.into(),
+            token_hash: token_hash.into(),
+            actor_user_id: user.into(),
+            actor_verified_email: email.into(),
+            firm_pass_id: format!("firm-pass-{invite_id}"),
+            occurred_at: at.into(),
+        }
+    }
+
+    fn withdraw(invite_id: &str, managed: &[&str]) -> TaxProfileCommand {
+        TaxProfileCommand::WithdrawOwnerInvite {
+            invite_id: invite_id.into(),
+            actor_user_id: "bookkeeper".into(),
+            actor_managed_orgs: orgs(managed),
+            occurred_at: NOW.into(),
+        }
+    }
+
+    fn invite_state(err: TaxProfileError) -> String {
+        match err {
+            TaxProfileError::InviteState { reason } => reason,
+            other => panic!("expected InviteState, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn only_the_firm_managing_a_draft_can_invite() {
+        let mut store = firm_draft();
+        assert_eq!(
+            store.execute("tp-1", invite("i1", "ana@example.ph", &["firm-x"]), 1).unwrap_err(),
+            TaxProfileError::NotHolder
+        );
+        assert_eq!(
+            store.execute("tp-1", invite("i1", "ana@example.ph", &[]), 1).unwrap_err(),
+            TaxProfileError::NotHolder
+        );
+        assert!(matches!(
+            store.execute("tp-1", invite("i1", "not-an-email", &["firm-1"]), 1).unwrap_err(),
+            TaxProfileError::InvalidFacts { .. }
+        ));
+        let mut past = invite("i1", "ana@example.ph", &["firm-1"]);
+        if let TaxProfileCommand::InviteOwner { expires_at, .. } = &mut past {
+            *expires_at = NOW.into();
+        }
+        assert!(matches!(
+            store.execute("tp-1", past, 1).unwrap_err(),
+            TaxProfileError::InvalidFacts { .. }
+        ));
+        let mut no_secret = invite("i1", "ana@example.ph", &["firm-1"]);
+        if let TaxProfileCommand::InviteOwner { token_hash, .. } = &mut no_secret {
+            *token_hash = " ".into();
+        }
+        assert!(matches!(
+            store.execute("tp-1", no_secret, 1).unwrap_err(),
+            TaxProfileError::InvalidFacts { .. }
+        ));
+        let (state, _) = store
+            .execute("tp-1", invite("i1", " Ana@Example.PH ", &["firm-1"]), 1)
+            .unwrap();
+        let sent = state.invite("i1").unwrap();
+        assert_eq!(sent.email, "ana@example.ph");
+        assert_eq!(sent.organization_id, "firm-1");
+        assert_eq!(sent.status, InviteStatus::Open);
+        // An invite id can't be reused.
+        assert!(matches!(
+            store.execute("tp-1", invite("i1", "ana@example.ph", &["firm-1"]), 2).unwrap_err(),
+            TaxProfileError::InvalidFacts { .. }
+        ));
+    }
+
+    #[test]
+    fn a_profile_with_an_owner_cannot_be_invited_for() {
+        let mut store = alice_profile();
+        let err = store
+            .execute("tp-1", invite("i1", "ana@example.ph", &["firm-1"]), 1)
+            .unwrap_err();
+        assert!(invite_state(err).contains("already has an owner"));
+    }
+
+    #[test]
+    fn accepting_makes_the_taxpayer_owner_and_keeps_the_firm_on_a_pass() {
+        let mut store = firm_draft();
+        store.execute("tp-1", invite("i1", "ana@example.ph", &["firm-1"]), 1).unwrap();
+        // Without the secret, nothing is revealed.
+        assert_eq!(
+            store
+                .execute("tp-1", accept_invite("i1", "wrong", "ana", "ana@example.ph", NOW), 2)
+                .unwrap_err(),
+            TaxProfileError::InviteNotFound
+        );
+        assert_eq!(
+            store
+                .execute("tp-1", accept_invite("i1", "", "ana", "ana@example.ph", NOW), 2)
+                .unwrap_err(),
+            TaxProfileError::InviteNotFound
+        );
+        assert_eq!(
+            store
+                .execute("tp-1", accept_invite("nope", "hash-i1", "ana", "ana@example.ph", NOW), 2)
+                .unwrap_err(),
+            TaxProfileError::InviteNotFound
+        );
+        // Bound to the invited email.
+        let err = store
+            .execute("tp-1", accept_invite("i1", "hash-i1", "eve", "eve@example.ph", NOW), 2)
+            .unwrap_err();
+        assert!(invite_state(err).contains("different email"));
+        // Expired at the end instant, not a second later.
+        let err = store
+            .execute("tp-1", accept_invite("i1", "hash-i1", "ana", "ana@example.ph", INVITE_ENDS), 2)
+            .unwrap_err();
+        assert!(invite_state(err).contains("expired"));
+        let (state, _) = store
+            .execute(
+                "tp-1",
+                accept_invite("i1", "hash-i1", "ana", "ANA@example.ph", "2026-02-14T23:59:59Z"),
+                2,
+            )
+            .unwrap();
+        assert_eq!(state.holder, Some(personal("ana")));
+        assert_eq!(state.ownership, Some(OwnershipStatus::PersonalExclusive));
+        assert_eq!(state.access_for("ana", &[], NOW), ProfileAccess::Owner);
+        assert_eq!(state.invite("i1").unwrap().status, InviteStatus::Accepted);
+        assert_eq!(state.invite("i1").unwrap().decided_by.as_deref(), Some("ana"));
+        assert_eq!(state.updated_at.as_deref(), Some("2026-02-14T23:59:59Z"));
+        // The firm keeps working under a Full pass without publishing.
+        let pass = state.pass("firm-pass-i1").unwrap();
+        assert_eq!(pass.status, PassStatus::Active);
+        assert_eq!(pass.grantee, firm("firm-1"));
+        assert_eq!(pass.created_by, "ana");
+        let firm_access = state.access_for("clerk", &orgs(&["firm-1"]), NOW);
+        assert_eq!(
+            firm_access,
+            ProfileAccess::Pass(PassPreset::Full.permissions().with_needs())
+        );
+        assert!(!firm_access.has(P::FilingsPublish));
+        assert!(!firm_access.allows(ProfileAction::Share));
+        assert!(!firm_access.allows(ProfileAction::Archive));
+        // Used once.
+        let err = store
+            .execute("tp-1", accept_invite("i1", "hash-i1", "ana", "ana@example.ph", NOW), 3)
+            .unwrap_err();
+        assert!(invite_state(err).contains("already used"));
+        // The owner can end the firm's pass.
+        let (state, _) = store.execute("tp-1", end("firm-pass-i1", "ana", &[]), 3).unwrap();
+        assert_eq!(state.access_for("clerk", &orgs(&["firm-1"]), NOW), ProfileAccess::None);
+    }
+
+    #[test]
+    fn a_new_invite_replaces_the_open_one() {
+        let mut store = firm_draft();
+        store.execute("tp-1", invite("i1", "ana@example.ph", &["firm-1"]), 1).unwrap();
+        let events = store
+            .load("tp-1")
+            .0
+            .handle(invite("i2", "ana.cruz@example.ph", &["firm-1"]))
+            .unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type(), "tax_profile.owner_invite_withdrawn");
+        assert_eq!(events[1].event_type(), "tax_profile.owner_invited");
+        let (state, _) = store
+            .execute("tp-1", invite("i2", "ana.cruz@example.ph", &["firm-1"]), 2)
+            .unwrap();
+        assert_eq!(state.invite("i1").unwrap().status, InviteStatus::Withdrawn);
+        let err = store
+            .execute("tp-1", accept_invite("i1", "hash-i1", "ana", "ana@example.ph", NOW), 4)
+            .unwrap_err();
+        assert!(invite_state(err).contains("withdrawn"));
+    }
+
+    #[test]
+    fn only_the_inviting_firm_withdraws_and_only_once() {
+        let mut store = firm_draft();
+        store.execute("tp-1", invite("i1", "ana@example.ph", &["firm-1"]), 1).unwrap();
+        assert_eq!(
+            store.execute("tp-1", withdraw("i1", &["firm-x"]), 2).unwrap_err(),
+            TaxProfileError::NotHolder
+        );
+        assert_eq!(
+            store.execute("tp-1", withdraw("nope", &["firm-1"]), 2).unwrap_err(),
+            TaxProfileError::InviteNotFound
+        );
+        let (state, _) = store.execute("tp-1", withdraw("i1", &["firm-1"]), 2).unwrap();
+        let withdrawn = state.invite("i1").unwrap();
+        assert_eq!(withdrawn.status, InviteStatus::Withdrawn);
+        assert_eq!(withdrawn.decided_by.as_deref(), Some("bookkeeper"));
+        assert!(invite_state(store.execute("tp-1", withdraw("i1", &["firm-1"]), 3).unwrap_err())
+            .contains("no longer open"));
+    }
+
+    #[test]
+    fn a_claim_withdraws_open_invites() {
+        let mut store = firm_draft();
+        store.execute("tp-1", invite("i1", "ana@example.ph", &["firm-1"]), 1).unwrap();
+        let (state, _) = store.execute("tp-1", claim_as("alice"), 2).unwrap();
+        assert_eq!(state.invite("i1").unwrap().status, InviteStatus::Withdrawn);
+        let err = store
+            .execute("tp-1", accept_invite("i1", "hash-i1", "ana", "ana@example.ph", NOW), 3)
+            .unwrap_err();
+        assert!(invite_state(err).contains("withdrawn"));
+    }
+
+    #[test]
+    fn an_archived_draft_takes_no_invites() {
+        let mut store = firm_draft();
+        store.execute("tp-1", invite("i1", "ana@example.ph", &["firm-1"]), 1).unwrap();
+        store
+            .execute(
+                "tp-1",
+                TaxProfileCommand::ArchiveTaxProfile {
+                    actor_user_id: "bookkeeper".into(),
+                    actor_orgs: orgs(&["firm-1"]),
+                    occurred_at: NOW.into(),
+                },
+                2,
+            )
+            .unwrap();
+        assert_eq!(
+            store.execute("tp-1", invite("i2", "ana@example.ph", &["firm-1"]), 3).unwrap_err(),
+            TaxProfileError::AlreadyArchived
+        );
+        assert_eq!(
+            store
+                .execute("tp-1", accept_invite("i1", "hash-i1", "ana", "ana@example.ph", NOW), 3)
+                .unwrap_err(),
+            TaxProfileError::AlreadyArchived
+        );
+    }
+
+    #[test]
+    fn invite_events_leave_the_profile_timestamp_alone() {
+        let mut store = firm_draft();
+        let (state, _) = store
+            .execute("tp-1", invite("i1", "ana@example.ph", &["firm-1"]), 1)
+            .unwrap();
+        assert_eq!(state.updated_at.as_deref(), Some("2026-01-01T00:00:00Z"));
+        let events = state.handle(withdraw("i1", &["firm-1"])).unwrap();
+        assert!(!events[0].changes_profile());
+        let events = state
+            .handle(accept_invite("i1", "hash-i1", "ana", "ana@example.ph", NOW))
+            .unwrap();
+        assert!(events[0].changes_profile());
+        assert_eq!(events[0].event_type(), "tax_profile.owner_invite_accepted");
+        let back: TaxProfileEvent =
+            serde_json::from_value(serde_json::to_value(&events[0]).unwrap()).unwrap();
+        assert_eq!(back, events[0]);
+    }
+
+    // ── Publishing needs both sides ─────────────────────────────────────────
+
+    #[test]
+    fn publishing_needs_the_owners_switch_and_the_firms_pick() {
+        let mut store = alice_profile();
+        let with_publish = PassPreset::Full.permissions().with(P::FilingsPublish);
+        store.execute("tp-1", offer("pass-1", "firm-1", "alice", with_publish), 1).unwrap();
+        let (state, _) = store.execute("tp-1", accept("pass-1", "boss", &["firm-1"]), 2).unwrap();
+        let member = orgs(&["firm-1"]);
+        // The owner switched it on, but the firm has not picked this member.
+        let access = state.effective_access("clerk", &member, &[], NOW);
+        assert!(!access.has(P::FilingsPublish));
+        assert!(access.has(P::DraftsSave));
+        // Picked by the firm: publishing works.
+        assert!(state
+            .effective_access("clerk", &member, &orgs(&["firm-1"]), NOW)
+            .has(P::FilingsPublish));
+        // Picked by some other firm, or not a member: no.
+        assert!(!state
+            .effective_access("clerk", &orgs(&["firm-1", "firm-2"]), &orgs(&["firm-2"]), NOW)
+            .has(P::FilingsPublish));
+        assert!(!state
+            .effective_access("clerk", &[], &orgs(&["firm-1"]), NOW)
+            .has(P::FilingsPublish));
+        // The owner always can.
+        assert_eq!(state.effective_access("alice", &[], &[], NOW), ProfileAccess::Owner);
+        assert!(ProfileAccess::Owner.has(P::FilingsPublish));
+    }
+
+    #[test]
+    fn a_firm_pick_cannot_add_publishing_the_owner_did_not_allow() {
+        let mut store = alice_profile();
+        store
+            .execute("tp-1", offer("pass-1", "firm-1", "alice", PassPreset::Full.permissions()), 1)
+            .unwrap();
+        let (state, _) = store.execute("tp-1", accept("pass-1", "boss", &["firm-1"]), 2).unwrap();
+        let access = state.effective_access("clerk", &orgs(&["firm-1"]), &orgs(&["firm-1"]), NOW);
+        assert!(!access.has(P::FilingsPublish));
+        assert_eq!(access, state.access_for("clerk", &orgs(&["firm-1"]), NOW));
+        // An expired publishing pass doesn't count either.
+        let mut store = alice_profile();
+        let mut offered = offer(
+            "pass-1",
+            "firm-1",
+            "alice",
+            PassPreset::Full.permissions().with(P::FilingsPublish),
+        );
+        if let TaxProfileCommand::OfferPass { expires_at, .. } = &mut offered {
+            *expires_at = Some("2026-03-01T00:00:00Z".into());
+        }
+        store.execute("tp-1", offered, 1).unwrap();
+        let (state, _) = store.execute("tp-1", accept("pass-1", "boss", &["firm-1"]), 2).unwrap();
+        let later = "2026-03-01T00:00:00Z";
+        assert_eq!(
+            state.effective_access("clerk", &orgs(&["firm-1"]), &orgs(&["firm-1"]), later),
+            ProfileAccess::None
+        );
+    }
+
+    #[test]
+    fn a_publisher_pick_on_one_firm_does_not_unlock_another_firms_pass() {
+        let mut store = alice_profile();
+        store
+            .execute(
+                "tp-1",
+                offer("pass-1", "firm-1", "alice", PassPreset::Full.permissions().with(P::FilingsPublish)),
+                1,
+            )
+            .unwrap();
+        store.execute("tp-1", accept("pass-1", "boss", &["firm-1"]), 2).unwrap();
+        store
+            .execute("tp-1", offer("pass-2", "firm-2", "alice", PassPreset::Safe.permissions()), 3)
+            .unwrap();
+        let (state, _) = store.execute("tp-1", accept("pass-2", "boss2", &["firm-2"]), 4).unwrap();
+        // A member of both, picked only by firm-2 (whose pass has no publishing).
+        let both = orgs(&["firm-1", "firm-2"]);
+        assert!(!state.effective_access("clerk", &both, &orgs(&["firm-2"]), NOW).has(P::FilingsPublish));
+        assert!(state.effective_access("clerk", &both, &orgs(&["firm-1"]), NOW).has(P::FilingsPublish));
     }
 }

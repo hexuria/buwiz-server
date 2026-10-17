@@ -329,3 +329,137 @@ pub async fn revoke_agent_connection(
         unreachable!()
     }
 }
+
+/// The firm holding a draft invites the taxpayer to own it. Returns the link
+/// (shown once; the firm shares it itself).
+#[server(prefix = "/api/ui")]
+pub async fn invite_owner(
+    profile_id: String,
+    email: String,
+    days: Option<u32>,
+) -> Result<OwnerInviteCreated, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::invite_owner(
+            profile_id,
+            OwnerInviteCreateRequest { email, days },
+            server_fn_request_auth(),
+        )
+        .await
+        .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (profile_id, email, days);
+        unreachable!()
+    }
+}
+
+#[server(prefix = "/api/ui")]
+pub async fn withdraw_owner_invite(
+    profile_id: String,
+    invite_id: String,
+) -> Result<PassListResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::withdraw_owner_invite(profile_id, invite_id, server_fn_request_auth())
+            .await
+            .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (profile_id, invite_id);
+        unreachable!()
+    }
+}
+
+#[server(prefix = "/api/ui")]
+pub async fn preview_owner_invite(
+    invite_id: String,
+    token: String,
+) -> Result<OwnerInvitePreview, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::preview_owner_invite(invite_id, token, server_fn_request_auth())
+            .await
+            .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (invite_id, token);
+        unreachable!()
+    }
+}
+
+#[server(prefix = "/api/ui")]
+pub async fn accept_owner_invite(
+    invite_id: String,
+    token: String,
+) -> Result<TaxProfileView, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::accept_owner_invite(invite_id, token, server_fn_request_auth())
+            .await
+            .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (invite_id, token);
+        unreachable!()
+    }
+}
+
+#[server(prefix = "/api/ui")]
+pub async fn list_firm_publishers(
+    organization_id: String,
+) -> Result<FirmPublisherListResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::list_firm_publishers(organization_id, server_fn_request_auth())
+            .await
+            .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = organization_id;
+        unreachable!()
+    }
+}
+
+/// Adds (`remove: false`, by `email`) or removes (`remove: true`, by
+/// `user_id`) a member the firm lets publish to BIR.
+#[server(prefix = "/api/ui")]
+pub async fn change_firm_publisher(
+    organization_id: String,
+    email: Option<String>,
+    user_id: Option<String>,
+    remove: bool,
+) -> Result<FirmPublisherListResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        let auth = server_fn_request_auth();
+        if remove {
+            crate::application::remove_firm_publisher(
+                organization_id,
+                user_id.unwrap_or_default(),
+                auth,
+            )
+            .await
+        } else {
+            crate::application::add_firm_publisher(
+                organization_id,
+                FirmPublisherAddRequest {
+                    email: email.unwrap_or_default(),
+                },
+                auth,
+            )
+            .await
+        }
+        .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (organization_id, email, user_id, remove);
+        unreachable!()
+    }
+}
