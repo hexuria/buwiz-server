@@ -257,7 +257,7 @@ pub(super) async fn authorize_get(
 <form method="post" action="/oauth/authorize">
 {client}{redirect}{state}{challenge}<input type="hidden" name="code_challenge_method" value="S256" />{csrf}
 <fieldset><legend>Profiles it may reach</legend>{profile_boxes}</fieldset>
-<fieldset><legend>What it may do</legend>{presets}<p class="dim">An agent can never publish to BIR, share your profiles, archive or delete them. It never gets more than you have: if a firm holds a profile, the agent can only read it.</p></fieldset>
+<fieldset><legend>What it may do</legend>{presets}<p class="dim">An agent can never publish to BIR, share your profiles, archive or delete them. It never gets more than you have, and it stops the moment you end it.</p></fieldset>
 <p class="dim">Signed in as {user}. You go back to {target} after you choose. You can end this any time under Tax profiles → Connected agents.</p>
 <button type="submit" name="decision" value="allow">Allow</button><button class="deny" type="submit" name="decision" value="deny">Deny</button>
 </form>"#,

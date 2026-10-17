@@ -13,7 +13,7 @@ use crate::contracts::{
     PasswordResetCompleteRequest, PasswordResetStartRequest, PolicyPublishRequest,
     RoleUpsertRequest, SessionRevokeRequest, SigningKeyRotateRequest, TokenRefreshRequest,
     TokenVerifyRequest, TaxProfileClaimRequest, TaxProfileCreateRequest, TaxProfilePatchRequest,
-    TaxProfileTransferRequest, PassAskRequest, PassOfferRequest, PassUpdateRequest,
+    PassAskRequest, PassOfferRequest, PassUpdateRequest,
 };
 use crate::error::{AuthStackError, AuthStackResult};
 
@@ -292,6 +292,10 @@ async fn dispatch(req: RestRequest) -> AuthStackResult<RestResponse> {
                 crate::application::run_storage_projections(request_auth, batch_limit).await,
             )
         }
+        (Method::POST, "/api/auth/storage/tax-profiles/reproject") => {
+            validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+            json_result(crate::application::reproject_tax_profiles(request_auth).await)
+        }
         (Method::POST, "/api/auth/signing-keys/rotate") => {
             validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
             let payload = parse_json::<SigningKeyRotateRequest>(req).await?;
@@ -499,8 +503,6 @@ async fn dispatch(req: RestRequest) -> AuthStackResult<RestResponse> {
                         | "/tax-profiles/claim"
                         | "/api/tax-profiles/reclaim"
                         | "/tax-profiles/reclaim"
-                        | "/api/tax-profiles/transfer"
-                        | "/tax-profiles/transfer"
                         | "/api/tax-profiles/passes"
                         | "/tax-profiles/passes"
                 ) =>
@@ -539,11 +541,6 @@ async fn dispatch(req: RestRequest) -> AuthStackResult<RestResponse> {
             validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
             let payload = parse_json::<TaxProfileClaimRequest>(req).await?;
             json_result(crate::application::reclaim_tax_profile(payload, request_auth).await)
-        }
-        (Method::POST, "/api/tax-profiles/transfer") | (Method::POST, "/tax-profiles/transfer") => {
-            validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
-            let payload = parse_json::<TaxProfileTransferRequest>(req).await?;
-            json_result(crate::application::transfer_tax_profile(payload, request_auth).await)
         }
         (_, known_path) if known_rest_path(known_path) => validation_error_response(
             StatusCode::METHOD_NOT_ALLOWED,

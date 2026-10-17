@@ -14,6 +14,10 @@ It never submits returns to BIR. Publishing goes through the installed buwiz-for
 
 One gatekeeper: `authorize` in `src/application/tax_profile.rs`, re-checked in the domain by `TaxProfile::access_for` (`src/domain/tax_profile.rs`). Control follows the holder; the registering account grants nothing afterwards. Table in README, "Who may do what".
 
+## Ground rule (2026-10-17)
+
+The taxpayer always wins: the owner can always publish, edit and end any access; firms and agents only work through passes. No read-only owner, no "take it back". Moving a profile to a firm is gone; old moves replay as a Full pass for that firm (`legacy_move_pass_id`). Ownership disputes (someone registered your TIN first) are the one remaining hard case: Form 2303 upload, reviewed by Buwiz staff, only to prove ownership (next PRs). Decision page: https://claude.ai/artifact/HreFCAgWBxACoBhdqm4HYa
+
 ## Done (all merged to `main`)
 
 1. Only the current holder can transfer (takeover fix).
@@ -24,11 +28,15 @@ One gatekeeper: `authorize` in `src/application/tax_profile.rs`, re-checked in t
 
 Plan item A3 ("tokens carry a scope that is never checked") is settled by design rather than a scope check: browser and desktop tokens are first-party and act as the user; agents get their own `bwa_`/`bwr_` tokens, which wasi-auth refuses everywhere a user token is expected, and which `/mcp` bounds by the connection's permissions and the taxpayer's live access.
 
-## Next
+## Next (agreed order, 2026-10-17)
+
+1. Done: the taxpayer always wins, passes only (this change).
+2. Firm creates a draft and invites the taxpayer by email; only an account with that verified email accepts and becomes owner (the firm keeps a pass). A firm "Publish to BIR" permission: publishing needs the owner's switch on the pass *and* that firm permission.
+3. Ownership claims with Form 2303: encrypted upload, C2PA check (an AI mark means "upload a plain scan"), a staff review queue, the file deleted after the decision (decision, reviewer and file hash kept). Form 2303 is never used to choose forms.
+4. HTTP for tax years, drafts and filings (commands and tables exist; see [docs/sync-api.md](docs/sync-api.md)); then MCP read tools for them.
+5. Notices on the firm's page, a change-pass screen, pass expiry recorded in history, agents for firm members (needs membership checks without a browser session).
 
 - Desktop client: buwiz-forms does not call this server yet. The contract is in [docs/integrations.md](docs/integrations.md).
-- HTTP for tax years, drafts and filings (commands and tables exist; see [docs/sync-api.md](docs/sync-api.md)), then MCP tools for them.
-- A firm member connecting an agent to profiles their firm reaches through a pass (needs membership checks without a browser session).
 - Local end-to-end runs need a Spin host that matches the vendored SDK (README, "Troubleshooting").
 
 ## Verify

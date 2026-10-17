@@ -41,7 +41,7 @@ contract it should use when cloud backup and sharing are wired in.
    Keep the refresh token in the OS keychain. Details: README, "Desktop auth".
 2. **List and read profiles:** `GET /api/tax-profiles` and
    `GET /api/tax-profiles/{id}` with `Authorization: Bearer …`. Each profile
-   carries `access` (`owner`, `holding_org`, `owner_read_only`, `pass`) and
+   carries `access` (`owner`, `holding_org` for a firm's own draft, `pass`) and
    `permissions`, the caller's own rights. Without `?organization_id=` the
    list holds the caller's own profiles; profiles a workspace reaches
    through a pass appear with `?organization_id=<workspace>`.

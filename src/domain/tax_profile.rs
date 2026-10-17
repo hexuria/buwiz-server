@@ -258,14 +258,6 @@ pub enum TaxProfileCommand {
         identity_hash: TinIdentityHash,
         proof_method: ProofMethod,
     },
-    Transfer {
-        new_holder: AccountHolder,
-        actor_user_id: String,
-        /// The holding organization the application verified the actor may
-        /// move profiles out of (`ownership.transfer` there). `None` when the
-        /// actor holds no such right; a personal holder needs none.
-        actor_controls_org: Option<String>,
-    },
     /// The owner offers a pass; the firm accepts it.
     OfferPass {
         pass_id: String,
@@ -528,10 +520,10 @@ impl std::fmt::Display for TaxProfileError {
 pub enum ProfileAccess {
     /// The personal holder: everything, including sharing.
     Owner,
-    /// A member of the holding organization: everything except sharing.
+    /// A member of the firm working on a draft nobody owns yet (a profile the
+    /// firm created): the Full preset, so no publishing, and no sharing,
+    /// since only an owner shares.
     HoldingOrg,
-    /// The verified owner while an organization holds the profile.
-    OwnerReadOnly,
     /// A member of one or more organizations with a working pass.
     Pass(PassPermissions),
     None,
@@ -551,13 +543,8 @@ impl ProfileAccess {
     /// What this standing allows, as pass permissions.
     pub fn permissions(self) -> PassPermissions {
         match self {
-            Self::Owner | Self::HoldingOrg => PassPermissions::all(),
-            Self::OwnerReadOnly => PassPermissions::of(&[
-                PassPermission::ProfileView,
-                PassPermission::YearsView,
-                PassPermission::DraftsView,
-                PassPermission::FilingsView,
-            ]),
+            Self::Owner => PassPermissions::all(),
+            Self::HoldingOrg => crate::domain::pass::PassPreset::Full.permissions(),
             Self::Pass(permissions) => permissions,
             Self::None => PassPermissions::empty(),
         }
@@ -582,11 +569,24 @@ impl ProfileAccess {
         match self {
             Self::Owner => "owner",
             Self::HoldingOrg => "holding_org",
-            Self::OwnerReadOnly => "owner_read_only",
             Self::Pass(_) => "pass",
             Self::None => "none",
         }
     }
+}
+
+/// A stable UUID for the pass an old "move to firm" event replays into.
+pub fn legacy_move_pass_id(profile_id: &str, organization_id: &str, nth: usize) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("legacy-move|{profile_id}|{organization_id}|{nth}"));
+    let mut b = [0u8; 16];
+    b.copy_from_slice(&digest[..16]);
+    b[6] = (b[6] & 0x0f) | 0x50; // name-based (version 5 layout)
+    b[8] = (b[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+    )
 }
 
 /// Exclusive-ownership aggregate for one registration unit (UUID identity).
@@ -642,13 +642,7 @@ impl TaxProfile {
             Some(AccountHolder::Personal { user_id }) if user_id == actor_user_id => {
                 ClaimStatus::Owned
             }
-            Some(AccountHolder::Organization { .. }) => {
-                if self.verified_owner_user_id.as_deref() == Some(actor_user_id) {
-                    ClaimStatus::ReadOnly
-                } else {
-                    ClaimStatus::PendingClaim
-                }
-            }
+            Some(AccountHolder::Organization { .. }) => ClaimStatus::PendingClaim,
             Some(AccountHolder::Personal { .. }) => ClaimStatus::ReadOnly,
             None => ClaimStatus::ReadOnly,
         }
@@ -735,11 +729,6 @@ impl TaxProfile {
                 identity_hash,
                 proof_method,
             } => self.handle_reclaim(actor_user_id, identity_hash, proof_method),
-            TaxProfileCommand::Transfer {
-                new_holder,
-                actor_user_id,
-                actor_controls_org,
-            } => self.handle_transfer(new_holder, actor_user_id, actor_controls_org),
             TaxProfileCommand::OfferPass {
                 pass_id,
                 grantee,
@@ -870,7 +859,9 @@ impl TaxProfile {
                 actor_user_id,
                 ..
             } => {
-                self.end_passes_on_new_holder(holder, actor_user_id);
+                // A claim or reclaim puts the proven owner in charge and ends
+                // every open pass, including a firm's pass from an old move.
+                self.end_open_passes(actor_user_id);
                 self.holder = Some(holder.clone());
                 self.ownership = Some(*ownership);
                 self.verification = *verification;
@@ -880,11 +871,21 @@ impl TaxProfile {
                 holder,
                 ownership,
                 actor_user_id,
-            } => {
-                self.end_passes_on_new_holder(holder, actor_user_id);
-                self.holder = Some(holder.clone());
-                self.ownership = Some(*ownership);
-            }
+            } => match (&self.holder, holder) {
+                // Moving to a firm no longer exists. An old move by the owner
+                // replays under "the taxpayer always wins": the owner keeps
+                // the profile and the firm works under a Full pass (no
+                // publishing) that the owner can change or end.
+                (
+                    Some(AccountHolder::Personal { .. }),
+                    AccountHolder::Organization { organization_id },
+                ) => self.grant_legacy_move_pass(organization_id, actor_user_id),
+                _ => {
+                    self.end_passes_on_new_holder(holder, actor_user_id);
+                    self.holder = Some(holder.clone());
+                    self.ownership = Some(*ownership);
+                }
+            },
             TaxProfileEvent::TaxProfileIdentityUpdated {
                 display_name,
                 facts,
@@ -998,6 +999,57 @@ impl TaxProfile {
             };
             pass.ended_by = Some(actor_user_id.to_owned());
         }
+    }
+
+    /// Ends every open pass (a claim or reclaim starts clean).
+    fn end_open_passes(&mut self, actor_user_id: &str) {
+        for pass in self.passes.iter_mut().filter(|pass| pass.status.is_open()) {
+            pass.status = if pass.status.is_pending() {
+                PassStatus::Declined
+            } else {
+                PassStatus::Revoked
+            };
+            pass.ended_by = Some(actor_user_id.to_owned());
+        }
+    }
+
+    /// The pass an old "move to firm" turns into on replay. Its id is
+    /// derived from the profile, the firm and how many such moves came
+    /// before, so every replay (and the stored pass row) agrees on it.
+    fn grant_legacy_move_pass(&mut self, organization_id: &str, actor_user_id: &str) {
+        let grantee = PassGrantee::Organization {
+            organization_id: organization_id.to_owned(),
+        };
+        // One open pass per firm: an older one for the same firm ends.
+        for pass in self
+            .passes
+            .iter_mut()
+            .filter(|pass| pass.status.is_open() && pass.grantee == grantee)
+        {
+            pass.status = PassStatus::Revoked;
+            pass.ended_by = Some(actor_user_id.to_owned());
+        }
+        let nth = self.passes.len();
+        // Old move events carry no time; use the profile's last change.
+        let at = self
+            .updated_at
+            .clone()
+            .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_owned());
+        self.passes.push(Pass {
+            pass_id: legacy_move_pass_id(
+                self.profile_id.as_deref().unwrap_or_default(),
+                organization_id,
+                nth,
+            ),
+            grantee,
+            permissions: crate::domain::pass::PassPreset::Full.permissions(),
+            status: PassStatus::Active,
+            expires_at: None,
+            created_by: actor_user_id.to_owned(),
+            created_at: at.clone(),
+            updated_at: at,
+            ended_by: None,
+        });
     }
 
     fn handle_register(
@@ -1130,46 +1182,6 @@ impl TaxProfile {
         }])
     }
 
-    fn handle_transfer(
-        &self,
-        new_holder: AccountHolder,
-        actor_user_id: String,
-        actor_controls_org: Option<String>,
-    ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
-        if !self.exists {
-            return Err(TaxProfileError::NotFound);
-        }
-        let Some(current) = &self.holder else {
-            return Err(TaxProfileError::NotFound);
-        };
-        // Only whoever controls the profile now may move it: the personal
-        // holder, or someone the application verified may move profiles out
-        // of the holding organization. Membership elsewhere proves nothing.
-        let actor_is_holder = match current {
-            AccountHolder::Personal { user_id } => user_id == &actor_user_id,
-            AccountHolder::Organization { organization_id } => {
-                actor_controls_org.as_deref() == Some(organization_id.as_str())
-            }
-        };
-        if !actor_is_holder {
-            return Err(TaxProfileError::NotHolder);
-        }
-        if current.same_as(&new_holder) {
-            return Err(TaxProfileError::InvalidFacts {
-                reason: "new holder must be different".to_owned(),
-            });
-        }
-        let ownership = match &new_holder {
-            AccountHolder::Personal { .. } => OwnershipStatus::PersonalExclusive,
-            AccountHolder::Organization { .. } => OwnershipStatus::CompanyManaged,
-        };
-        Ok(vec![TaxProfileEvent::Transferred {
-            holder: new_holder,
-            ownership,
-            actor_user_id,
-        }])
-    }
-
     fn handle_update_identity(
         &self,
         display_name: Option<String>,
@@ -1268,9 +1280,6 @@ impl TaxProfile {
                 return ProfileAccess::HoldingOrg;
             }
             _ => {}
-        }
-        if self.verified_owner_user_id.as_deref() == Some(actor_user_id) {
-            return ProfileAccess::OwnerReadOnly;
         }
         if self.is_archived {
             // An archived profile is frozen for everyone but its holder.
@@ -1569,6 +1578,13 @@ pub struct InMemoryTaxProfileStore {
 }
 
 impl InMemoryTaxProfileStore {
+    /// Appends a raw event (tests replaying history the commands no longer
+    /// produce).
+    #[cfg(test)]
+    pub fn push_event(&mut self, profile_id: &str, event: TaxProfileEvent) {
+        self.streams.entry(profile_id.to_owned()).or_default().push(event);
+    }
+
     /// The stored events of one stream, oldest first.
     #[cfg(test)]
     pub fn events(&self, profile_id: &str) -> Vec<TaxProfileEvent> {
@@ -1750,106 +1766,6 @@ mod tests {
         assert_eq!(state.claim_status_for("alice"), ClaimStatus::Owned);
     }
 
-    #[test]
-    fn verified_owner_can_reclaim_from_company_anytime() {
-        let mut store = InMemoryTaxProfileStore::default();
-        store
-            .execute(
-                "tp-1",
-                create("tp-1", org("firm-1"), "bookkeeper", "Client Co"),
-                0,
-            )
-            .unwrap();
-        store
-            .execute(
-                "tp-1",
-                TaxProfileCommand::Claim {
-                    claimant: personal("alice"),
-                    actor_user_id: "alice".into(),
-                    identity_hash: identity(),
-                    proof_method: ProofMethod::FakeOrus,
-                },
-                1,
-            )
-            .unwrap();
-        store
-            .execute(
-                "tp-1",
-                TaxProfileCommand::Transfer {
-                    new_holder: org("firm-2"),
-                    actor_user_id: "alice".into(),
-                    actor_controls_org: None,
-                },
-                2,
-            )
-            .unwrap();
-        let (state, _) = store
-            .execute(
-                "tp-1",
-                TaxProfileCommand::Reclaim {
-                    actor_user_id: "alice".into(),
-                    identity_hash: identity(),
-                    proof_method: ProofMethod::FakeOrus,
-                },
-                3,
-            )
-            .unwrap();
-        assert_eq!(state.holder, Some(personal("alice")));
-        assert_eq!(state.ownership, Some(OwnershipStatus::PersonalExclusive));
-    }
-
-    fn transfer(to: AccountHolder, actor: &str, controls: Option<&str>) -> TaxProfileCommand {
-        TaxProfileCommand::Transfer {
-            new_holder: to,
-            actor_user_id: actor.into(),
-            actor_controls_org: controls.map(str::to_owned),
-        }
-    }
-
-    #[test]
-    fn outsider_cannot_take_an_organization_held_profile() {
-        let mut store = InMemoryTaxProfileStore::default();
-        store
-            .execute("tp-1", create("tp-1", org("firm-1"), "bookkeeper", "Client Co"), 0)
-            .unwrap();
-        // A member of another firm, with no right in firm-1.
-        let err = store
-            .execute("tp-1", transfer(org("firm-x"), "mallory", None), 1)
-            .unwrap_err();
-        assert_eq!(err, TaxProfileError::NotHolder);
-        // Rights in some other organization do not count either.
-        let err = store
-            .execute("tp-1", transfer(org("firm-x"), "mallory", Some("firm-x")), 1)
-            .unwrap_err();
-        assert_eq!(err, TaxProfileError::NotHolder);
-        let (state, _) = store.load("tp-1");
-        assert_eq!(state.holder, Some(org("firm-1")));
-    }
-
-    #[test]
-    fn holding_organization_can_move_its_profile() {
-        let mut store = InMemoryTaxProfileStore::default();
-        store
-            .execute("tp-1", create("tp-1", org("firm-1"), "bookkeeper", "Client Co"), 0)
-            .unwrap();
-        let (state, _) = store
-            .execute("tp-1", transfer(org("firm-2"), "bookkeeper", Some("firm-1")), 1)
-            .unwrap();
-        assert_eq!(state.holder, Some(org("firm-2")));
-    }
-
-    #[test]
-    fn only_the_personal_holder_can_move_a_personal_profile() {
-        let mut store = InMemoryTaxProfileStore::default();
-        store
-            .execute("tp-1", create("tp-1", personal("alice"), "alice", "Alice"), 0)
-            .unwrap();
-        let err = store
-            .execute("tp-1", transfer(org("firm-x"), "mallory", Some("firm-x")), 1)
-            .unwrap_err();
-        assert_eq!(err, TaxProfileError::NotHolder);
-    }
-
     fn orgs(list: &[&str]) -> Vec<String> {
         list.iter().map(|id| (*id).to_owned()).collect()
     }
@@ -1874,6 +1790,50 @@ mod tests {
         }
     }
 
+    fn old_move(to_org: &str, actor: &str) -> TaxProfileEvent {
+        TaxProfileEvent::Transferred {
+            holder: org(to_org),
+            ownership: OwnershipStatus::CompanyManaged,
+            actor_user_id: actor.into(),
+        }
+    }
+
+    #[test]
+    fn an_old_move_to_a_firm_replays_as_a_pass_the_owner_controls() {
+        let mut store = InMemoryTaxProfileStore::default();
+        store
+            .execute("tp-1", create("tp-1", personal("alice"), "alice", "Alice"), 0)
+            .unwrap();
+        store.push_event("tp-1", old_move("firm-2", "alice"));
+        let (state, revision) = store.load("tp-1");
+        // The taxpayer always wins: Alice is still the owner.
+        assert_eq!(state.holder, Some(personal("alice")));
+        assert_eq!(state.access_for("alice", &[], NOW), ProfileAccess::Owner);
+        // The firm works under a Full pass, without publishing.
+        let firm = state.access_for("clerk", &orgs(&["firm-2"]), NOW);
+        assert_eq!(firm, ProfileAccess::Pass(crate::domain::pass::PassPreset::Full.permissions()));
+        assert!(!firm.has(crate::domain::pass::PassPermission::FilingsPublish));
+        // The pass id is stable across replays, so Alice can end it.
+        let pass_id = legacy_move_pass_id("tp-1", "firm-2", 0);
+        assert_eq!(state.passes[0].pass_id, pass_id);
+        let (state, _) = store.execute("tp-1", end(&pass_id, "alice", &[]), revision).unwrap();
+        assert_eq!(state.access_for("clerk", &orgs(&["firm-2"]), NOW), ProfileAccess::None);
+    }
+
+    #[test]
+    fn a_firms_draft_gives_full_without_publishing_or_sharing() {
+        let mut store = InMemoryTaxProfileStore::default();
+        let (state, _) = store
+            .execute("tp-1", create("tp-1", org("firm-1"), "bookkeeper", "Client Co"), 0)
+            .unwrap();
+        let access = state.access_for("clerk", &orgs(&["firm-1"]), NOW);
+        assert_eq!(access, ProfileAccess::HoldingOrg);
+        assert!(access.has(crate::domain::pass::PassPermission::DraftsSave));
+        assert!(!access.has(crate::domain::pass::PassPermission::FilingsPublish));
+        assert!(!access.allows(ProfileAction::Share));
+        assert_eq!(state.access_for("mallory", &orgs(&["firm-x"]), NOW), ProfileAccess::None);
+    }
+
     #[test]
     fn registering_grants_nothing_once_the_owner_claims() {
         let mut store = InMemoryTaxProfileStore::default();
@@ -1889,27 +1849,23 @@ mod tests {
     }
 
     #[test]
-    fn owner_reads_but_does_not_edit_while_a_firm_holds_it() {
+    fn the_owner_keeps_full_control_after_an_old_move() {
         let mut store = InMemoryTaxProfileStore::default();
         store
             .execute("tp-1", create("tp-1", org("firm-1"), "bookkeeper", "Client Co"), 0)
             .unwrap();
         store.execute("tp-1", claim_as("alice"), 1).unwrap();
-        let (state, _) = store
-            .execute("tp-1", transfer(org("firm-2"), "alice", None), 2)
-            .unwrap();
-        assert_eq!(state.access_for("alice", &[], NOW), ProfileAccess::OwnerReadOnly);
-        assert!(ProfileAccess::OwnerReadOnly.allows(ProfileAction::View));
+        store.push_event("tp-1", old_move("firm-2", "alice"));
+        // Alice edits; the firm she moved it to edits through its pass; the
+        // firm that registered it has nothing.
+        store.execute("tp-1", rename("alice", None), 3).unwrap();
+        store.execute("tp-1", rename("clerk", Some("firm-2")), 4).unwrap();
         assert_eq!(
-            store.execute("tp-1", rename("alice", None), 3).unwrap_err(),
+            store.execute("tp-1", rename("bookkeeper", Some("firm-1")), 5).unwrap_err(),
             TaxProfileError::NotHolder
         );
-        // The old firm is out; the holding firm's members are in.
-        assert_eq!(
-            store.execute("tp-1", rename("bookkeeper", Some("firm-1")), 3).unwrap_err(),
-            TaxProfileError::NotHolder
-        );
-        store.execute("tp-1", rename("clerk", Some("firm-2")), 3).unwrap();
+        let (state, _) = store.load("tp-1");
+        assert_eq!(state.access_for("alice", &[], NOW), ProfileAccess::Owner);
     }
 
     #[test]
@@ -2403,7 +2359,7 @@ mod tests {
     }
 
     #[test]
-    fn moving_the_profile_ends_every_pass() {
+    fn a_reclaim_ends_every_open_pass() {
         let mut store = alice_profile();
         store
             .execute("tp-1", offer("pass-1", "firm-1", "alice", PassPreset::Safe.permissions()), 1)
@@ -2412,9 +2368,18 @@ mod tests {
         store
             .execute("tp-1", offer("pass-2", "firm-2", "alice", PassPreset::Safe.permissions()), 3)
             .unwrap();
-        let (state, _) = store
-            .execute("tp-1", transfer(org("firm-3"), "alice", None), 4)
-            .unwrap();
+        store.push_event(
+            "tp-1",
+            TaxProfileEvent::Reclaimed {
+                holder: personal("alice"),
+                ownership: OwnershipStatus::PersonalExclusive,
+                verification: VerificationStatus::Verified,
+                verified_owner_user_id: "alice".into(),
+                proof_method: ProofMethod::FakeOrus,
+                actor_user_id: "alice".into(),
+            },
+        );
+        let (state, _) = store.load("tp-1");
         assert_eq!(state.pass("pass-1").unwrap().status, PassStatus::Revoked);
         assert_eq!(state.pass("pass-2").unwrap().status, PassStatus::Declined);
         assert_eq!(state.access_for("clerk", &orgs(&["firm-1"]), NOW), ProfileAccess::None);

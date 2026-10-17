@@ -268,8 +268,8 @@ pub fn agent_effective_permissions(
 ) -> PassPermissions {
     let live = match taxpayer_access {
         // Only profiles the taxpayer owns can be connected; anything else
-        // (holding org, firm pass) is not theirs to hand on.
-        ProfileAccess::Owner | ProfileAccess::OwnerReadOnly => taxpayer_access.permissions(),
+        // (a firm's draft, a firm pass) is not theirs to hand on.
+        ProfileAccess::Owner => taxpayer_access.permissions(),
         ProfileAccess::HoldingOrg | ProfileAccess::Pass(_) | ProfileAccess::None => {
             PassPermissions::empty()
         }
@@ -537,9 +537,6 @@ mod tests {
     fn agent_is_bounded_by_the_taxpayers_live_access() {
         let safe = PassPreset::Safe.permissions();
         assert_eq!(agent_effective_permissions(safe, ProfileAccess::Owner), safe);
-        // A firm holds the profile now: the owner can only read, so can the agent.
-        let narrowed = agent_effective_permissions(safe, ProfileAccess::OwnerReadOnly);
-        assert_eq!(narrowed, PassPreset::ReadOnly.permissions());
         // Not the taxpayer's own profile any more: nothing.
         for access in [
             ProfileAccess::HoldingOrg,

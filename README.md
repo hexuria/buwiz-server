@@ -258,7 +258,7 @@ V1 commands (past-tense event mirrors). Keep them small.
 
 Queries: `GetTaxProfile`, `ListTaxProfilesForAccount`, `GetProfileYear`, `ListYearForms`, `GetFormDraft`, `ListDraftsForYear`, `ListFilings`, `GetFilingByPeriod`.
 
-Claim/reclaim/transfer remain as extra company-managed commands (TIN attestation + ORUS proof). They are not TIN-as-SoT.
+Claim and reclaim remain (TIN attestation + ORUS proof) for a taxpayer to take a firm's draft or a profile someone else registered. Moving a profile to a firm is gone: firms work through passes.
 
 V1.1 stubs only: `SaveFormTemplate` / `ApplyFormTemplate`.
 
@@ -266,26 +266,25 @@ Do **not** port COR/OCR/effective-date ledgers, inference flag updates, or IMAP/
 
 Rules:
 
-1. Only one active holder per hashed taxpayer registration unit.
-2. Personal hold is exclusive to that user (and their agents).
-3. A company may hold it until the verified owner claims or reclaims (`pending_claim`).
-4. The verified owner can reclaim at any time.
+1. **The taxpayer always wins.** The owner can always publish, edit, see everything and end any firm's or agent's access. No firm can lock an owner out.
+2. One owner per hashed taxpayer registration unit. Firms and agents only ever work through passes the owner gives and can end.
+3. A profile a firm creates is a **draft** nobody owns (`pending_claim`) until a taxpayer claims it; meanwhile the firm's members work on it with the Full preset, without publishing or sharing.
+4. A proven owner (claim or reclaim) starts clean: every open pass ends.
 5. Multi-device identity uses last-write-wins via `updated_at` (PATCH must echo the last seen `updated_at`). Never silent-merge two different TINs into one row.
 6. Concurrent registers of the same hashed identity fail with 409.
 
 ### Who may do what
 
-Control follows the **holder**, never the account that registered the profile (`account_id` is history only). The owner can lend access with an **access pass**.
+The owner decides, always. Registering a profile grants nothing by itself (`account_id` is history only); a firm reaches someone else's profile only with an **access pass**.
 
-| Caller | View | Edit | Archive / restore | Share (passes) | Transfer |
+| Caller | View | Edit | Publish to BIR | Archive / restore | Share (passes) |
 |---|---|---|---|---|---|
-| Personal holder (the owner) | yes | yes | yes | yes | yes |
-| Member of the holding organization | yes | yes | yes | no | needs `ownership.transfer` there |
-| Verified owner while an organization holds it | yes | no (reclaim first) | no | no | no |
-| Member of a workspace with an active pass | `profile.view` | `profile.edit` | no | no | no |
-| Anyone else, including the original registrant after a claim or transfer | no | no | no | no | no |
+| The owner | yes | yes | yes, always | yes | yes |
+| Member of a workspace with an active pass | `profile.view` | `profile.edit` | only if the owner switched on `filings.publish` | no | no |
+| Member of the firm that created a draft nobody owns yet | yes | yes | no | yes | no |
+| Anyone else, including the original registrant after a claim | no | no | no | no | no |
 
-Membership of the *destination* organization never counts as control of the current holder.
+Profiles moved to a firm under the old rules replay as: the owner keeps the profile, and the firm holds a Full pass (no publishing) the owner can change or end. After deploying this, run `POST /api/auth/storage/tax-profiles/reproject` once (storage admin) so the lists match.
 
 #### Access passes
 
@@ -296,7 +295,7 @@ A pass lets a firm's workspace work on someone else's profile. Any member of tha
 - **Presets:** Read-only (the four `*.view`), **Safe** (Read-only + save, update and review drafts; selected when the screen opens), Full (all nine).
 - **`filings.publish`** is never in a preset and never in the permission list: only `allow_publish: true` turns it on, and the screen asks "Are you sure?" first. The server only records it; the grantee's installed buwiz-forms app checks it before sending to BIR.
 - **End date:** none unless the owner sets one (`ends_on`, the last day in Philippine time).
-- **Ending:** the owner revokes or declines; the workspace declines an offer, withdraws a request, or gives the pass back. A claim, reclaim or transfer ends every open pass.
+- **Ending:** the owner revokes or declines; the workspace declines an offer, withdraws a request, or gives the pass back. A claim or reclaim ends every open pass.
 - Sharing, ending passes, archiving and deleting stay with the owner; no pass grants them.
 - Notices are in-app (the Tax profiles page, "Waiting for you"); there is no grant email.
 
@@ -306,7 +305,7 @@ A pass lets a firm's workspace work on someone else's profile. Any member of tha
 
 The server is for backup, multi-device sync and sharing access. It never submits returns to BIR: publishing goes through the installed buwiz-forms app, which owns the tunnel / egress reroute.
 
-Email must be **verified** before register/claim/reclaim/transfer/patch/archive.
+Email must be **verified** before register/claim/reclaim/patch/archive.
 
 Cloud field subset for sync: `full_name`, `rdo_code`, `address`, `taxpayer_type`, plus contact/classification fields. **Never** sync `profile_pin_hash`, `totp_secret`, IMAP passwords, or mailbox OAuth tokens.
 
@@ -319,8 +318,7 @@ Cloud field subset for sync: `full_name`, `rdo_code`, `address`, `taxpayer_type`
 | `POST /tax-profiles/{id}/archive` | `ArchiveTaxProfile` |
 | `POST /tax-profiles/{id}/restore` | `RestoreTaxProfile` |
 | `POST /tax-profiles/claim` | Claim from company hold (ORUS proof; TIN attested) |
-| `POST /tax-profiles/reclaim` | Take back control |
-| `POST /tax-profiles/transfer` | Transfer to an org you belong to (`{ id, organization_id }`) |
+| `POST /tax-profiles/reclaim` | Prove ownership of a profile someone else registered (ORUS) |
 | `GET /tax-profiles/passes` | Open passes on your profiles or held by your workspaces, plus the permission catalog and presets |
 | `POST /tax-profiles/{id}/passes` | `OfferPass` (`{ organization_slug, preset \| permissions, allow_publish, ends_on }`) |
 | `POST /tax-profiles/passes/request` | `RequestPass` (`{ organization_id, tin_root, branch_code, preset }`) |
