@@ -223,22 +223,39 @@ jq -e --arg p "$PROFILE" --arg s "$STRANGER_PROFILE" '
   and .connections[0].preset == "read_only"
   and ([.connections[0].profiles[].profile_id] == [$p])' "$BODY" >/dev/null \
   || fail "one read-only connection on the own profile only"
-CONNECTION="$(jq -r '.connections[0].connection_id' "$BODY")"
 
-step "refresh rotates; reusing the old refresh token ends the family"
+step "refresh needs the app's own client_id"
 status="$(token_call grant_type=refresh_token "refresh_token=$REFRESH")"
+[[ "$status" == 400 ]] || fail "refresh without client_id -> $status"
+status="$(token_call grant_type=refresh_token "refresh_token=$REFRESH" "client_id=agent_someone_else")"
+[[ "$status" == 400 ]] || fail "refresh for another app -> $status"
+
+step "refresh rotates; reusing the old refresh token ends the whole connection"
+status="$(token_call grant_type=refresh_token "refresh_token=$REFRESH" "client_id=$CLIENT")"
 [[ "$status" == 200 ]] || fail "refresh -> $status"
 NEW_REFRESH="$(jq -r '.refresh_token' "$BODY")"
-status="$(token_call grant_type=refresh_token "refresh_token=$REFRESH")"
+status="$(token_call grant_type=refresh_token "refresh_token=$REFRESH" "client_id=$CLIENT")"
 [[ "$status" == 400 ]] || fail "replayed refresh -> $status"
-status="$(token_call grant_type=refresh_token "refresh_token=$NEW_REFRESH")"
+status="$(token_call grant_type=refresh_token "refresh_token=$NEW_REFRESH" "client_id=$CLIENT")"
 [[ "$status" == 400 ]] || fail "after a replay the newer refresh token is dead too (got $status)"
 [[ "$(mcp "$ACCESS" "$INIT")" == 401 ]] || fail "after a replay the access token is dead at /mcp too"
+expect 200 GET /api/agents "$OWNER"
+jq -e '.connections | length == 0' "$BODY" >/dev/null || fail "a replay ends the connection"
 
-step "a stranger cannot end the taxpayer's connection; the taxpayer can"
-expect 404 POST "/api/agents/$CONNECTION/revoke" "$STRANGER" '{}'
-expect 200 POST "/api/agents/$CONNECTION/revoke" "$OWNER" '{}'
+step "allow again; a stranger cannot end the connection; the taxpayer can, and the next call is 401"
+LOCATION="$(allow allow "$PROFILE")"
+CODE="$(sed -E 's/.*[?&]code=([^&]+).*/\1/' <<<"$LOCATION")"
+status="$(token_call grant_type=authorization_code "client_id=$CLIENT" "code=$CODE" \
+  "redirect_uri=$USED_REDIRECT" "code_verifier=$VERIFIER")"
+[[ "$status" == 200 ]] || fail "second code exchange -> $status"
+ACCESS2="$(jq -r '.access_token' "$BODY")"
+[[ "$(mcp "$ACCESS2" "$INIT")" == 200 ]] || fail "the new connection works"
+expect 200 GET /api/agents "$OWNER"
+CONNECTION2="$(jq -r '.connections[0].connection_id' "$BODY")"
+expect 404 POST "/api/agents/$CONNECTION2/revoke" "$STRANGER" '{}'
+expect 200 POST "/api/agents/$CONNECTION2/revoke" "$OWNER" '{}'
 jq -e '.connections | length == 0' "$BODY" >/dev/null || fail "connection should be gone"
+[[ "$(mcp "$ACCESS2" "$INIT")" == 401 ]] || fail "after End the agent's next call is 401"
 expect 200 GET /api/tax-profiles "$OWNER"   # the taxpayer is still signed in
 
 echo

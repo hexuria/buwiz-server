@@ -42,7 +42,9 @@ contract it should use when cloud backup and sharing are wired in.
 2. **List and read profiles:** `GET /api/tax-profiles` and
    `GET /api/tax-profiles/{id}` with `Authorization: Bearer …`. Each profile
    carries `access` (`owner`, `holding_org`, `owner_read_only`, `pass`) and
-   `permissions`, the caller's own rights.
+   `permissions`, the caller's own rights. Without `?organization_id=` the
+   list holds the caller's own profiles; profiles a workspace reaches
+   through a pass appear with `?organization_id=<workspace>`.
 3. **Before filing with BIR**, the app must check that `permissions` contains
    `filings.publish`. The server only records this right; the app enforces
    it, because only the app can reach BIR.
