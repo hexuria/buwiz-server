@@ -398,6 +398,30 @@ mod tests {
     }
 
     #[test]
+    fn boundaries_of_the_registration_rules() {
+        assert_eq!(AGENT_REFRESH_TTL_SECONDS, 2_592_000, "30 days");
+        let ten: Vec<String> = (0..10).map(|i| format!("http://localhost/cb{i}")).collect();
+        assert!(validate_registration(Some("x"), &ten, None).is_ok());
+        let eleven: Vec<String> = (0..11).map(|i| format!("http://localhost/cb{i}")).collect();
+        assert!(validate_registration(Some("x"), &eleven, None).is_err());
+        let at_limit = format!("https://a.example/{}", "p".repeat(512 - 18));
+        assert_eq!(at_limit.len(), 512);
+        assert!(redirect_uri_registrable(&at_limit).is_ok());
+        assert!(redirect_uri_registrable(&format!("{at_limit}p")).is_err());
+        for bad in [
+            "https://a.example/x y",      // space
+            "1app://callback",            // scheme starts with a digit
+            "my_app://callback",          // underscore not allowed in a scheme
+            "http://127.0.0.1:+80/cb",    // a sign is not a port
+            "http://127.0.0.1:/cb",       // empty port
+            "http://127.0.0.1:123456/cb", // six digits
+        ] {
+            assert!(redirect_uri_registrable(bad).is_err(), "{bad} should be refused");
+        }
+        assert!(redirect_uri_registrable("com.example.app:/cb").is_ok());
+    }
+
+    #[test]
     fn loopback_scheme_and_host_ignore_case() {
         let registered = uris(&["http://localhost/cb"]);
         assert!(redirect_uri_matches(&registered, "HTTP://LOCALHOST:9/cb"));

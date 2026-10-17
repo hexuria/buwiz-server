@@ -466,6 +466,74 @@ mod tests {
     }
 
     #[test]
+    fn stored_names_and_labels_are_fixed() {
+        // These strings are written to the database and shown to people.
+        let statuses: Vec<_> = [
+            PassStatus::Requested,
+            PassStatus::Offered,
+            PassStatus::Active,
+            PassStatus::Declined,
+            PassStatus::Revoked,
+        ]
+        .map(PassStatus::as_str)
+        .to_vec();
+        assert_eq!(statuses, ["requested", "offered", "active", "declined", "revoked"]);
+        assert_eq!(
+            PassGrantee::Organization { organization_id: "o".into() }.kind(),
+            "organization"
+        );
+        assert_eq!(PassPermission::FilingsPublish.label(), "Publish to BIR");
+        assert_eq!(PassPreset::Safe.label(), "Safe");
+        let labels: std::collections::BTreeSet<_> =
+            PassPermission::ALL.iter().map(|p| p.label()).collect();
+        assert_eq!(labels.len(), PassPermission::ALL.len(), "labels are distinct");
+        assert!(labels.iter().all(|label| !label.is_empty()));
+    }
+
+    #[test]
+    fn union_of_overlapping_sets_keeps_each_once() {
+        let safe = PassPreset::Safe.permissions();
+        let read = PassPreset::ReadOnly.permissions();
+        assert_eq!(safe.union(read), safe);
+        assert_eq!(read.union(read), read);
+    }
+
+    #[test]
+    fn leap_years_follow_the_gregorian_rule() {
+        for ok in ["2024-02-29", "2000-02-29"] {
+            assert!(pass_end_from_date(ok).is_ok(), "{ok}");
+        }
+        for bad in ["1900-02-29", "2100-02-29", "2023-02-29"] {
+            assert!(pass_end_from_date(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn malformed_instants_do_not_parse() {
+        assert_eq!(utc_seconds("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(utc_seconds("1970-01-01T00:00:00.5Z"), Some(0));
+        // RFC 3339 allows a leap second.
+        assert!(utc_seconds("2016-12-31T23:59:60Z").is_some());
+        for bad in [
+            "2027-03-31X16:00:00Z",
+            "2027/03-31T16:00:00Z",
+            "2027-03/31T16:00:00Z",
+            "2027-03-31T16-00:00Z",
+            "2027-03-31T16:00-00Z",
+            "2027-03-31T24:00:00Z",
+            "2027-03-31T23:60:00Z",
+            "2027-03-31T23:59:61Z",
+            "2027-03-31T16:00:00+24:00",
+            "2027-03-31T16:00:00+08:60",
+            "2027-03-31T16:00:00+0a:00",
+            "2027-03-31T16:00:00.Z",
+            "2027-03-31T16:00:00",
+        ] {
+            assert_eq!(utc_seconds(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
     fn end_dates_must_be_calendar_dates() {
         assert_eq!(pass_end_from_date("2027-03-31").unwrap(), "2027-03-31T16:00:00.000Z");
         assert!(pass_end_from_date("2028-02-29").is_ok(), "leap day");
