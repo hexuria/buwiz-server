@@ -4,6 +4,7 @@
 //! Split by domain; this module re-exports everything so existing `crate::contracts::*` keeps working.
 
 mod admin;
+mod agent;
 mod auth;
 mod dashboard;
 mod organization;
@@ -13,6 +14,7 @@ mod tax_profile;
 mod vault;
 
 pub use admin::*;
+pub use agent::*;
 pub use auth::*;
 pub use dashboard::*;
 pub use organization::*;

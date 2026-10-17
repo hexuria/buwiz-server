@@ -5,6 +5,7 @@
 
 #![allow(unused_imports)]
 
+pub mod agent;
 pub mod desktop_session;
 pub mod oauth_client;
 pub mod orus;
@@ -15,6 +16,12 @@ pub mod tin;
 pub mod tin_identity;
 pub mod v1_sync;
 
+pub use agent::{
+    agent_effective_permissions, agent_permissions_from_choice, is_agent_token, redirect_uri_matches,
+    validate_registration, AgentRegistration, AGENT_ACCESS_PREFIX, AGENT_ACCESS_TTL_SECONDS,
+    AGENT_CLIENT_PREFIX, AGENT_CODE_TTL_SECONDS, AGENT_REFRESH_PREFIX,
+    AGENT_REFRESH_TTL_SECONDS, AGENT_SCOPE,
+};
 pub use desktop_session::{
     DesktopGrant, DesktopSessionCommand, DesktopSessionError, DesktopSessionEvent,
 };

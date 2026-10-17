@@ -3,6 +3,7 @@
 //! Domain modules re-exported so existing `crate::application::*` call sites keep working.
 
 mod account;
+mod agent;
 mod admin;
 mod auth;
 mod authorization;
@@ -19,6 +20,7 @@ mod vault;
 // pub(crate) re-exports include pub(crate) helpers so sibling modules and the
 // rest of the crate can use crate::application::name after the split.
 pub(crate) use account::*;
+pub(crate) use agent::*;
 pub(crate) use admin::*;
 pub(crate) use auth::*;
 pub(crate) use authorization::*;

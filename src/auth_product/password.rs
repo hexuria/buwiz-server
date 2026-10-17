@@ -284,6 +284,10 @@ pub async fn refresh_tokens(
 }
 
 pub async fn verify_access_token(token: &str) -> AuthStackResult<TokenVerifyResponse> {
+    // Agent tokens only work at the MCP endpoint, never as the taxpayer.
+    if crate::domain::is_agent_token(token) {
+        return Err(AuthStackError::InvalidToken);
+    }
     let cached = cached_verified_token(token);
     let verified = match token_verification_service()
         .await?

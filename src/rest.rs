@@ -34,6 +34,8 @@ pub fn is_rest_request(req: &RestRequest) -> bool {
         || path.starts_with("/api/authorization/")
         || path.starts_with("/api/organizations")
         || path.starts_with("/api/tax-profiles")
+        || path == "/api/agents"
+        || path.starts_with("/api/agents/")
         || path.starts_with("/api/admin/")
         || path.starts_with("/api/audit/")
         // ddd:domain-rest-prefix
@@ -431,6 +433,16 @@ async fn dispatch(req: RestRequest) -> AuthStackResult<RestResponse> {
             validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
             let payload = parse_json::<TaxProfileCreateRequest>(req).await?;
             json_result(crate::application::create_tax_profile(payload, request_auth).await)
+        }
+        (Method::GET, "/api/agents") => {
+            json_result(crate::application::list_agent_connections(request_auth).await)
+        }
+        (Method::POST, path) if agent_revoke_route(path).is_some() => {
+            validate_csrf_if_cookie_authenticated(&req, &request_auth).await?;
+            let connection_id = agent_revoke_route(path).expect("checked").to_owned();
+            json_result(
+                crate::application::revoke_agent_connection(connection_id, request_auth).await,
+            )
         }
         (Method::GET, "/api/tax-profiles/passes") | (Method::GET, "/tax-profiles/passes") => {
             json_result(crate::application::list_passes(request_auth).await)
@@ -885,6 +897,12 @@ fn tax_profile_id_from_path(path: &str) -> Option<&str> {
     Some(rest)
 }
 
+/// `/api/agents/{connection}/revoke`. Returns the connection id.
+fn agent_revoke_route(path: &str) -> Option<&str> {
+    let id = path.strip_prefix("/api/agents/")?.strip_suffix("/revoke")?;
+    (!id.is_empty() && !id.contains('/')).then_some(id)
+}
+
 /// `/api/tax-profiles/{profile}/passes[/{pass}[/{action}]]`, also without
 /// the `/api` prefix. Returns `(profile, pass, action)`.
 fn pass_route(path: &str) -> Option<(&str, Option<&str>, Option<&str>)> {
@@ -997,6 +1015,14 @@ mod tests {
         let provider = oauth_provider_from_path("/api/auth/oauth/google/start", "/start").unwrap();
 
         assert_eq!(provider, "google");
+    }
+
+    #[test]
+    fn agent_revoke_route_reads_the_connection() {
+        assert_eq!(agent_revoke_route("/api/agents/c1/revoke"), Some("c1"));
+        assert_eq!(agent_revoke_route("/api/agents//revoke"), None);
+        assert_eq!(agent_revoke_route("/api/agents/a/b/revoke"), None);
+        assert_eq!(agent_revoke_route("/api/agents/c1"), None);
     }
 
     #[test]

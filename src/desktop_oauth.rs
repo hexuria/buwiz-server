@@ -1,4 +1,7 @@
-//! First-party OAuth 2.1 (PKCE) + RFC 8628 device-code for the Buwiz desktop app.
+//! First-party OAuth 2.1 (PKCE) + RFC 8628 device-code for the Buwiz desktop app,
+//! and OAuth for AI agents (see [`agent`]).
+
+mod agent;
 
 use bytes::Bytes;
 use http::{Method, StatusCode};
@@ -24,6 +27,9 @@ pub fn is_desktop_oauth_request(path: &str) -> bool {
     matches!(
         path,
         "/.well-known/oauth-authorization-server"
+            | "/.well-known/oauth-protected-resource"
+            | "/.well-known/oauth-protected-resource/mcp"
+            | "/oauth/register"
             | "/oauth/authorize"
             | "/oauth/token"
             | "/oauth/device/code"
@@ -41,7 +47,21 @@ pub async fn serve(req: RestRequest) -> AuthStackResult<RestResponse> {
         (Method::GET, "/.well-known/oauth-authorization-server") => {
             json_response(StatusCode::OK, &authorization_server_metadata().await)
         }
-        (Method::GET, "/oauth/authorize") => authorize_get(&req, &uri).await,
+        (
+            Method::GET,
+            "/.well-known/oauth-protected-resource" | "/.well-known/oauth-protected-resource/mcp",
+        ) => agent::protected_resource_metadata().await,
+        (Method::POST, "/oauth/register") => agent::register(req).await,
+        (Method::GET, "/oauth/authorize") => {
+            let client_id = query_map(uri.query().unwrap_or_default())
+                .remove("client_id")
+                .unwrap_or_default();
+            if agent::is_agent_client(&client_id) {
+                agent::authorize_get(&req, &uri).await
+            } else {
+                authorize_get(&req, &uri).await
+            }
+        }
         (Method::POST, "/oauth/authorize") => authorize_post(req).await,
         (Method::POST, "/oauth/token") => token(req).await,
         (Method::POST, "/oauth/device/code") | (Method::POST, "/auth/device/start") => {
@@ -64,6 +84,7 @@ async fn authorization_server_metadata() -> serde_json::Value {
         "issuer": issuer,
         "authorization_endpoint": format!("{issuer}/oauth/authorize"),
         "token_endpoint": format!("{issuer}/oauth/token"),
+        "registration_endpoint": format!("{issuer}/oauth/register"),
         "device_authorization_endpoint": format!("{issuer}/oauth/device/code"),
         "buwiz_device_start_endpoint": format!("{issuer}/auth/device/start"),
         "buwiz_device_poll_endpoint": format!("{issuer}/auth/device/poll"),
@@ -150,7 +171,24 @@ async fn authorize_get(req: &RestRequest, uri: &http::Uri) -> AuthStackResult<Re
 }
 
 async fn authorize_post(req: RestRequest) -> AuthStackResult<RestResponse> {
-    let session = session_from_request(&req)
+    // Agents post their Allow screen here too; both forms carry client_id.
+    let headers = req.headers().clone();
+    let body = read_body(req).await?;
+    let client_id = form_urlencoded::parse(&body)
+        .find(|(key, _)| key == "client_id")
+        .map(|(_, value)| value.into_owned())
+        .unwrap_or_default();
+    if agent::is_agent_client(&client_id) {
+        return agent::authorize_post(&headers, body).await;
+    }
+    desktop_authorize_post(&headers, &body).await
+}
+
+async fn desktop_authorize_post(
+    headers: &http::HeaderMap,
+    body: &[u8],
+) -> AuthStackResult<RestResponse> {
+    let session = session_from_headers(headers)
         .await?
         .ok_or(AuthStackError::AuthRequired)?;
     let session_id = session
@@ -158,7 +196,8 @@ async fn authorize_post(req: RestRequest) -> AuthStackResult<RestResponse> {
         .clone()
         .ok_or(AuthStackError::AuthRequired)?;
     let user_id = session.user_id.ok_or(AuthStackError::AuthRequired)?;
-    let form = parse_form(req).await?;
+    let form: std::collections::HashMap<String, String> =
+        form_urlencoded::parse(body).into_owned().collect();
     let csrf = form.get("csrf").cloned().unwrap_or_default();
     crate::application::validate_csrf_token_for_session(Some(session_id.clone()), Some(csrf))
         .await?;
@@ -217,6 +256,9 @@ async fn authorization_code_grant(
     form: &std::collections::HashMap<String, String>,
 ) -> AuthStackResult<RestResponse> {
     let client_id = form.get("client_id").cloned().unwrap_or_default();
+    if agent::is_agent_client(&client_id) {
+        return agent::authorization_code_grant(form).await;
+    }
     let code = form.get("code").cloned().unwrap_or_default();
     let redirect_uri = form.get("redirect_uri").cloned().unwrap_or_default();
     let verifier = form.get("code_verifier").cloned().unwrap_or_default();
@@ -276,6 +318,9 @@ async fn refresh_grant(
             "invalid_request",
             "refresh_token is required",
         );
+    }
+    if agent::is_agent_refresh_token(&refresh) {
+        return agent::refresh_grant(&refresh).await;
     }
     let tokens = crate::application::refresh_token_for(None, Some(refresh)).await?;
     json_response(
@@ -528,7 +573,13 @@ async fn extra_redirects() -> Vec<String> {
 async fn session_from_request(
     req: &RestRequest,
 ) -> AuthStackResult<Option<crate::contracts::SessionView>> {
-    let Some(session_id) = cookie_session_id(req) else {
+    session_from_headers(req.headers()).await
+}
+
+async fn session_from_headers(
+    headers: &http::HeaderMap,
+) -> AuthStackResult<Option<crate::contracts::SessionView>> {
+    let Some(session_id) = cookie_session_id(headers) else {
         return Ok(None);
     };
     let session = crate::application::get_current_session_for(Some(session_id)).await?;
@@ -539,8 +590,8 @@ async fn session_from_request(
     }
 }
 
-fn cookie_session_id(req: &RestRequest) -> Option<String> {
-    req.headers()
+fn cookie_session_id(headers: &http::HeaderMap) -> Option<String> {
+    headers
         .get(http::header::COOKIE)
         .and_then(|value| value.to_str().ok())
         .and_then(|header| {
@@ -750,9 +801,14 @@ fn response(
     let stream =
         futures::stream::once(async move { Ok::<_, std::io::Error>(http_body::Frame::data(bytes)) });
     let body = StreamBody::new(stream).boxed_unsync();
+    // Codes and tokens must never be cached (RFC 6749 §5.1), and the Allow
+    // screens must never be framed by another site (clickjacking).
     http::Response::builder()
         .status(status)
         .header(http::header::CONTENT_TYPE, content_type)
+        .header(http::header::CACHE_CONTROL, "no-store")
+        .header(http::header::X_FRAME_OPTIONS, "DENY")
+        .header(http::header::CONTENT_SECURITY_POLICY, "frame-ancestors 'none'")
         .body(body)
         .map_err(|error| AuthStackError::transport(error.to_string()))
 }
