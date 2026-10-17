@@ -345,6 +345,21 @@ pub enum TaxProfileCommand {
     },
 }
 
+impl TaxProfileCommand {
+    /// The time of a pass action, which first records expired passes.
+    fn pass_clock(&self) -> Option<&str> {
+        match self {
+            Self::OfferPass { occurred_at, .. }
+            | Self::RequestPass { occurred_at, .. }
+            | Self::AcceptPass { occurred_at, .. }
+            | Self::ApprovePass { occurred_at, .. }
+            | Self::ChangePass { occurred_at, .. }
+            | Self::EndPass { occurred_at, .. } => Some(occurred_at),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaxProfileEvent {
     #[serde(alias = "Created")]
@@ -440,6 +455,13 @@ pub enum TaxProfileEvent {
         actor_user_id: String,
         occurred_at: String,
     },
+    /// An active pass ran past its end date. Nobody ended it, so there is
+    /// no actor; `occurred_at` is the end date itself. Recorded with the
+    /// next pass action on the profile (`TaxProfile::handle`).
+    PassExpired {
+        pass_id: String,
+        occurred_at: String,
+    },
     OwnerInvited {
         invite_id: String,
         organization_id: String,
@@ -477,6 +499,7 @@ impl TaxProfileEvent {
                 | Self::PassActivated { .. }
                 | Self::PassChanged { .. }
                 | Self::PassEnded { .. }
+                | Self::PassExpired { .. }
                 | Self::OwnerInvited { .. }
                 | Self::OwnerInviteWithdrawn { .. }
         )
@@ -496,6 +519,7 @@ impl TaxProfileEvent {
             Self::PassActivated { .. } => "tax_profile.pass_activated",
             Self::PassChanged { .. } => "tax_profile.pass_changed",
             Self::PassEnded { .. } => "tax_profile.pass_ended",
+            Self::PassExpired { .. } => "tax_profile.pass_expired",
             Self::OwnerInvited { .. } => "tax_profile.owner_invited",
             Self::OwnerInviteWithdrawn { .. } => "tax_profile.owner_invite_withdrawn",
             Self::OwnerInviteAccepted { .. } => "tax_profile.owner_invite_accepted",
@@ -733,7 +757,52 @@ impl TaxProfile {
         }
     }
 
+    /// Runs `command`. A pass action first records every active pass that
+    /// ran past its end date (`PassExpired`), so history shows when each
+    /// one stopped working and the firm can get a new pass. Ending a pass
+    /// that turns out to have expired just records the expiry.
     pub fn handle(
+        &self,
+        command: TaxProfileCommand,
+    ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
+        let expired = command
+            .pass_clock()
+            .map(|now| self.expiry_events(now))
+            .unwrap_or_default();
+        if expired.is_empty() {
+            return self.handle_command(command);
+        }
+        if let TaxProfileCommand::EndPass { pass_id, .. } = &command
+            && expired
+                .iter()
+                .any(|event| matches!(event, TaxProfileEvent::PassExpired { pass_id: id, .. } if id == pass_id))
+        {
+            return Ok(expired);
+        }
+        let mut next = self.clone();
+        for event in &expired {
+            next.apply(event);
+        }
+        let mut events = expired;
+        events.extend(next.handle_command(command)?);
+        Ok(events)
+    }
+
+    /// `PassExpired` for every active pass past its end date at `now`.
+    fn expiry_events(&self, now: &str) -> Vec<TaxProfileEvent> {
+        self.passes
+            .iter()
+            .filter(|pass| pass.status == PassStatus::Active && pass.is_expired(now))
+            .filter_map(|pass| {
+                Some(TaxProfileEvent::PassExpired {
+                    pass_id: pass.pass_id.clone(),
+                    occurred_at: pass.expires_at.clone()?,
+                })
+            })
+            .collect()
+    }
+
+    fn handle_command(
         &self,
         command: TaxProfileCommand,
     ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
@@ -1085,6 +1154,15 @@ impl TaxProfile {
                 if let Some(pass) = self.pass_mut(pass_id) {
                     pass.status = *status;
                     pass.ended_by = Some(actor_user_id.clone());
+                    pass.updated_at = occurred_at.clone();
+                }
+            }
+            TaxProfileEvent::PassExpired {
+                pass_id,
+                occurred_at,
+            } => {
+                if let Some(pass) = self.pass_mut(pass_id) {
+                    pass.status = PassStatus::Expired;
                     pass.updated_at = occurred_at.clone();
                 }
             }
@@ -2883,6 +2961,129 @@ mod tests {
             *occurred_at = "2026-03-02T00:00:00Z".into();
         }
         assert!(is_pass_state(store.execute("tp-1", late, 2).unwrap_err()));
+    }
+
+    const PASS_END: &str = "2026-03-01T16:00:00.000Z";
+    const AFTER_END: &str = "2026-03-02T00:00:00Z";
+
+    /// Alice's profile with firm-1 holding an active Safe pass that ends at
+    /// `PASS_END`; revision 3.
+    fn alice_with_ending_pass() -> InMemoryTaxProfileStore {
+        let mut store = alice_profile();
+        let mut cmd = offer("pass-1", "firm-1", "alice", PassPreset::Safe.permissions());
+        if let TaxProfileCommand::OfferPass { expires_at, .. } = &mut cmd {
+            *expires_at = Some(PASS_END.into());
+        }
+        store.execute("tp-1", cmd, 1).unwrap();
+        store.execute("tp-1", accept("pass-1", "boss", &["firm-1"]), 2).unwrap();
+        store
+    }
+
+    fn at(mut command: TaxProfileCommand, when: &str) -> TaxProfileCommand {
+        match &mut command {
+            TaxProfileCommand::OfferPass { occurred_at, .. }
+            | TaxProfileCommand::ChangePass { occurred_at, .. }
+            | TaxProfileCommand::EndPass { occurred_at, .. } => *occurred_at = when.into(),
+            _ => unreachable!("not used here"),
+        }
+        command
+    }
+
+    fn expired(pass_id: &str) -> TaxProfileEvent {
+        TaxProfileEvent::PassExpired {
+            pass_id: pass_id.into(),
+            occurred_at: PASS_END.into(),
+        }
+    }
+
+    #[test]
+    fn a_pass_past_its_end_date_is_recorded_as_expired_by_the_next_pass_action() {
+        let store = alice_with_ending_pass();
+        let (state, _) = store.load("tp-1");
+        // Before the end date nothing is recorded.
+        let before = state
+            .handle(offer("pass-2", "firm-2", "alice", PassPreset::Safe.permissions()))
+            .unwrap();
+        assert!(!before.iter().any(|e| matches!(e, TaxProfileEvent::PassExpired { .. })));
+        // After it, the expiry comes first and is dated at the end date.
+        let events = state
+            .handle(at(offer("pass-2", "firm-2", "alice", PassPreset::Safe.permissions()), AFTER_END))
+            .unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0], expired("pass-1"));
+        assert!(matches!(events[1], TaxProfileEvent::PassOffered { .. }));
+    }
+
+    #[test]
+    fn an_expired_pass_frees_the_firm_for_a_new_one() {
+        let mut store = alice_with_ending_pass();
+        let renewed = at(offer("pass-2", "firm-1", "alice", PassPreset::Safe.permissions()), AFTER_END);
+        let (state, _) = store.execute("tp-1", renewed, 3).unwrap();
+        let old = state.pass("pass-1").unwrap();
+        assert_eq!(old.status, PassStatus::Expired);
+        assert_eq!(old.ended_by, None, "nobody ended it");
+        assert_eq!(old.updated_at, PASS_END);
+        assert_eq!(state.pass("pass-2").unwrap().status, PassStatus::Offered);
+    }
+
+    #[test]
+    fn ending_an_expired_pass_only_records_that_it_expired() {
+        let store = alice_with_ending_pass();
+        let (state, _) = store.load("tp-1");
+        for actor in [("alice", &[][..]), ("boss", &["firm-1"][..])] {
+            let events = state.handle(at(end("pass-1", actor.0, actor.1), AFTER_END)).unwrap();
+            assert_eq!(events, [expired("pass-1")], "{}", actor.0);
+        }
+    }
+
+    #[test]
+    fn an_expired_pass_cannot_be_changed_back_to_life() {
+        let mut store = alice_with_ending_pass();
+        let change_late = at(change("pass-1", "alice", PassPreset::Full.permissions()), AFTER_END);
+        assert!(is_pass_state(store.execute("tp-1", change_late, 3).unwrap_err()));
+        // A refused action records nothing.
+        assert_eq!(store.load("tp-1").1, 3);
+        assert_eq!(store.load("tp-1").0.pass("pass-1").unwrap().status, PassStatus::Active);
+    }
+
+    #[test]
+    fn only_active_passes_expire_and_only_pass_actions_record_it() {
+        let mut store = alice_profile();
+        let mut cmd = offer("pass-1", "firm-1", "alice", PassPreset::Safe.permissions());
+        if let TaxProfileCommand::OfferPass { expires_at, .. } = &mut cmd {
+            *expires_at = Some(PASS_END.into());
+        }
+        store.execute("tp-1", cmd, 1).unwrap();
+        let (state, _) = store.load("tp-1");
+        // An offer nobody accepted is not "expired": it never started.
+        let events = state
+            .handle(at(offer("pass-2", "firm-2", "alice", PassPreset::Safe.permissions()), AFTER_END))
+            .unwrap();
+        assert_eq!(events.len(), 1);
+
+        let (state, _) = alice_with_ending_pass().load("tp-1");
+        let events = state
+            .handle(TaxProfileCommand::UpdateTaxProfileIdentity {
+                display_name: Some("Alice B".into()),
+                facts: None,
+                expected_updated_at: None,
+                actor_user_id: "alice".into(),
+                actor_orgs: Vec::new(),
+                occurred_at: AFTER_END.into(),
+            })
+            .unwrap();
+        assert!(!events.iter().any(|e| matches!(e, TaxProfileEvent::PassExpired { .. })));
+    }
+
+    #[test]
+    fn pass_expired_is_a_stored_pass_event() {
+        let event = expired("pass-1");
+        assert_eq!(event.event_type(), "tax_profile.pass_expired");
+        assert!(!event.changes_profile());
+        let stored = serde_json::to_value(&event).unwrap();
+        assert_eq!(serde_json::from_value::<TaxProfileEvent>(stored).unwrap(), event);
+        assert_eq!(PassStatus::Expired.as_str(), "expired");
+        assert!(!PassStatus::Expired.is_open());
     }
 
     #[test]

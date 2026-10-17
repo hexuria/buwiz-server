@@ -82,6 +82,10 @@ async fn apply_or_verify_app_schema(
             "0010_record_authors",
             include_str!("../../migrations/postgres/0010_record_authors.sql"),
         ),
+        (
+            "0011_pass_expiry",
+            include_str!("../../migrations/postgres/0011_pass_expiry.sql"),
+        ),
     ];
     let (mut client, connection) =
         tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;

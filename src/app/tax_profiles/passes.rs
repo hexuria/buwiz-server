@@ -3,7 +3,7 @@
 //! first; the server only records it for the grantee's installed app.
 
 use crate::app::{
-    AskForPass, OfferPass, PassStep, browser_load, list_organizations, list_passes,
+    AskForPass, ChangePass, OfferPass, PassStep, browser_load, list_organizations, list_passes,
     list_tax_profiles,
 };
 use crate::contracts::{PassListResponse, PassView};
@@ -22,6 +22,7 @@ pub fn PassesPanel() -> impl IntoView {
     let offer = ServerAction::<OfferPass>::new();
     let ask = ServerAction::<AskForPass>::new();
     let step = ServerAction::<PassStep>::new();
+    let change = ServerAction::<ChangePass>::new();
 
     // Give-access form.
     let profile_id = RwSignal::new(String::new());
@@ -35,6 +36,12 @@ pub fn PassesPanel() -> impl IntoView {
     let ask_tin = RwSignal::new(String::new());
     let ask_branch = RwSignal::new("00000".to_string());
     let ask_preset = RwSignal::new(String::new());
+    // Change-pass editor: the pass being changed and its draft settings.
+    let editing = RwSignal::new(None::<String>);
+    let edit_chosen = RwSignal::new(Vec::<String>::new());
+    let edit_publish = RwSignal::new(false);
+    let edit_confirm = RwSignal::new(false);
+    let edit_ends = RwSignal::new(String::new());
 
     let take = move |value: Option<Result<PassListResponse, server_fn::ServerFnError>>| {
         if let Some(Ok(value)) = value {
@@ -51,9 +58,16 @@ pub fn PassesPanel() -> impl IntoView {
     Effect::new(move |_| take(offer.value().get()));
     Effect::new(move |_| take(ask.value().get()));
     Effect::new(move |_| take(step.value().get()));
+    Effect::new(move |_| {
+        let value = change.value().get();
+        if value.as_ref().is_some_and(Result::is_ok) {
+            editing.set(None);
+        }
+        take(value);
+    });
 
     let error = move || {
-        [offer.value().get(), ask.value().get(), step.value().get()]
+        [offer.value().get(), ask.value().get(), step.value().get(), change.value().get()]
             .into_iter()
             .flatten()
             .find_map(Result::err)
@@ -71,8 +85,8 @@ pub fn PassesPanel() -> impl IntoView {
             .collect::<Vec<_>>()
     };
     let presets = move || list.get().map(|l| l.presets).unwrap_or_default();
-    let matching_preset = move || {
-        let mut now = chosen.get();
+    let preset_of = move |set: RwSignal<Vec<String>>| {
+        let mut now = set.get();
         now.sort();
         presets().into_iter().find(|preset| {
             let mut ids = preset.permissions.clone();
@@ -80,9 +94,10 @@ pub fn PassesPanel() -> impl IntoView {
             ids == now
         })
     };
-    let toggle = move |id: String| {
+    let matching_preset = move || preset_of(chosen);
+    let toggle_in = move |set: RwSignal<Vec<String>>, id: String| {
         let order: Vec<String> = catalog().into_iter().map(|p| p.id).collect();
-        chosen.update(|set| {
+        set.update(|set| {
             if let Some(at) = set.iter().position(|p| *p == id) {
                 set.remove(at);
             } else {
@@ -90,6 +105,20 @@ pub fn PassesPanel() -> impl IntoView {
             }
             set.sort_by_key(|p| order.iter().position(|o| o == p));
         });
+    };
+    let toggle = move |id: String| toggle_in(chosen, id);
+    let start_change = move |pass: &PassView| {
+        edit_chosen.set(
+            pass.permissions
+                .iter()
+                .filter(|p| *p != "filings.publish")
+                .cloned()
+                .collect(),
+        );
+        edit_publish.set(pass.can_publish);
+        edit_confirm.set(false);
+        edit_ends.set(last_day(pass).unwrap_or_default());
+        editing.set(Some(pass.pass_id.clone()));
     };
     let owned = move || {
         profiles
@@ -298,7 +327,14 @@ pub fn PassesPanel() -> impl IntoView {
                     key=|p| format!("{}{}{}", p.pass_id, p.status, p.updated_at)
                     children=move |p: PassView| {
                         let (pid, gid) = (p.profile_id.clone(), p.pass_id.clone());
+                        let (pid3, gid3) = (pid.clone(), gid.clone());
                         let label = end_label(&p);
+                        let changeable = can_change(&p);
+                        let this = StoredValue::new(p.clone());
+                        let is_editing = {
+                            let gid = gid.clone();
+                            move || editing.get().as_deref() == Some(gid.as_str())
+                        };
                         let line = format!(
                             "{} ····{} · {} · {} · {} access{}{}",
                             p.profile_name,
@@ -313,10 +349,96 @@ pub fn PassesPanel() -> impl IntoView {
                             <li class="mb-4 rounded-xl border border-border-subtle p-4">
                                 <p class=RESULT_LINE>{line}</p>
                                 <div class="mt-2 flex flex-wrap gap-2">
+                                    <Show when=move || changeable>
+                                        <button class=BTN_SECONDARY type="button"
+                                            on:click=move |_| this.with_value(|pass| start_change(pass))>"Change"</button>
+                                    </Show>
                                     <button class=BTN_SECONDARY type="button" on:click=move |_| {
                                         step.dispatch(PassStep { profile_id: pid.clone(), pass_id: gid.clone(), step: "end".into() });
                                     }>{label}</button>
                                 </div>
+                                <Show when=is_editing.clone()>
+                                    <form class=FIELD_GROUP on:submit={
+                                        let (pid, gid) = (pid3.clone(), gid3.clone());
+                                        move |event: leptos::ev::SubmitEvent| {
+                                            event.prevent_default();
+                                            change.dispatch(ChangePass {
+                                                profile_id: pid.clone(),
+                                                pass_id: gid.clone(),
+                                                permissions: edit_chosen.get_untracked(),
+                                                allow_publish: edit_publish.get_untracked(),
+                                                ends_on: edit_ends.get_untracked(),
+                                            });
+                                        }
+                                    }>
+                                        <fieldset class=FIELD>
+                                            <legend>"Permissions"</legend>
+                                            <For
+                                                each=catalog
+                                                key=|p| p.id.clone()
+                                                children=move |p| {
+                                                    let id = p.id.clone();
+                                                    let id2 = p.id.clone();
+                                                    view! {
+                                                        <label class="flex items-center gap-2 text-[13px] font-normal">
+                                                            <input type="checkbox"
+                                                                prop:checked=move || edit_chosen.get().contains(&id)
+                                                                on:change=move |_| toggle_in(edit_chosen, id2.clone()) />
+                                                            {p.label.clone()}
+                                                        </label>
+                                                    }
+                                                }
+                                            />
+                                        </fieldset>
+                                        <div class=BANNER_ERROR>
+                                            <label class="flex items-center gap-2">
+                                                <input type="checkbox" role="switch"
+                                                    prop:checked=move || edit_publish.get()
+                                                    on:change=move |ev| {
+                                                        if event_target_checked(&ev) {
+                                                            edit_confirm.set(true);
+                                                        } else {
+                                                            edit_publish.set(false);
+                                                        }
+                                                    } />
+                                                <strong>"Publish to BIR"</strong>
+                                            </label>
+                                            <Show when=move || edit_confirm.get()>
+                                                <p class="m-0">
+                                                    <strong>"Are you sure? "</strong>
+                                                    "They will be able to file returns in your name. "
+                                                    <button class=BTN_PRIMARY type="button" on:click=move |_| {
+                                                        edit_publish.set(true);
+                                                        edit_confirm.set(false);
+                                                    }>"Yes, allow publishing"</button>
+                                                    " "
+                                                    <button class=BTN_SECONDARY type="button" on:click=move |_| {
+                                                        edit_publish.set(false);
+                                                        edit_confirm.set(false);
+                                                    }>"Cancel"</button>
+                                                </p>
+                                            </Show>
+                                        </div>
+                                        <label class=FIELD>
+                                            <span>"Last day (empty: no end date)"</span>
+                                            <input class=INPUT type="date" prop:value=move || edit_ends.get()
+                                                on:input=move |ev| edit_ends.set(event_target_value(&ev)) />
+                                        </label>
+                                        <p class=RESULT_LINE>{move || {
+                                            let name = preset_of(edit_chosen).map(|p| p.label).unwrap_or_else(|| "Custom".into());
+                                            format!(
+                                                "{name} · {} of {} permissions · {}",
+                                                edit_chosen.get().len(),
+                                                catalog().len(),
+                                                if edit_publish.get() { "can publish to BIR" } else { "cannot publish to BIR" }
+                                            )
+                                        }}</p>
+                                        <div class="flex flex-wrap gap-2">
+                                            <button class=BTN_PRIMARY type="submit" disabled=move || change.pending().get()>"Save changes"</button>
+                                            <button class=BTN_SECONDARY type="button" on:click=move |_| editing.set(None)>"Cancel"</button>
+                                        </div>
+                                    </form>
+                                </Show>
                             </li>
                         }
                     }
@@ -401,11 +523,68 @@ fn what(pass: &PassView) -> String {
     }
 }
 
+/// Only the owner changes a pass, and only one that is offered or working
+/// (a request is approved or declined instead; an expired one is replaced).
+fn can_change(pass: &PassView) -> bool {
+    pass.my_side == "owner" && matches!(pass.status.as_str(), "offered" | "active")
+}
+
+/// The pass's last day as `YYYY-MM-DD` in Philippine time. A pass ends at
+/// the next midnight there, which is 16:00 UTC of the last day.
+fn last_day(pass: &PassView) -> Option<String> {
+    pass.expires_at.as_deref()?.get(..10).map(str::to_owned)
+}
+
 fn end_label(pass: &PassView) -> &'static str {
     match (pass.my_side.as_str(), pass.status.as_str()) {
         ("owner", "requested") | ("grantee", "offered") => "Decline",
         ("owner", "offered") | ("grantee", "requested") => "Withdraw",
         ("owner", _) => "Revoke",
         _ => "Give back",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pass(side: &str, status: &str, expires_at: Option<&str>) -> PassView {
+        PassView {
+            pass_id: "g1".into(),
+            profile_id: "p1".into(),
+            profile_name: "Ana".into(),
+            tin_last4: "1234".into(),
+            grantee_kind: "organization".into(),
+            grantee_id: "o1".into(),
+            grantee_name: None,
+            grantee_slug: None,
+            permissions: vec!["profile.view".into()],
+            preset: None,
+            can_publish: false,
+            status: status.into(),
+            expires_at: expires_at.map(str::to_owned),
+            created_at: String::new(),
+            updated_at: String::new(),
+            my_side: side.into(),
+            waiting_on_me: false,
+        }
+    }
+
+    #[test]
+    fn only_the_owner_changes_an_offered_or_working_pass() {
+        assert!(can_change(&pass("owner", "offered", None)));
+        assert!(can_change(&pass("owner", "active", None)));
+        for status in ["requested", "expired"] {
+            assert!(!can_change(&pass("owner", status, None)), "{status}");
+        }
+        assert!(!can_change(&pass("grantee", "active", None)));
+    }
+
+    #[test]
+    fn the_last_day_is_the_utc_date_of_the_end_instant() {
+        // Ends at midnight Manila on 2 March = 16:00 UTC on 1 March.
+        let ending = pass("owner", "active", Some("2026-03-01T16:00:00.000Z"));
+        assert_eq!(last_day(&ending).as_deref(), Some("2026-03-01"));
+        assert_eq!(last_day(&pass("owner", "active", None)), None);
     }
 }
