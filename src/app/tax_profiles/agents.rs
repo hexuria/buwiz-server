@@ -78,11 +78,11 @@ fn line(c: &AgentConnectionView) -> String {
     let used = c
         .last_used_at
         .as_deref()
-        .map(|t| format!(" · last used {}", &t[..10.min(t.len())]))
+        .map(|t| format!(" · last used {}", t.get(..10).unwrap_or(t)))
         .unwrap_or_else(|| " · not used yet".to_owned());
     format!(
         "{} (names itself) · {what} · {profiles} · allowed {}{used}",
         c.client_name,
-        &c.created_at[..10.min(c.created_at.len())],
+        c.created_at.get(..10).unwrap_or(&c.created_at),
     )
 }

@@ -236,7 +236,7 @@ Cloud subset of the desktop taxpayer profile. **`id` (UUID) is the server source
 
 `tax_profiles.account_id` maps to wasi-auth `auth_users.user_id` (the sketch `accounts` table is not duplicated). Refresh tokens stay in `auth_refresh_tokens`. Device codes live in `buwiz_server.oauth_device_codes`; sessions in `auth_sessions`. Do not add product `devices` or `refresh_tokens` tables.
 
-The server stores `tin_last4` for display, persisted `branch_code` (head office `00000`), and an HMAC of `{tin_root}|{branch_code}` as `tin_hash` (BYTEA; Spin binds hex via `decode(..., 'hex')`). Exclusive uniqueness is **only** on `RegisterTaxProfile` via that hash (`UNIQUE (tin_hash)` globally in V1, plus `UNIQUE (account_id, tin_hash)`). Drop the global unique later when `tax_profile_members` exists. Raw TIN is attested at register/claim time and is **not** the primary key.
+The server stores `tin_last4` for display, persisted `branch_code` (head office `00000`), and an HMAC of `{tin_root}|{branch_code}` as `tin_hash` (BYTEA; Spin binds hex via `decode(..., 'hex')`). Exclusive uniqueness is **only** on `RegisterTaxProfile` via that hash (`UNIQUE (tin_hash)` globally in V1, plus `UNIQUE (account_id, tin_hash)`). Sharing never copies the row: firms reach a profile through access passes and AI agents through agent connections, so the global unique stays. Raw TIN is attested at register/claim time and is **not** the primary key.
 
 `claim_status`: `owned` | `pending_claim` | `read_only`.
 
@@ -271,6 +271,7 @@ Rules:
 3. A company may hold it until the verified owner claims or reclaims (`pending_claim`).
 4. The verified owner can reclaim at any time.
 5. Multi-device identity uses last-write-wins via `updated_at` (PATCH must echo the last seen `updated_at`). Never silent-merge two different TINs into one row.
+6. Concurrent registers of the same hashed identity fail with 409.
 
 ### Who may do what
 
@@ -299,8 +300,11 @@ A pass lets a firm's workspace work on someone else's profile. Any member of tha
 - Sharing, ending passes, archiving and deleting stay with the owner; no pass grants them.
 - Notices are in-app (the Tax profiles page, "Waiting for you"); there is no grant email.
 
+- An **archived** profile is frozen for grantees: its passes give no access and cannot be accepted, approved or changed until it is restored. The owner can still end them.
+- A workspace that asked with a TIN sees the profile's name only after the owner approves.
+- Sharing a pass does not move the profile's `updated_at`, so the desktop's last-write-wins PATCH is not disturbed.
+
 The server is for backup, multi-device sync and sharing access. It never submits returns to BIR: publishing goes through the installed buwiz-forms app, which owns the tunnel / egress reroute.
-6. Concurrent registers of the same hashed identity fail with 409.
 
 Email must be **verified** before register/claim/reclaim/transfer/patch/archive.
 
@@ -322,7 +326,7 @@ Cloud field subset for sync: `full_name`, `rdo_code`, `address`, `taxpayer_type`
 | `POST /tax-profiles/passes/request` | `RequestPass` (`{ organization_id, tin_root, branch_code, preset }`) |
 | `POST /tax-profiles/{id}/passes/{pass}/accept` | `AcceptPass` (workspace, `organization.update`) |
 | `POST /tax-profiles/{id}/passes/{pass}/approve` | `ApprovePass` (owner; `{}` keeps what was asked for) |
-| `PATCH /tax-profiles/{id}/passes/{pass}` | `ChangePass` (owner; publishing stays on only while `allow_publish` is sent) |
+| `PATCH /tax-profiles/{id}/passes/{pass}` | `ChangePass` (owner; publishing stays on only while `allow_publish` is sent; omit `ends_on` to keep the end date, `""` to remove it) |
 | `POST /tax-profiles/{id}/passes/{pass}/end` | `EndPass` (either side) |
 
 UI: `/tax-profiles` (HTML). Desktop `GET /tax-profiles` should send `Authorization: Bearer` or `Accept: application/json` so it is not treated as the page. `GET /api/tax-profiles` is always JSON.
@@ -400,11 +404,14 @@ Rust **1.93.0**. Toolchain is gated by `scripts/verify_toolchain.sh`.
 ## Layout
 
 ```
-src/domain/           tax profile aggregate, hashed TIN identity, V1 command stubs, ORUS port, desktop redirect policy
-src/application/       verified-email gate + commands
-src/store/            Postgres events/projection + Redis wake + OAuth codes
-src/desktop_oauth.rs  device flow + PKCE (`RegisterDevice` / `IssueDesktopSession`)
-src/app/              Leptos UI (auth, tax profiles, WebMCP)
-migrations/postgres/  0001 app storage, 0002 tax profiles + OAuth, 0003 hashed TIN, 0004 canonical V1 read models
+src/domain/           tax profile aggregate (+ access passes), pass permissions and dates, agent rules,
+                      hashed TIN identity, V1 sync commands (no HTTP yet), ORUS port, desktop redirect policy
+src/application/      the gatekeeper (`authorize`), tax profile + pass services, agent connections
+src/store/            Postgres events/projection, pass and agent tables, Redis wake, OAuth codes
+src/desktop_oauth.rs  device flow + PKCE for the desktop app; desktop_oauth/agent.rs: agent OAuth
+src/mcp/              POST /mcp (protocol.rs: JSON-RPC and the tool list)
+src/app/              Leptos UI (auth, tax profiles, passes, connected agents, WebMCP)
+migrations/postgres/  0001 app storage, 0002 tax profiles + OAuth, 0003 hashed TIN, 0004 V1 read models,
+                      0005 device interval, 0006 access passes, 0007 agent connections
 docs/                 integrations (other repos, MCP clients), sync API, webmcp, extensions
 ```

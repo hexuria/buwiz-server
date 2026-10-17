@@ -85,7 +85,7 @@ impl PassPermission {
             Self::YearsManage => &[Self::YearsView],
             Self::DraftsSave | Self::DraftsUpdate | Self::DraftsReview => &[Self::DraftsView],
             Self::FilingsPublish => &[Self::DraftsView, Self::FilingsView],
-            _ => &[],
+            Self::ProfileView | Self::YearsView | Self::DraftsView | Self::FilingsView => &[],
         }
     }
 
@@ -304,18 +304,6 @@ impl PassStatus {
         }
     }
 
-    pub fn parse(raw: &str) -> Option<Self> {
-        [
-            Self::Requested,
-            Self::Offered,
-            Self::Active,
-            Self::Declined,
-            Self::Revoked,
-        ]
-        .into_iter()
-        .find(|status| status.as_str() == raw.trim())
-    }
-
     pub fn is_open(self) -> bool {
         matches!(self, Self::Requested | Self::Offered | Self::Active)
     }
@@ -353,7 +341,8 @@ impl Pass {
     }
 
     /// Status as people see it: an active pass past its end date reads
-    /// "expired".
+    /// "expired". (The pass list computes the same in SQL.)
+    #[cfg(test)]
     pub fn status_label(&self, now: &str) -> &'static str {
         if self.status == PassStatus::Active && self.is_expired(now) {
             "expired"
@@ -363,13 +352,87 @@ impl Pass {
     }
 }
 
-/// Whether RFC 3339 UTC instant `a` is before `b`. Compares to the second, so
-/// `...:00Z` and `...:00.000Z` agree.
+/// Whether RFC 3339 instant `a` is before `b`, to the second, with any UTC
+/// offset (`Z`, `+08:00`, `-05:00`). An instant that does not parse is never
+/// "before" anything, so a broken end date reads as already passed (fails
+/// closed).
 pub fn instant_before(a: &str, b: &str) -> bool {
-    fn key(value: &str) -> &str {
-        value.get(..19).unwrap_or(value)
+    match (utc_seconds(a), utc_seconds(b)) {
+        (Some(a), Some(b)) => a < b,
+        _ => false,
     }
-    key(a) < key(b)
+}
+
+/// Seconds since 1970-01-01T00:00:00Z of an RFC 3339 date-time
+/// (`YYYY-MM-DDTHH:MM:SS[.fraction](Z|±HH:MM)`); fractions are dropped.
+pub fn utc_seconds(value: &str) -> Option<i64> {
+    let b = value.trim().as_bytes();
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || !matches!(b[10], b'T' | b't' | b' ')
+        || b[13] != b':' || b[16] != b':'
+    {
+        return None;
+    }
+    let num = |range: std::ops::Range<usize>| -> Option<i64> {
+        let part = b.get(range)?;
+        part.iter().all(u8::is_ascii_digit).then(|| {
+            part.iter().fold(0_i64, |n, d| n * 10 + i64::from(d - b'0'))
+        })
+    };
+    let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hour, minute, second) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !valid_date(year, month, day) || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let mut rest = &b[19..];
+    if let Some(fraction) = rest.strip_prefix(b".") {
+        let digits = fraction.iter().take_while(|d| d.is_ascii_digit()).count();
+        if digits == 0 {
+            return None;
+        }
+        rest = &fraction[digits..];
+    }
+    let offset = match rest {
+        [b'Z' | b'z'] => 0,
+        [sign @ (b'+' | b'-'), h1, h2, b':', m1, m2] => {
+            let digits = [*h1, *h2, *m1, *m2];
+            if !digits.iter().all(u8::is_ascii_digit) {
+                return None;
+            }
+            let hours = i64::from(h1 - b'0') * 10 + i64::from(h2 - b'0');
+            let minutes = i64::from(m1 - b'0') * 10 + i64::from(m2 - b'0');
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
+            let total = hours * 3600 + minutes * 60;
+            if *sign == b'+' { total } else { -total }
+        }
+        _ => return None,
+    };
+    Some(days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second - offset)
+}
+
+/// Whether `year-month-day` is a real calendar date (proleptic Gregorian).
+fn valid_date(year: i64, month: i64, day: i64) -> bool {
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days).contains(&day)
+}
+
+/// Days from 1970-01-01 to `y-m-d` (Howard Hinnant's `days_from_civil`).
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 /// The instant a pass with end date `date` (`YYYY-MM-DD`) stops working: the
@@ -384,10 +447,12 @@ pub fn pass_end_from_date(date: &str) -> Result<String, String> {
             .iter()
             .enumerate()
             .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit());
-    let month: u32 = date.get(5..7).and_then(|m| m.parse().ok()).unwrap_or(0);
-    let day: u32 = date.get(8..10).and_then(|d| d.parse().ok()).unwrap_or(0);
-    if !shaped || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    if !shaped {
         return Err("end date must look like 2027-03-31".to_owned());
+    }
+    let part = |range: std::ops::Range<usize>| date[range].parse::<i64>().unwrap_or(0);
+    if !valid_date(part(0..4), part(5..7), part(8..10)) {
+        return Err(format!("{date} is not a calendar date"));
     }
     Ok(format!("{date}T16:00:00.000Z"))
 }
@@ -398,6 +463,123 @@ mod tests {
 
     fn ids(list: &[&str]) -> Vec<String> {
         list.iter().map(|id| (*id).to_owned()).collect()
+    }
+
+    #[test]
+    fn stored_names_and_labels_are_fixed() {
+        // These strings are written to the database and shown to people.
+        let statuses: Vec<_> = [
+            PassStatus::Requested,
+            PassStatus::Offered,
+            PassStatus::Active,
+            PassStatus::Declined,
+            PassStatus::Revoked,
+        ]
+        .map(PassStatus::as_str)
+        .to_vec();
+        assert_eq!(statuses, ["requested", "offered", "active", "declined", "revoked"]);
+        assert_eq!(
+            PassGrantee::Organization { organization_id: "o".into() }.kind(),
+            "organization"
+        );
+        assert_eq!(PassPermission::FilingsPublish.label(), "Publish to BIR");
+        assert_eq!(PassPreset::Safe.label(), "Safe");
+        let labels: std::collections::BTreeSet<_> =
+            PassPermission::ALL.iter().map(|p| p.label()).collect();
+        assert_eq!(labels.len(), PassPermission::ALL.len(), "labels are distinct");
+        assert!(labels.iter().all(|label| !label.is_empty()));
+    }
+
+    #[test]
+    fn union_of_overlapping_sets_keeps_each_once() {
+        let safe = PassPreset::Safe.permissions();
+        let read = PassPreset::ReadOnly.permissions();
+        assert_eq!(safe.union(read), safe);
+        assert_eq!(read.union(read), read);
+    }
+
+    #[test]
+    fn leap_years_follow_the_gregorian_rule() {
+        for ok in ["2024-02-29", "2000-02-29"] {
+            assert!(pass_end_from_date(ok).is_ok(), "{ok}");
+        }
+        for bad in ["1900-02-29", "2100-02-29", "2023-02-29"] {
+            assert!(pass_end_from_date(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn malformed_instants_do_not_parse() {
+        assert_eq!(utc_seconds("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(utc_seconds("1970-01-01T00:00:00.5Z"), Some(0));
+        // RFC 3339 allows a leap second.
+        assert!(utc_seconds("2016-12-31T23:59:60Z").is_some());
+        for bad in [
+            "2027-03-31X16:00:00Z",
+            "2027/03-31T16:00:00Z",
+            "2027-03/31T16:00:00Z",
+            "2027-03-31T16-00:00Z",
+            "2027-03-31T16:00-00Z",
+            "2027-03-31T24:00:00Z",
+            "2027-03-31T23:60:00Z",
+            "2027-03-31T23:59:61Z",
+            "2027-03-31T16:00:00+24:00",
+            "2027-03-31T16:00:00+08:60",
+            "2027-03-31T16:00:00+0a:00",
+            "2027-03-31T16:00:00.Z",
+            "2027-03-31T16:00:00",
+        ] {
+            assert_eq!(utc_seconds(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn end_dates_must_be_calendar_dates() {
+        assert_eq!(pass_end_from_date("2027-03-31").unwrap(), "2027-03-31T16:00:00.000Z");
+        assert!(pass_end_from_date("2028-02-29").is_ok(), "leap day");
+        for bad in ["2027-02-29", "2027-02-30", "2027-04-31", "2027-13-01", "2027-00-10", "27-03-31", "2027/03/31", ""] {
+            assert!(pass_end_from_date(bad).is_err(), "{bad} should be refused");
+        }
+    }
+
+    #[test]
+    fn instants_compare_across_offsets_and_fail_closed() {
+        // 16:00Z and 00:00+08:00 the next day are the same instant.
+        assert!(!instant_before("2027-04-01T00:00:00+08:00", "2027-03-31T16:00:00.000Z"));
+        assert!(!instant_before("2027-03-31T16:00:00.000Z", "2027-04-01T00:00:00+08:00"));
+        assert!(instant_before("2027-03-31T23:59:59+08:00", "2027-03-31T16:00:00Z"));
+        assert!(!instant_before("garbage", "2027-03-31T16:00:00Z"));
+        assert!(!instant_before("2027-03-31T16:00:00Z", "garbage"));
+        assert!(!instant_before("2027-02-30T00:00:00Z", "2099-01-01T00:00:00Z"));
+    }
+
+    mod oracle {
+        use super::super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Oracle: chrono's RFC 3339 parser.
+            #[test]
+            fn utc_seconds_agrees_with_chrono(
+                secs in -2_000_000_000_i64..8_000_000_000_i64,
+                offset_minutes in -(23 * 60 + 59)..=(23 * 60 + 59_i32),
+                millis in proptest::option::of(0u32..1000),
+            ) {
+                use chrono::{FixedOffset, TimeZone, SecondsFormat};
+                let tz = FixedOffset::east_opt(offset_minutes * 60).unwrap();
+                let at = tz.timestamp_opt(secs, millis.unwrap_or(0) * 1_000_000).unwrap();
+                let text = at.to_rfc3339_opts(
+                    if millis.is_some() { SecondsFormat::Millis } else { SecondsFormat::Secs },
+                    offset_minutes == 0,
+                );
+                prop_assert_eq!(utc_seconds(&text), Some(secs), "{}", text);
+            }
+
+            #[test]
+            fn utc_seconds_never_panics(raw in "\\PC{0,40}") {
+                let _ = utc_seconds(&raw);
+            }
+        }
     }
 
     #[test]

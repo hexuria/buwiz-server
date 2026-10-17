@@ -48,9 +48,10 @@ pub async fn list_tax_profiles(
     let org_id = organization_id
         .or(session.tenant_id.clone())
         .filter(|value| !value.trim().is_empty());
-    if let (Some(organization_id), Some(session_id)) =
-        (org_id.as_deref(), session.session_id.as_deref())
-    {
+    if let Some(organization_id) = org_id.as_deref() {
+        // Membership is checked through the session; without one, a
+        // workspace view cannot be verified.
+        let session_id = session.session_id.as_deref().ok_or(AuthStackError::Forbidden)?;
         crate::auth_product::organization_for_session(session_id, organization_id).await?;
     }
     let profiles = crate::store::list_tax_profiles_for(&user_id, org_id.as_deref()).await?;
@@ -167,12 +168,12 @@ pub async fn patch_tax_profile(
         ));
     }
     let current_view = crate::store::fetch_tax_profile_view(&profile_id, &user_id).await?;
-    if let Some(expected) = request.updated_at.as_deref().filter(|value| !value.is_empty()) {
-        if current_view.updated_at.as_deref() != Some(expected) {
-            return Err(crate::store::map_tax_profile_error(
-                crate::domain::TaxProfileError::StaleWrite,
-            ));
-        }
+    if let Some(expected) = request.updated_at.as_deref().filter(|value| !value.is_empty())
+        && current_view.updated_at.as_deref() != Some(expected)
+    {
+        return Err(crate::store::map_tax_profile_error(
+            crate::domain::TaxProfileError::StaleWrite,
+        ));
     }
     let facts = merge_facts(loaded.state.facts.as_ref(), &request)?;
     crate::store::commit_tax_profile_command(
@@ -449,6 +450,7 @@ pub async fn ask_for_pass(
         .await?
         .filter(|loaded| loaded.state.exists)
         .ok_or_else(|| AuthStackError::not_found("no tax profile for that TIN and branch"))?;
+    refuse_legacy(&loaded)?;
     let profile_id = loaded
         .state
         .profile_id
@@ -538,12 +540,17 @@ pub async fn change_pass(
     let (user_id, _) = require_verified_actor(auth.clone()).await?;
     let loaded = load_existing(&profile_id).await?;
     let current = current_pass_permissions(&loaded.state, &pass_id)?;
+    // A change that does not mention the end date keeps it; `""` clears it.
+    let expires_at = match request.choice.ends_on.as_deref() {
+        None => loaded.state.pass(&pass_id).and_then(|pass| pass.expires_at.clone()),
+        Some(_) => end_from_choice(&request.choice)?,
+    };
     crate::store::commit_tax_profile_command(
         &profile_id,
         TaxProfileCommand::ChangePass {
             pass_id,
             permissions: permissions_from_choice(&request.choice, current)?,
-            expires_at: end_from_choice(&request.choice)?,
+            expires_at,
             actor_user_id: user_id.clone(),
             occurred_at: crate::store::rfc3339_now(),
         },
@@ -607,12 +614,25 @@ async fn pass_list(user_id: &str, auth: RequestAuth) -> AuthStackResult<PassList
     })
 }
 
+/// A profile for a pass step: it must exist and have its event history.
 async fn load_existing(profile_id: &str) -> AuthStackResult<crate::store::LoadedTaxProfile> {
     let loaded = crate::store::load_tax_profile_by_id(profile_id).await?;
     if !loaded.state.exists {
         return Err(AuthStackError::not_found("tax profile not found"));
     }
+    refuse_legacy(&loaded)?;
     Ok(loaded)
+}
+
+const LEGACY_PROFILE: &str =
+    "this profile was stored before access passes existed and cannot be shared yet";
+
+fn refuse_legacy(loaded: &crate::store::LoadedTaxProfile) -> AuthStackResult<()> {
+    if loaded.from_projection {
+        Err(AuthStackError::validation(LEGACY_PROFILE))
+    } else {
+        Ok(())
+    }
 }
 
 /// The pass's permissions without publishing, as the base for an approve or

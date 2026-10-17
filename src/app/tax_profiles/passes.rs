@@ -38,11 +38,11 @@ pub fn PassesPanel() -> impl IntoView {
 
     let take = move |value: Option<Result<PassListResponse, server_fn::ServerFnError>>| {
         if let Some(Ok(value)) = value {
-            if chosen.get_untracked().is_empty() {
-                if let Some(preset) = value.presets.iter().find(|p| p.is_default) {
-                    chosen.set(preset.permissions.clone());
-                    ask_preset.set(preset.id.clone());
-                }
+            if chosen.get_untracked().is_empty()
+                && let Some(preset) = value.presets.iter().find(|p| p.is_default)
+            {
+                chosen.set(preset.permissions.clone());
+                ask_preset.set(preset.id.clone());
             }
             list.set(Some(value));
         }
@@ -307,7 +307,7 @@ pub fn PassesPanel() -> impl IntoView {
                             p.status,
                             what(&p),
                             if p.can_publish { " · can publish to BIR" } else { "" },
-                            p.expires_at.as_deref().map(|e| format!(" · ends {}", &e[..10.min(e.len())])).unwrap_or_default(),
+                            p.expires_at.as_deref().map(|e| format!(" · ends {}", e.get(..10).unwrap_or(e))).unwrap_or_default(),
                         );
                         view! {
                             <li class="mb-4 rounded-xl border border-border-subtle p-4">

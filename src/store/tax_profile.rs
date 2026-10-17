@@ -22,6 +22,11 @@ use super::{
 pub(crate) struct LoadedTaxProfile {
     pub state: TaxProfile,
     pub revision: u64,
+    /// Rebuilt from the projection row because the event stream predates
+    /// registration events. Such a state has no pass history, so pass
+    /// commands are refused on it rather than writing rows that can never be
+    /// accepted or ended.
+    pub from_projection: bool,
 }
 
 pub(crate) async fn tin_identity_pepper() -> AuthStackResult<[u8; 32]> {
@@ -93,14 +98,15 @@ async fn load_stream(stream_id: &str) -> AuthStackResult<LoadedTaxProfile> {
             .map_err(|error| AuthStackError::store(format!("invalid tax profile event: {error}")))?;
         state.apply(&event);
     }
-    if !state.exists {
-        if let Some(projected) = load_projection_fallback(stream_id).await? {
-            return Ok(projected);
-        }
+    if !state.exists
+        && let Some(projected) = load_projection_fallback(stream_id).await?
+    {
+        return Ok(projected);
     }
     Ok(LoadedTaxProfile {
         revision: rows.len() as u64,
         state,
+        from_projection: false,
     })
 }
 
@@ -129,6 +135,7 @@ async fn load_projection_fallback(profile_id: &str) -> AuthStackResult<Option<Lo
     Ok(Some(LoadedTaxProfile {
         revision: row_i64(row, "revision").unwrap_or(1) as u64,
         state: tax_profile_from_row(row)?,
+        from_projection: true,
     }))
 }
 
@@ -236,7 +243,8 @@ pub(crate) async fn commit_tax_profile_command(
             ],
         ));
     }
-    statements.push(projection_upsert_statement(&next, revision)?);
+    let touches_profile = events.iter().any(TaxProfileEvent::changes_profile);
+    statements.push(projection_upsert_statement(&next, revision, touches_profile)?);
     for pass in &next.passes {
         statements.push(pass_upsert_statement(profile_id, pass));
     }
@@ -247,9 +255,13 @@ pub(crate) async fn commit_tax_profile_command(
     Ok((next, revision))
 }
 
+/// The projection row. `touches_profile` is false for pass-only commits, so
+/// `updated_at` (the desktop's last-write-wins token) only moves when the
+/// profile itself changed.
 fn projection_upsert_statement(
     state: &TaxProfile,
     revision: u64,
+    touches_profile: bool,
 ) -> AuthStackResult<AtomicSqlStatement> {
     let profile_id = state
         .profile_id
@@ -349,7 +361,8 @@ fn projection_upsert_statement(
             verification_status = EXCLUDED.verification_status, \
             verified_owner_user_id = EXCLUDED.verified_owner_user_id, \
             revision = EXCLUDED.revision, \
-            updated_at = CURRENT_TIMESTAMP, \
+            updated_at = CASE WHEN ?34 THEN CURRENT_TIMESTAMP \
+                              ELSE buwiz_server.tax_profiles.updated_at END, \
             tin_root = NULL",
         vec![
             json!(profile_id),
@@ -385,6 +398,7 @@ fn projection_upsert_statement(
             json!(state.verification.as_str()),
             json!(state.verified_owner_user_id),
             json!(revision as i64),
+            json!(touches_profile),
         ],
     ))
 }
@@ -483,10 +497,17 @@ fn pass_view_from_row(row: &Value) -> AuthStackResult<crate::contracts::PassView
     } else {
         stored == "offered"
     };
+    // A firm that asked with a TIN sees the profile's name only once the
+    // owner says yes.
+    let profile_name = if !i_own_it && stored == "requested" {
+        "(waiting for the owner)".to_owned()
+    } else {
+        row_string(row, "profile_name").unwrap_or_default()
+    };
     Ok(crate::contracts::PassView {
         pass_id: required_string(row, "pass_id")?,
         profile_id: required_string(row, "profile_id")?,
-        profile_name: row_string(row, "profile_name").unwrap_or_default(),
+        profile_name,
         tin_last4: row_string(row, "tin_last4").unwrap_or_default(),
         grantee_kind: required_string(row, "grantee_kind")?,
         grantee_id: required_string(row, "grantee_id")?,

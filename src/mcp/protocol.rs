@@ -53,15 +53,30 @@ pub fn negotiate(requested: Option<&str>) -> &'static str {
         .unwrap_or(SUPPORTED_VERSIONS[0])
 }
 
+/// Most messages one batch may carry: each tool call can load profiles.
+pub const MAX_BATCH: usize = 16;
+
 /// Splits a POST body into messages. `Err` is the reply for a body that is
-/// not JSON or is an empty batch.
-pub fn parse_body(body: &[u8]) -> Result<(Vec<Value>, bool), Value> {
+/// not JSON, an empty or oversized batch, or a batch under a protocol
+/// version that dropped batching (2025-06-18 and later; `header_version` is
+/// the request's `MCP-Protocol-Version`).
+pub fn parse_body(body: &[u8], header_version: Option<&str>) -> Result<(Vec<Value>, bool), Value> {
     let value: Value =
         serde_json::from_slice(body).map_err(|_| error(Value::Null, PARSE_ERROR, "parse error"))?;
     match value {
+        Value::Array(_) if header_version.is_some_and(|v| v.trim() >= "2025-06-18") => Err(error(
+            Value::Null,
+            INVALID_REQUEST,
+            "batches are not part of this protocol version",
+        )),
         Value::Array(items) if items.is_empty() => {
             Err(error(Value::Null, INVALID_REQUEST, "empty batch"))
         }
+        Value::Array(items) if items.len() > MAX_BATCH => Err(error(
+            Value::Null,
+            INVALID_REQUEST,
+            &format!("at most {MAX_BATCH} messages per batch"),
+        )),
         Value::Array(items) => Ok((items, true)),
         other => Ok((vec![other], false)),
     }
@@ -252,9 +267,17 @@ mod tests {
         assert_eq!(reply(json!({"jsonrpc":"2.0","id":null,"method":"ping"}))["error"]["code"], INVALID_REQUEST);
         assert_eq!(reply(json!({"jsonrpc":"2.0","id":1,"method":"resources/list"}))["error"]["code"], METHOD_NOT_FOUND);
         assert_eq!(reply(json!([1]))["error"]["code"], INVALID_REQUEST);
-        assert_eq!(parse_body(b"{nope").unwrap_err()["error"]["code"], PARSE_ERROR);
-        assert_eq!(parse_body(b"[]").unwrap_err()["error"]["code"], INVALID_REQUEST);
-        assert!(parse_body(b"[{\"a\":1}]").unwrap().1);
+        assert_eq!(parse_body(b"{nope", None).unwrap_err()["error"]["code"], PARSE_ERROR);
+        assert_eq!(parse_body(b"[]", None).unwrap_err()["error"]["code"], INVALID_REQUEST);
+        assert!(parse_body(b"[{\"a\":1}]", None).unwrap().1);
+        assert!(parse_body(b"[{\"a\":1}]", Some("2025-03-26")).unwrap().1);
+        assert_eq!(
+            parse_body(b"[{\"a\":1}]", Some("2025-06-18")).unwrap_err()["error"]["code"],
+            INVALID_REQUEST,
+            "batching was dropped in 2025-06-18"
+        );
+        let many = format!("[{}]", vec!["{}"; MAX_BATCH + 1].join(","));
+        assert_eq!(parse_body(many.as_bytes(), None).unwrap_err()["error"]["code"], INVALID_REQUEST);
     }
 
     #[test]

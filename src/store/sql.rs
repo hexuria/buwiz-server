@@ -536,7 +536,7 @@ pub(crate) fn postgres_placeholders(sql: &str) -> String {
             // timestamptz and date. Route them
             // through text: `$1::text::uuid` converts on the server.
             let rest: String = chars.clone().take(14).collect::<String>().to_ascii_lowercase();
-            if ["::uuid", "::jsonb", "::json", "::timestamptz", "::date"].iter().any(|cast| {
+            if ["::uuid", "::jsonb", "::json", "::timestamptz", "::timestamp", "::date"].iter().any(|cast| {
                 rest.starts_with(cast)
                     && !rest[cast.len()..]
                         .chars()

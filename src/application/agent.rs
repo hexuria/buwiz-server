@@ -85,9 +85,12 @@ pub(crate) struct AgentProfile {
 pub(crate) async fn agent_tax_profiles(agent: &AgentActor) -> AuthStackResult<Vec<AgentProfile>> {
     let mut out = Vec::new();
     for profile_id in &agent.profile_ids {
+        // Gone (deleted) or archived profiles drop out; any other failure is
+        // the caller's to see, not a silently shorter list.
         let view = match crate::store::fetch_tax_profile_view(profile_id, &agent.user_id).await {
             Ok(view) if !view.is_archived => view,
-            _ => continue,
+            Ok(_) | Err(AuthStackError::NotFound { .. }) => continue,
+            Err(error) => return Err(error),
         };
         let permissions = match agent_profile_permissions(agent, profile_id).await {
             Ok(permissions) => permissions,

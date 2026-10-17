@@ -419,6 +419,21 @@ pub enum TaxProfileEvent {
 }
 
 impl TaxProfileEvent {
+    /// Whether this event changes the profile itself (identity, facts,
+    /// holder, archive state). Pass events only change who may work on it,
+    /// so they leave the profile's `updated_at` (the desktop's
+    /// last-write-wins token) alone.
+    pub fn changes_profile(&self) -> bool {
+        !matches!(
+            self,
+            Self::PassOffered { .. }
+                | Self::PassRequested { .. }
+                | Self::PassActivated { .. }
+                | Self::PassChanged { .. }
+                | Self::PassEnded { .. }
+        )
+    }
+
     pub fn event_type(&self) -> &'static str {
         match self {
             Self::TaxProfileRegistered { .. } => "tax_profile.registered",
@@ -1171,10 +1186,10 @@ impl TaxProfile {
         if self.is_archived {
             return Err(TaxProfileError::AlreadyArchived);
         }
-        if let Some(expected) = expected_updated_at {
-            if self.updated_at.as_deref() != Some(expected.as_str()) {
-                return Err(TaxProfileError::StaleWrite);
-            }
+        if let Some(expected) = expected_updated_at
+            && self.updated_at.as_deref() != Some(expected.as_str())
+        {
+            return Err(TaxProfileError::StaleWrite);
         }
         let next_facts = match facts {
             Some(facts) => {
@@ -1256,6 +1271,10 @@ impl TaxProfile {
         }
         if self.verified_owner_user_id.as_deref() == Some(actor_user_id) {
             return ProfileAccess::OwnerReadOnly;
+        }
+        if self.is_archived {
+            // An archived profile is frozen for everyone but its holder.
+            return ProfileAccess::None;
         }
         let from_passes = self
             .passes
@@ -1345,8 +1364,9 @@ impl TaxProfile {
         actor_user_id: String,
         occurred_at: String,
     ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
-        self.check_new_pass(&pass_id, &grantee)?;
+        // Ownership first, so a non-owner learns nothing about the passes.
         self.require_owner(&actor_user_id, &occurred_at)?;
+        self.check_new_pass(&pass_id, &grantee)?;
         Self::check_permissions(permissions)?;
         Self::check_end_date(expires_at.as_deref(), &occurred_at)?;
         Ok(vec![TaxProfileEvent::PassOffered {
@@ -1411,6 +1431,18 @@ impl TaxProfile {
         Ok(pass)
     }
 
+    /// [`Self::open_pass`] for steps that start or change access, which an
+    /// archived profile no longer allows (ending a pass still works).
+    fn open_pass_to_grant(&self, pass_id: &str) -> Result<&Pass, TaxProfileError> {
+        let pass = self.open_pass(pass_id)?;
+        if self.is_archived {
+            return Err(TaxProfileError::PassState {
+                reason: "this profile is archived; restore it first".to_owned(),
+            });
+        }
+        Ok(pass)
+    }
+
     fn handle_accept_pass(
         &self,
         pass_id: String,
@@ -1418,7 +1450,7 @@ impl TaxProfile {
         actor_managed_orgs: Vec<String>,
         occurred_at: String,
     ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
-        let pass = self.open_pass(&pass_id)?;
+        let pass = self.open_pass_to_grant(&pass_id)?;
         if !actor_managed_orgs.iter().any(|org| org == pass.grantee.id()) {
             return Err(TaxProfileError::NotHolder);
         }
@@ -1449,8 +1481,8 @@ impl TaxProfile {
         actor_user_id: String,
         occurred_at: String,
     ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
-        let pass = self.open_pass(&pass_id)?;
         self.require_owner(&actor_user_id, &occurred_at)?;
+        let pass = self.open_pass_to_grant(&pass_id)?;
         if pass.status != PassStatus::Requested {
             return Err(TaxProfileError::PassState {
                 reason: "only a requested pass can be approved".to_owned(),
@@ -1476,8 +1508,8 @@ impl TaxProfile {
         actor_user_id: String,
         occurred_at: String,
     ) -> Result<Vec<TaxProfileEvent>, TaxProfileError> {
-        let pass = self.open_pass(&pass_id)?;
         self.require_owner(&actor_user_id, &occurred_at)?;
+        let pass = self.open_pass_to_grant(&pass_id)?;
         if pass.status == PassStatus::Requested {
             return Err(TaxProfileError::PassState {
                 reason: "approve or decline the request instead".to_owned(),
@@ -1537,6 +1569,12 @@ pub struct InMemoryTaxProfileStore {
 }
 
 impl InMemoryTaxProfileStore {
+    /// The stored events of one stream, oldest first.
+    #[cfg(test)]
+    pub fn events(&self, profile_id: &str) -> Vec<TaxProfileEvent> {
+        self.streams.get(profile_id).cloned().unwrap_or_default()
+    }
+
     pub fn load(&self, profile_id: &str) -> (TaxProfile, u64) {
         let mut state = TaxProfile::new();
         let events = self
@@ -2380,6 +2418,136 @@ mod tests {
         assert_eq!(state.pass("pass-1").unwrap().status, PassStatus::Revoked);
         assert_eq!(state.pass("pass-2").unwrap().status, PassStatus::Declined);
         assert_eq!(state.access_for("clerk", &orgs(&["firm-1"]), NOW), ProfileAccess::None);
+    }
+
+    fn change(pass_id: &str, actor: &str, permissions: PassPermissions) -> TaxProfileCommand {
+        TaxProfileCommand::ChangePass {
+            pass_id: pass_id.into(),
+            permissions,
+            expires_at: None,
+            actor_user_id: actor.into(),
+            occurred_at: NOW.into(),
+        }
+    }
+
+    fn approve(pass_id: &str, actor: &str) -> TaxProfileCommand {
+        TaxProfileCommand::ApprovePass {
+            pass_id: pass_id.into(),
+            permissions: None,
+            expires_at: None,
+            actor_user_id: actor.into(),
+            occurred_at: NOW.into(),
+        }
+    }
+
+    fn archive(actor: &str) -> TaxProfileCommand {
+        TaxProfileCommand::ArchiveTaxProfile {
+            actor_user_id: actor.into(),
+            actor_orgs: Vec::new(),
+            occurred_at: NOW.into(),
+        }
+    }
+
+    fn is_pass_state(error: TaxProfileError) -> bool {
+        matches!(error, TaxProfileError::PassState { .. })
+    }
+
+    #[test]
+    fn a_firm_cannot_accept_its_own_request() {
+        let mut store = alice_profile();
+        store.execute("tp-1", request("pass-1", "firm-1", "boss", &["firm-1"]), 1).unwrap();
+        assert!(is_pass_state(
+            store.execute("tp-1", accept("pass-1", "boss", &["firm-1"]), 2).unwrap_err()
+        ));
+    }
+
+    #[test]
+    fn each_step_only_fits_its_own_state() {
+        let mut store = alice_profile();
+        store.execute("tp-1", offer("pass-1", "firm-1", "alice", PassPreset::Safe.permissions()), 1).unwrap();
+        // An offer is accepted, not approved.
+        assert!(is_pass_state(store.execute("tp-1", approve("pass-1", "alice"), 2).unwrap_err()));
+        let mut asked = alice_profile();
+        asked.execute("tp-1", request("pass-2", "firm-1", "boss", &["firm-1"]), 1).unwrap();
+        // A request is approved or declined, not changed.
+        assert!(is_pass_state(
+            asked.execute("tp-1", change("pass-2", "alice", PassPreset::Full.permissions()), 2).unwrap_err()
+        ));
+        // A second request from the same firm while one is open.
+        assert_eq!(
+            asked.execute("tp-1", request("pass-3", "firm-1", "boss", &["firm-1"]), 2).unwrap_err(),
+            TaxProfileError::PassAlreadyOpen
+        );
+        // An unknown pass id.
+        assert_eq!(
+            asked.execute("tp-1", approve("nope", "alice"), 2).unwrap_err(),
+            TaxProfileError::PassNotFound
+        );
+        // An ended pass cannot be ended again.
+        store.execute("tp-1", end("pass-1", "alice", &[]), 2).unwrap();
+        assert!(is_pass_state(store.execute("tp-1", end("pass-1", "alice", &[]), 3).unwrap_err()));
+    }
+
+    #[test]
+    fn non_owners_learn_nothing_from_owner_steps() {
+        let mut store = alice_profile();
+        store.execute("tp-1", offer("pass-1", "firm-1", "alice", PassPreset::Safe.permissions()), 1).unwrap();
+        // Ownership is checked before any pass state, so these say "owner
+        // only", not "already open" / "not found".
+        for cmd in [
+            offer("pass-2", "firm-1", "mallory", PassPreset::Safe.permissions()),
+            approve("pass-1", "mallory"),
+            approve("nope", "mallory"),
+            change("pass-1", "mallory", PassPreset::Full.permissions()),
+        ] {
+            assert_eq!(store.execute("tp-1", cmd, 2).unwrap_err(), TaxProfileError::OwnerOnly);
+        }
+    }
+
+    #[test]
+    fn an_expired_offer_cannot_be_accepted() {
+        let mut store = alice_profile();
+        let mut cmd = offer("pass-1", "firm-1", "alice", PassPreset::Safe.permissions());
+        if let TaxProfileCommand::OfferPass { expires_at, .. } = &mut cmd {
+            *expires_at = Some("2026-03-01T16:00:00.000Z".into());
+        }
+        store.execute("tp-1", cmd, 1).unwrap();
+        let mut late = accept("pass-1", "boss", &["firm-1"]);
+        if let TaxProfileCommand::AcceptPass { occurred_at, .. } = &mut late {
+            *occurred_at = "2026-03-02T00:00:00Z".into();
+        }
+        assert!(is_pass_state(store.execute("tp-1", late, 2).unwrap_err()));
+    }
+
+    #[test]
+    fn an_archived_profile_grants_nothing_and_takes_no_new_access() {
+        let mut store = alice_profile();
+        store.execute("tp-1", offer("pass-1", "firm-1", "alice", PassPreset::Safe.permissions()), 1).unwrap();
+        store.execute("tp-1", accept("pass-1", "boss", &["firm-1"]), 2).unwrap();
+        store.execute("tp-1", offer("pass-2", "firm-2", "alice", PassPreset::Safe.permissions()), 3).unwrap();
+        let (state, _) = store.execute("tp-1", archive("alice"), 4).unwrap();
+        assert_eq!(state.access_for("clerk", &orgs(&["firm-1"]), NOW), ProfileAccess::None);
+        assert!(is_pass_state(store.execute("tp-1", accept("pass-2", "boss", &["firm-2"]), 5).unwrap_err()));
+        assert!(is_pass_state(
+            store.execute("tp-1", change("pass-1", "alice", PassPreset::Full.permissions()), 5).unwrap_err()
+        ));
+        assert!(matches!(
+            store.execute("tp-1", offer("pass-3", "firm-3", "alice", PassPreset::Safe.permissions()), 5).unwrap_err(),
+            TaxProfileError::AlreadyArchived | TaxProfileError::PassState { .. }
+        ));
+        // The owner can still end passes on an archived profile.
+        store.execute("tp-1", end("pass-1", "alice", &[]), 5).unwrap();
+    }
+
+    #[test]
+    fn only_profile_events_move_the_profile_timestamp() {
+        let mut store = alice_profile();
+        let (_, _) = store
+            .execute("tp-1", offer("pass-1", "firm-1", "alice", PassPreset::Safe.permissions()), 1)
+            .unwrap();
+        let events = store.events("tp-1");
+        assert!(events[0].changes_profile(), "registering changes the profile");
+        assert!(!events[1].changes_profile(), "a pass offer does not");
     }
 
     #[test]

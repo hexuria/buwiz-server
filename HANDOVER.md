@@ -22,6 +22,8 @@ One gatekeeper: `authorize` in `src/application/tax_profile.rs`, re-checked in t
 4. Agent login: OAuth dynamic client registration + Allow screen; each agent connection has its own tokens, bounded by the taxpayer's live access, and ends from Tax profiles → Connected agents. Done: `src/domain/agent.rs`, `src/desktop_oauth/agent.rs`, `src/store/agent.rs`, migration `0007`, `scripts/verify_agents.sh`.
 5. `POST /mcp` with read-only tools first. Done: `src/mcp/` (stateless, JSON answers), tools `list_tax_profiles` and `get_tax_profile`; `scripts/verify_agents.sh` covers it.
 
+Plan item A3 ("tokens carry a scope that is never checked") is settled by design rather than a scope check: browser and desktop tokens are first-party and act as the user; agents get their own `bwa_`/`bwr_` tokens, which wasi-auth refuses everywhere a user token is expected, and which `/mcp` bounds by the connection's permissions and the taxpayer's live access.
+
 ## Next
 
 - Desktop client: buwiz-forms does not call this server yet. The contract is in [docs/integrations.md](docs/integrations.md).

@@ -320,7 +320,7 @@ async fn refresh_grant(
         );
     }
     if agent::is_agent_refresh_token(&refresh) {
-        return agent::refresh_grant(&refresh).await;
+        return agent::refresh_grant(&refresh, form).await;
     }
     let tokens = crate::application::refresh_token_for(None, Some(refresh)).await?;
     json_response(
@@ -758,9 +758,11 @@ fn redirect(location: &str) -> AuthStackResult<RestResponse> {
         Ok::<_, std::io::Error>(http_body::Frame::data(Bytes::new()))
     });
     let body = StreamBody::new(stream).boxed_unsync();
+    // A redirect can carry an authorization code: never cache it.
     http::Response::builder()
         .status(StatusCode::FOUND)
         .header(http::header::LOCATION, location)
+        .header(http::header::CACHE_CONTROL, "no-store")
         .body(body)
         .map_err(|error| AuthStackError::transport(error.to_string()))
 }
