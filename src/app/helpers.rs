@@ -267,6 +267,28 @@ pub(crate) fn server_error_text(error: ServerFnError) -> String {
 }
 
 #[cfg(test)]
+mod post_login_path_tests {
+    use super::post_login_path;
+
+    #[test]
+    fn device_approval_survives_and_login_does_not_loop() {
+        assert_eq!(
+            post_login_path("/device?user_code=ABCD-EFGH"),
+            Some("/device?user_code=ABCD-EFGH")
+        );
+        assert_eq!(
+            post_login_path("/login/device?user_code=ABCD-EFGH"),
+            Some("/login/device?user_code=ABCD-EFGH")
+        );
+        assert_eq!(post_login_path("/dashboard"), Some("/dashboard"));
+        assert_eq!(post_login_path("/login"), None);
+        assert_eq!(post_login_path("/login?next=/dashboard"), None);
+        assert_eq!(post_login_path("//evil.example"), None);
+        assert_eq!(post_login_path("https://evil.example"), None);
+    }
+}
+
+#[cfg(test)]
 mod server_error_text_tests {
     use super::server_error_text;
     use server_fn::ServerFnError;
@@ -385,6 +407,27 @@ pub(crate) fn is_passkey_cancel_message(message: &str) -> bool {
         || lower.contains("passkey_conditional_idle")
 }
 
+/// Where a successful sign-in may send the browser.
+///
+/// `/login` itself is refused so the form cannot loop. `/login/device` is
+/// the desktop approval screen and is allowed. `/device` is the same screen
+/// under a path the older sign-in bundle already accepts.
+pub(crate) fn post_login_path(value: &str) -> Option<&str> {
+    if !value.starts_with('/') || value.starts_with("//") || value.contains('\\') {
+        return None;
+    }
+    if value == "/login" || value.starts_with("/login?") {
+        return None;
+    }
+    if let Some(rest) = value.strip_prefix("/login/") {
+        let page = rest.split(['?', '#']).next().unwrap_or("");
+        if page != "device" {
+            return None;
+        }
+    }
+    Some(value)
+}
+
 pub(crate) fn next_url() -> String {
     #[cfg(feature = "hydrate")]
     {
@@ -394,11 +437,8 @@ pub(crate) fn next_url() -> String {
             let query = search.trim_start_matches('?');
             if let Some(encoded) = query.split('&').find_map(|part| part.strip_prefix("next=")) {
                 let value = percent_decode_component(encoded);
-                if value.starts_with('/')
-                    && !value.starts_with("//")
-                    && !value.starts_with("/login")
-                {
-                    return value;
+                if let Some(path) = post_login_path(&value) {
+                    return path.to_owned();
                 }
             }
         }

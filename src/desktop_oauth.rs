@@ -36,6 +36,7 @@ pub fn is_desktop_oauth_request(path: &str) -> bool {
             | "/auth/device/start"
             | "/auth/device/poll"
             | "/login/device"
+            | "/device"
     )
 }
 
@@ -68,8 +69,8 @@ pub async fn serve(req: RestRequest) -> AuthStackResult<RestResponse> {
             device_code(req).await
         }
         (Method::POST, "/auth/device/poll") => device_poll(req).await,
-        (Method::GET, "/login/device") => device_get(&req, &uri).await,
-        (Method::POST, "/login/device") => device_post(req).await,
+        (Method::GET, "/login/device" | "/device") => device_get(&req, &uri).await,
+        (Method::POST, "/login/device" | "/device") => device_post(req).await,
         (Method::OPTIONS, _) => empty(StatusCode::NO_CONTENT),
         _ => json_response(
             StatusCode::METHOD_NOT_ALLOWED,
@@ -442,7 +443,15 @@ async fn device_poll(req: RestRequest) -> AuthStackResult<RestResponse> {
 
 async fn device_get(req: &RestRequest, uri: &http::Uri) -> AuthStackResult<RestResponse> {
     let Some(session) = session_from_request(req).await? else {
-        let next = format!("/login/device?{}", uri.query().unwrap_or_default());
+        // `/login/device` is rejected by the sign-in page's `next` allowlist
+        // (`next` must not send the browser back to `/login`). `/device` is
+        // the same approval screen and is a safe post-login path.
+        let query = uri.query().unwrap_or_default();
+        let next = if query.is_empty() {
+            "/device".to_owned()
+        } else {
+            format!("/device?{query}")
+        };
         return redirect(&format!(
             "/login?next={}",
             urlencoding_encode(&next)
@@ -718,6 +727,45 @@ fn urlencoding_encode(value: &str) -> String {
     form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
+/// Spin's WASI HTTP host cannot read a streamed request body
+/// (`waitable cannot be used synchronously`). The approval form therefore
+/// copies its fields into `x-buwiz-request-body` and posts an empty body,
+/// which `read_body` already accepts.
+const FORM_SUBMIT_SCRIPT: &str = r#"<script>
+(function () {
+  var form = document.querySelector("form");
+  if (!form) return;
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    var body = new URLSearchParams(new FormData(form)).toString();
+    fetch(form.getAttribute("action") || location.pathname, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-buwiz-request-body": btoa(unescape(encodeURIComponent(body))),
+        "x-buwiz-request-body-enc": "b64"
+      },
+      body: ""
+    }).then(function (response) {
+      if (response.redirected && response.url) {
+        location.href = response.url;
+        return;
+      }
+      return response.text().then(function (html) {
+        document.open();
+        document.write(html);
+        document.close();
+      });
+    }).catch(function () {
+      var note = document.createElement("p");
+      note.textContent = "Could not reach Buwiz. Try again.";
+      form.appendChild(note);
+    });
+  });
+})();
+</script>"#;
+
 fn oauth_page(title: &str, copy: &str, body: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
@@ -732,10 +780,11 @@ button {{ background:#fff; color:#111; border:0; cursor:pointer; }}
 input {{ width:100%; box-sizing:border-box; margin:.35rem 0 1rem; background:#1a1a1a; color:#fff; border:1px solid #333; }}
 label {{ display:block; font-size:.85rem; }}
 </style></head>
-<body><main><p>Buwiz</p><h1>{title}</h1><p>{copy}</p>{body}</main></body></html>"#,
+<body><main><p>Buwiz</p><h1>{title}</h1><p>{copy}</p>{body}</main>{script}</body></html>"#,
         title = html_escape(title),
         copy = html_escape(copy),
         body = body,
+        script = FORM_SUBMIT_SCRIPT,
     )
 }
 
@@ -827,6 +876,18 @@ mod tests {
     }
 
     #[test]
+    fn approval_page_posts_the_body_in_a_header() {
+        let html = oauth_page(
+            "Authorize a device",
+            "Enter the code.",
+            "<form method=\"post\" action=\"/login/device\"></form>",
+        );
+        assert!(html.contains("x-buwiz-request-body"));
+        assert!(html.contains("x-buwiz-request-body-enc"));
+        assert!(html.contains("action=\"/login/device\""));
+    }
+
+    #[test]
     fn desktop_paths_are_recognized() {
         assert!(is_desktop_oauth_request(
             "/.well-known/oauth-authorization-server"
@@ -834,6 +895,7 @@ mod tests {
         assert!(is_desktop_oauth_request("/oauth/device/code"));
         assert!(is_desktop_oauth_request("/auth/device/start"));
         assert!(is_desktop_oauth_request("/auth/device/poll"));
+        assert!(is_desktop_oauth_request("/device"));
         assert!(!is_desktop_oauth_request("/api/auth/password/login"));
     }
 }

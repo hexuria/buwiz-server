@@ -156,6 +156,12 @@ REDIS_CHANNEL ?= buwiz-tax-profiles
 ORUS_FAKE_VERIFIER ?= false
 WEBMCP_ENABLED ?= true
 DESKTOP_OAUTH_REDIRECT_URIS ?=
+# Empty locally: one origin serves both the UI and the API. Production sets
+# AUTH_API_BASE_URL=https://api.buwiz.com so document navigations on that
+# host redirect to AUTH_PUBLIC_BASE_URL (account.buwiz.com).
+AUTH_API_BASE_URL ?=
+AUTH_MARKETING_BASE_URL ?= https://buwiz.com
+AUTH_CORS_ORIGINS ?=
 
 # Propagated into smoke scripts so port changes stay consistent.
 PUBLIC_ORIGIN_ENV = \
@@ -271,7 +277,10 @@ SPIN_VARIABLE_ARGS = \
 	--variable redis_channel='$(REDIS_CHANNEL)' \
 	--variable orus_fake_verifier=$(ORUS_FAKE_VERIFIER) \
 	--variable webmcp_enabled=$(WEBMCP_ENABLED) \
-	--variable desktop_oauth_redirect_uris='$(DESKTOP_OAUTH_REDIRECT_URIS)'
+	--variable desktop_oauth_redirect_uris='$(DESKTOP_OAUTH_REDIRECT_URIS)' \
+	--variable auth_api_base_url='$(AUTH_API_BASE_URL)' \
+	--variable auth_marketing_base_url='$(AUTH_MARKETING_BASE_URL)' \
+	--variable auth_cors_origins='$(AUTH_CORS_ORIGINS)'
 
 .PHONY: help validate-toolchain validate-mail db-up db-down migration-preflight db-migrate db-verify check grpc-check dev spin spin-backend spin-backend-prebuilt trusted-ingress install-outbox-worker outbox-worker fresh smoke oauth-credentials oauth-preflight oauth-evidence oauth-callback oauth-browser-smoke oauth-dev-browser-smoke browser-smoke passkey-browser-smoke workspace-settings-smoke
 

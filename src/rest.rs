@@ -69,7 +69,7 @@ fn accept_prefers_json(req: &RestRequest) -> bool {
 pub async fn serve(req: RestRequest) -> AuthStackResult<RestResponse> {
     let request_headers = req.headers().clone();
     let cors = wasi_auth::http::CorsConfig::new(
-        [crate::application::public_base_url().await],
+        crate::application::cors_allowed_origins().await,
         ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         [
             "authorization",

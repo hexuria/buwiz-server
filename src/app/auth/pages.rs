@@ -29,8 +29,22 @@ pub fn LoginPage() -> impl IntoView {
             <section class=AUTH_CARD data-testid="auth-card">
                 <AuthBrand />
                 <EmailPasswordAuthForm register_default=false />
+                <DesktopAppLinks />
             </section>
         </div>
+    }
+}
+
+#[component]
+fn DesktopAppLinks() -> impl IntoView {
+    view! {
+        <p class="mt-6 mb-0 text-center text-[13px] leading-relaxed text-secondary">
+            <a class="text-primary" href="https://buwiz.com">"Buwiz"</a>
+            " · "
+            <a class="text-primary" href="https://github.com/hexuria/buwiz-forms/releases">
+                "Download the desktop app"
+            </a>
+        </p>
     }
 }
 

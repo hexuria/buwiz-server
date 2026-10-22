@@ -129,6 +129,19 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
         {
             return redirect_response(&location);
         }
+        // A page opened on the API hostname belongs on the account hostname.
+        // Bearer and JSON calls stay on the host that received them.
+        if is_browser_navigation
+            && !request_path.starts_with("/pkg/")
+            && let Some(location) = crate::application::account_document_redirect(
+                req.headers(),
+                &request_path,
+                request_query.as_deref(),
+            )
+            .await
+        {
+            return redirect_response(&location);
+        }
         if matches!(
             *req.method(),
             http::Method::POST | http::Method::PUT | http::Method::PATCH | http::Method::DELETE
