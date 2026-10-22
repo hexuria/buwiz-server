@@ -5,7 +5,7 @@ separate Spin app.
 
 | Host | What it serves |
 |------|----------------|
-| `https://buwiz.com` and `https://www.buwiz.com` | Marketing site ([hexuria/buwiz.com](https://github.com/hexuria/buwiz.com)). Download links and a sign-in link. No accounts, no database. |
+| `https://buwiz.com` and `https://www.buwiz.com` | Marketing site ([hexuria/buwiz.com](https://github.com/hexuria/buwiz.com)). Download links and a sign-in link. No accounts, no database. That repository is a placeholder: the existing Spin app was not extracted from `codeitlikemiley/tox`. |
 | `https://account.buwiz.com` | This server's Leptos UI: login, device approval, passkeys, tax profiles. `AUTH_PUBLIC_BASE_URL`. |
 | `https://api.buwiz.com` | The same process, for bearer clients. Desktop default, MCP, `/oauth`, `/auth`, `/api`, `/me`. |
 

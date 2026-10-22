@@ -9,6 +9,12 @@ the plan and exits unless a human sets `BUWIZ_DEPLOY_CONFIRM`.
 repo rather than a pipeline that lives in that monorepo. Do not move the
 other goldcoders.dev Spin services.
 
+The tree in [hexuria/buwiz.com](https://github.com/hexuria/buwiz.com) is a
+placeholder, not an extraction of the existing buwiz.com Spin app. That app
+still lives in `codeitlikemiley/tox` and was not copied. Do not deploy the
+placeholder as the production marketing site, and do not point production
+DNS at it, until the tox app is extracted into that repository.
+
 ## Layout
 
 See [docs/domains.md](docs/domains.md).
