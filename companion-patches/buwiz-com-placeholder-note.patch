@@ -1,0 +1,44 @@
+From 1d252c14cceafb7113386c8f8256c60776537270 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Thu, 22 Oct 2026 22:39:14 +0000
+Subject: [PATCH] Note that this marketing site is a placeholder.
+
+The existing buwiz.com Spin app was not extracted from tox, so this tree must not be deployed or given production DNS.
+---
+ DEPLOY.md | 21 ++++++++++++---------
+ 1 file changed, 12 insertions(+), 9 deletions(-)
+
+diff --git a/DEPLOY.md b/DEPLOY.md
+index 76abf2f..e32a175 100644
+--- a/DEPLOY.md
++++ b/DEPLOY.md
+@@ -1,14 +1,17 @@
+ # Deploy buwiz.com
+ 
+-Ready to deploy. This file does not change production DNS and
+-`scripts/deploy.sh` does not deploy unless a human sets
+-`BUWIZ_DEPLOY_CONFIRM=deploy-buwiz-com`.
+-
+-`codeitlikemiley/tox` could not be cloned (GitHub: repository not found), so
+-there is no existing Fermyon app id or SpinKube manifest to copy. This app
+-is a static fileserver (`spin.toml`). Deploy it as its **own** Fermyon Cloud
+-app or its **own** SpinKube namespace. Do not attach it to the apps that
+-serve the other goldcoders.dev hosts.
++This file does not change production DNS, and `scripts/deploy.sh` does not
++deploy unless a human sets `BUWIZ_DEPLOY_CONFIRM=deploy-buwiz-com`. Do not
++set that variable for this tree.
++
++This repository is a placeholder. The existing buwiz.com Spin app was not
++extracted from `codeitlikemiley/tox`: that repository could not be cloned
++(GitHub returned "repository not found"), so no path, Fermyon app id, or
++SpinKube manifest was copied, and the pages here were written only so the
++hostname plan could be reviewed. Replace this tree with the extracted app
++before any production deploy. Do not point production DNS at this
++placeholder, and do not attach it to the apps that serve the other
++goldcoders.dev hosts.
+ 
+ ## DNS (do not apply until approved)
+ 
+-- 
+2.43.0
+
