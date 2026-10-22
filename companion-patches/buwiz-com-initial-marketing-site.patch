@@ -1,0 +1,442 @@
+From d81e146973c91a4930903da4b9edcfd88ed0082a Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Thu, 22 Oct 2026 22:26:59 +0000
+Subject: [PATCH] Add the standalone marketing site for buwiz.com
+
+The tox monorepo was not readable from this environment, so this is a new
+Spin app rather than a history split. The home page links to the desktop
+releases and to the account host.
+---
+ .gitignore        |   2 +
+ DEPLOY.md         |  40 ++++++++++++
+ README.md         |  46 +++++++++++++
+ public/index.html |  77 ++++++++++++++++++++++
+ public/styles.css | 162 ++++++++++++++++++++++++++++++++++++++++++++++
+ scripts/deploy.sh |  30 +++++++++
+ spin.toml         |  15 +++++
+ 7 files changed, 372 insertions(+)
+ create mode 100644 .gitignore
+ create mode 100644 DEPLOY.md
+ create mode 100644 README.md
+ create mode 100644 public/index.html
+ create mode 100644 public/styles.css
+ create mode 100755 scripts/deploy.sh
+ create mode 100644 spin.toml
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..2c52816
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,2 @@
++.spin/
++target/
+diff --git a/DEPLOY.md b/DEPLOY.md
+new file mode 100644
+index 0000000..76abf2f
+--- /dev/null
++++ b/DEPLOY.md
+@@ -0,0 +1,40 @@
++# Deploy buwiz.com
++
++Ready to deploy. This file does not change production DNS and
++`scripts/deploy.sh` does not deploy unless a human sets
++`BUWIZ_DEPLOY_CONFIRM=deploy-buwiz-com`.
++
++`codeitlikemiley/tox` could not be cloned (GitHub: repository not found), so
++there is no existing Fermyon app id or SpinKube manifest to copy. This app
++is a static fileserver (`spin.toml`). Deploy it as its **own** Fermyon Cloud
++app or its **own** SpinKube namespace. Do not attach it to the apps that
++serve the other goldcoders.dev hosts.
++
++## DNS (do not apply until approved)
++
++| Name | Type | Value |
++|------|------|--------|
++| `www.buwiz.com` | CNAME | `<site-app>.fermyon.app` |
++| `buwiz.com` | ALIAS / ANAME | `<site-app>.fermyon.app` |
++
++`<site-app>` is the name Fermyon assigns to **this** app, not the
++buwiz-server app. Apex DNS cannot be a standard CNAME; use the registrar's
++ALIAS, ANAME, or CNAME flattening. Add both names as custom domains and let
++the platform issue the certificates.
++
++`account.buwiz.com` and `api.buwiz.com` belong to buwiz-server. Their records
++are in that repo's `DEPLOY.md`. Do not point them here.
++
++## Command
++
++```bash
++scripts/deploy.sh
++```
++
++A real deploy, after the confirmation variable is set:
++
++```bash
++spin cloud deploy
++```
++
++No secrets. No database. No Redis.
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..7a5c8e0
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,46 @@
++# buwiz.com
++
++Marketing site for [buwiz.com](https://buwiz.com). It is a static Spin app.
++It does not hold accounts or a database.
++
++## Why this is a new site
++
++`buwiz.com` was described as a Spin app inside
++[codeitlikemiley/tox](https://github.com/codeitlikemiley/tox). That
++repository was not readable from the environment that prepared this import:
++`git clone` and the GitHub API both returned **repository not found**. No
++path was extracted, and this tree does not guess what that site contained.
++The other goldcoders.dev Spin services were left where they are.
++
++This repository is the standalone marketing app. Account pages and the API
++stay in [hexuria/buwiz-server](https://github.com/hexuria/buwiz-server).
++
++## Hostnames
++
++| Host | App |
++|------|-----|
++| `https://buwiz.com`, `https://www.buwiz.com` | This site |
++| `https://account.buwiz.com` | buwiz-server Leptos UI (login, device approval, passkeys) |
++| `https://api.buwiz.com` | The same buwiz-server process, for bearer clients |
++
++The desktop app is [hexuria/buwiz-forms](https://github.com/hexuria/buwiz-forms).
++Download links on the home page go to its GitHub releases. Sign-in goes to
++`https://account.buwiz.com/login`.
++
++## Run locally
++
++Requires [Spin](https://developer.fermyon.com/spin/v2/install) 2 or newer
++(this manifest is `spin_manifest_version = 2`; buwiz-server's host is Spin
++4.2).
++
++```bash
++spin up --listen 127.0.0.1:3010
++```
++
++Open `http://127.0.0.1:3010/`.
++
++## Deploy
++
++See [DEPLOY.md](DEPLOY.md). `scripts/deploy.sh` only prints the plan unless
++`BUWIZ_DEPLOY_CONFIRM=deploy-buwiz-com`. Do not point this app at the Spin
++apps that serve other goldcoders.dev hosts.
+diff --git a/public/index.html b/public/index.html
+new file mode 100644
+index 0000000..69967c7
+--- /dev/null
++++ b/public/index.html
+@@ -0,0 +1,77 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <meta charset="utf-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1" />
++    <title>Buwiz — eBIRForms on your computer</title>
++    <meta
++      name="description"
++      content="Buwiz is the desktop app for preparing Philippine BIR returns. Download eBIRForms, or sign in to your Buwiz account."
++    />
++    <link rel="stylesheet" href="/styles.css" />
++  </head>
++  <body>
++    <header class="bar">
++      <a class="mark" href="/">Buwiz</a>
++      <nav>
++        <a href="https://github.com/hexuria/buwiz-forms/releases">Download</a>
++        <a href="https://account.buwiz.com/login">Sign in</a>
++      </nav>
++    </header>
++    <main>
++      <p class="kicker">Desktop app for Philippine BIR returns</p>
++      <h1>Prepare the return on your computer. File it from there.</h1>
++      <p class="lead">
++        eBIRForms is the Buwiz desktop app. Profiles, drafts, and the filing
++        queue stay on the machine. A Buwiz account is optional: it backs up
++        tax profiles and shares them with a firm. It is not required to
++        prepare or file a return.
++      </p>
++      <div class="actions">
++        <a class="primary" href="https://github.com/hexuria/buwiz-forms/releases"
++          >Download for macOS, Linux, and Windows</a
++        >
++        <a class="secondary" href="https://account.buwiz.com/login">Sign in</a>
++      </div>
++      <p class="note">
++        Releases are published on
++        <a href="https://github.com/hexuria/buwiz-forms/releases">hexuria/buwiz-forms</a>.
++        The app signs in through your browser at
++        <a href="https://account.buwiz.com/login">account.buwiz.com</a>.
++        Programs call <a href="https://api.buwiz.com">api.buwiz.com</a>.
++      </p>
++      <section class="grid">
++        <article>
++          <h2>On this computer</h2>
++          <p>
++            Install the app, keep the taxpayer profile locally, and use
++            dry-run when you are testing. Nothing on this website submits a
++            return to BIR.
++          </p>
++        </article>
++        <article>
++          <h2>Account</h2>
++          <p>
++            Sign-in, device approval, and passkeys live on
++            <a href="https://account.buwiz.com">account.buwiz.com</a>. The
++            desktop app opens that page in your browser. It does not ask you
++            to type the account password into the app.
++          </p>
++        </article>
++        <article>
++          <h2>API</h2>
++          <p>
++            <a href="https://api.buwiz.com">api.buwiz.com</a> is the same
++            service, for the desktop app and other bearer clients. Opening a
++            page there sends you to the account site.
++          </p>
++        </article>
++      </section>
++    </main>
++    <footer>
++      <a href="https://github.com/hexuria/buwiz-forms">Source</a>
++      <a href="https://github.com/hexuria/buwiz-server">Account service</a>
++      <a href="https://account.buwiz.com/login">Sign in</a>
++    </footer>
++  </body>
++</html>
+diff --git a/public/styles.css b/public/styles.css
+new file mode 100644
+index 0000000..d56be73
+--- /dev/null
++++ b/public/styles.css
+@@ -0,0 +1,162 @@
++:root {
++  color-scheme: light;
++  --ink: #1c1915;
++  --muted: #5c564c;
++  --line: #e4ddd2;
++  --paper: #f7f3ec;
++  --card: #fffdf8;
++  --accent: #0f3d32;
++  --accent-ink: #f4f7f5;
++}
++
++* {
++  box-sizing: border-box;
++}
++
++html,
++body {
++  margin: 0;
++  padding: 0;
++}
++
++body {
++  min-height: 100vh;
++  background: var(--paper);
++  color: var(--ink);
++  font-family: "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
++  line-height: 1.5;
++}
++
++a {
++  color: var(--accent);
++}
++
++.bar,
++main,
++footer {
++  width: min(880px, calc(100% - 32px));
++  margin: 0 auto;
++}
++
++.bar {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  padding: 28px 0 8px;
++}
++
++.mark {
++  color: var(--ink);
++  font-weight: 700;
++  letter-spacing: -0.03em;
++  text-decoration: none;
++  font-size: 20px;
++}
++
++nav {
++  display: flex;
++  gap: 18px;
++}
++
++nav a {
++  color: var(--ink);
++  text-decoration: none;
++  font-family: "Source Sans 3", "Segoe UI", sans-serif;
++  font-size: 15px;
++}
++
++main {
++  padding: 48px 0 32px;
++}
++
++.kicker {
++  margin: 0 0 12px;
++  font-family: "Source Sans 3", "Segoe UI", sans-serif;
++  font-size: 13px;
++  letter-spacing: 0.08em;
++  text-transform: uppercase;
++  color: var(--muted);
++}
++
++h1 {
++  margin: 0;
++  max-width: 16ch;
++  font-size: clamp(40px, 6vw, 64px);
++  line-height: 0.98;
++  letter-spacing: -0.035em;
++  font-weight: 700;
++}
++
++.lead {
++  max-width: 42rem;
++  font-size: 20px;
++  color: var(--muted);
++}
++
++.actions {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 12px;
++  margin: 28px 0 16px;
++}
++
++.actions a {
++  font-family: "Source Sans 3", "Segoe UI", sans-serif;
++  text-decoration: none;
++  border-radius: 999px;
++  padding: 12px 18px;
++  font-size: 15px;
++}
++
++.primary {
++  background: var(--accent);
++  color: var(--accent-ink);
++}
++
++.secondary {
++  border: 1px solid var(--ink);
++  color: var(--ink);
++}
++
++.note {
++  color: var(--muted);
++  font-size: 15px;
++}
++
++.grid {
++  display: grid;
++  grid-template-columns: repeat(3, 1fr);
++  gap: 16px;
++  margin-top: 36px;
++}
++
++article {
++  background: var(--card);
++  border: 1px solid var(--line);
++  border-radius: 16px;
++  padding: 18px 18px 8px;
++}
++
++h2 {
++  margin: 0 0 8px;
++  font-size: 22px;
++}
++
++article p,
++footer {
++  font-family: "Source Sans 3", "Segoe UI", sans-serif;
++  font-size: 15px;
++}
++
++footer {
++  display: flex;
++  gap: 18px;
++  padding: 12px 0 40px;
++  color: var(--muted);
++}
++
++@media (max-width: 720px) {
++  .grid {
++    grid-template-columns: 1fr;
++  }
++}
+diff --git a/scripts/deploy.sh b/scripts/deploy.sh
+new file mode 100755
+index 0000000..e6a8c46
+--- /dev/null
++++ b/scripts/deploy.sh
+@@ -0,0 +1,30 @@
++#!/usr/bin/env bash
++# Print the buwiz.com deploy plan. Does not change DNS and does not deploy
++# unless BUWIZ_DEPLOY_CONFIRM=deploy-buwiz-com.
++set -euo pipefail
++
++root="$(cd "$(dirname "$0")/.." && pwd)"
++cd "$root"
++
++echo "buwiz.com deploy plan (dry run unless BUWIZ_DEPLOY_CONFIRM is set)"
++echo
++echo "DNS — set these by hand. This script does not."
++echo "  www.buwiz.com  CNAME  <site-app>.fermyon.app"
++echo "  buwiz.com      ALIAS  <site-app>.fermyon.app"
++echo
++echo "account.buwiz.com and api.buwiz.com are buwiz-server, not this app."
++echo "No secrets. No database."
++
++if [[ "${BUWIZ_DEPLOY_CONFIRM:-}" != "deploy-buwiz-com" ]]; then
++  echo
++  echo "Dry run only. Export BUWIZ_DEPLOY_CONFIRM=deploy-buwiz-com to run:"
++  echo "  spin cloud deploy"
++  exit 0
++fi
++
++if ! command -v spin >/dev/null 2>&1; then
++  echo "spin is not on PATH" >&2
++  exit 1
++fi
++
++exec spin cloud deploy "$@"
+diff --git a/spin.toml b/spin.toml
+new file mode 100644
+index 0000000..09ece1b
+--- /dev/null
++++ b/spin.toml
+@@ -0,0 +1,15 @@
++spin_manifest_version = 2
++
++[application]
++name = "buwiz-com"
++version = "0.1.0"
++description = "Marketing site for buwiz.com"
++
++[[trigger.http]]
++route = "/..."
++component = "site"
++
++[component.site]
++# Same fileserver build buwiz-server already pins for /pkg.
++source = { url = "https://github.com/fermyon/spin-fileserver/releases/download/v0.1.0/spin_static_fs.wasm", digest = "sha256:96c76d9af86420b39eb6cd7be5550e3cb5d4cc4de572ce0fd1f6a29471536cb4" }
++files = [{ source = "public", destination = "/" }]
+-- 
+2.43.0
+
