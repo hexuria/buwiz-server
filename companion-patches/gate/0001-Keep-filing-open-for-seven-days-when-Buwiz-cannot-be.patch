@@ -1,0 +1,277 @@
+From ee6c789ff522f876904f80eb372e042554be1fe1 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Fri, 23 Oct 2026 02:01:09 +0000
+Subject: [PATCH 1/3] Keep filing open for seven days when Buwiz cannot be
+ reached
+
+A saved refresh records when the server last accepted it. An outage inside
+that window still opens the app. A revoked token, or a grace that has run
+out, sends the desktop back to the sign-in gate.
+---
+ crates/bir-core/src/background_cron.rs |  28 +++++
+ crates/bir-core/src/cloud_account.rs   | 161 +++++++++++++++++++++++++
+ 2 files changed, 189 insertions(+)
+
+diff --git a/crates/bir-core/src/background_cron.rs b/crates/bir-core/src/background_cron.rs
+index fadfe80..0b6106f 100644
+--- a/crates/bir-core/src/background_cron.rs
++++ b/crates/bir-core/src/background_cron.rs
+@@ -20,6 +20,10 @@ static ACTIVE_JOBS: OnceLock<Arc<Mutex<HashSet<String>>>> = OnceLock::new();
+ /// Set by [`request_shutdown`]. The cron loop finishes the tick it is already
+ /// on, then returns, so the submission worker can drop the database.
+ static SHUTDOWN: AtomicBool = AtomicBool::new(false);
++/// The shell holds this until a Buwiz account is signed in. Default false so
++/// bir-core and bir-desktop cron tests keep filing. The shell sets it true
++/// before the worker starts.
++static SUBMISSION_PAUSED: AtomicBool = AtomicBool::new(false);
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(crate) enum WakeDispatchStatus {
+@@ -49,6 +53,23 @@ pub fn shutdown_requested() -> bool {
+     SHUTDOWN.load(Ordering::SeqCst)
+ }
+ 
++/// Skip queue ticks while the desktop account gate is locked.
++///
++/// Unlike [`request_shutdown`], this can be cleared. A later sign-in in the
++/// same process files again.
++pub fn set_submission_paused(paused: bool) {
++    SUBMISSION_PAUSED.store(paused, Ordering::SeqCst);
++    if !paused {
++        // Quiet when the worker has not started yet. Launch unpauses before
++        // the thread exists; the first tick runs as soon as it does.
++        let _ = wake_with_status();
++    }
++}
++
++pub fn submission_paused() -> bool {
++    SUBMISSION_PAUSED.load(Ordering::SeqCst)
++}
++
+ pub fn wake() {
+     match wake_with_status() {
+         WakeDispatchStatus::Delivered | WakeDispatchStatus::AlreadyPending => {}
+@@ -83,6 +104,13 @@ pub async fn start_cron_jobs(db: Arc<Mutex<Database>>) {
+         if shutdown_requested() {
+             break;
+         }
++        if submission_paused() {
++            tokio::select! {
++                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
++                _ = rx.recv() => {}
++            }
++            continue;
++        }
+         // We run a tick, then wait for either 60 seconds or a wake signal.
+         run_queue_tick(db.clone()).await;
+         if shutdown_requested() {
+diff --git a/crates/bir-core/src/cloud_account.rs b/crates/bir-core/src/cloud_account.rs
+index 92ba39a..f0f2bca 100644
+--- a/crates/bir-core/src/cloud_account.rs
++++ b/crates/bir-core/src/cloud_account.rs
+@@ -17,6 +17,10 @@ pub const DEFAULT_SERVER_URL: &str = "https://api.buwiz.com";
+ pub const DESKTOP_CLIENT_ID: &str = "buwiz-desktop";
+ pub const ENV_SERVER_URL: &str = "BUWIZ_SERVER_URL";
+ 
++/// How long a saved refresh may keep filing open when the server cannot be
++/// reached. One constant so the grace cannot drift between the shell and tests.
++pub const OFFLINE_GRACE_SECONDS: i64 = 7 * 24 * 60 * 60;
++
+ const USER_AGENT: &str = "buwiz-desktop";
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+@@ -180,6 +184,34 @@ pub enum SessionUpdate {
+     SignedOut,
+ }
+ 
++/// What the shell should do with the filing UI after a refresh attempt.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum RefreshOutcome {
++    Online,
++    Offline,
++    Revoked,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum GateDecision {
++    Open {
++        offline: bool,
++    },
++    /// `clear_secrets` is set when the server rejected the refresh token.
++    /// A network failure keeps the token so the next launch can try again.
++    Closed {
++        clear_secrets: bool,
++    },
++}
++
++/// Which browser page the desktop opens for a device code.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum AccountBrowser {
++    SignIn,
++    /// The server's signup path. `/signup` redirects to the real form.
++    CreateAccount,
++}
++
+ /// Saved session. Serialized only into the private token store.
+ #[derive(Clone, serde::Serialize, serde::Deserialize)]
+ pub struct StoredAccount {
+@@ -191,6 +223,10 @@ pub struct StoredAccount {
+     pub email: Option<String>,
+     #[serde(default)]
+     pub offline: bool,
++    /// Unix time of the last refresh the server accepted. `0` means this
++    /// install has not recorded one, so an outage does not open the app.
++    #[serde(default)]
++    pub last_refresh_unix: i64,
+ }
+ 
+ impl std::fmt::Debug for StoredAccount {
+@@ -221,6 +257,7 @@ impl StoredAccount {
+             user_id: secrets.user_id.clone(),
+             email: secrets.email.clone(),
+             offline: secrets.offline,
++            last_refresh_unix: 0,
+         }
+     }
+ 
+@@ -245,6 +282,48 @@ impl StoredAccount {
+     }
+ }
+ 
++/// A saved refresh is inside the grace window, including the last second.
++pub fn offline_grace_allows(last_refresh_unix: i64, now_unix: i64) -> bool {
++    last_refresh_unix > 0 && now_unix.saturating_sub(last_refresh_unix) <= OFFLINE_GRACE_SECONDS
++}
++
++pub fn gate_after_refresh(
++    last_refresh_unix: i64,
++    now_unix: i64,
++    outcome: RefreshOutcome,
++) -> GateDecision {
++    match outcome {
++        RefreshOutcome::Online => GateDecision::Open { offline: false },
++        RefreshOutcome::Revoked => GateDecision::Closed {
++            clear_secrets: true,
++        },
++        RefreshOutcome::Offline => {
++            if offline_grace_allows(last_refresh_unix, now_unix) {
++                GateDecision::Open { offline: true }
++            } else {
++                GateDecision::Closed {
++                    clear_secrets: false,
++                }
++            }
++        }
++    }
++}
++
++/// Browser URL for this device code. `next` is the approval page, so signup
++/// and sign-in both land back on the same device flow.
++pub fn account_browser_url(server_url: &str, entry: AccountBrowser, user_code: &str) -> String {
++    let next = format!("/device?user_code={user_code}");
++    let page = match entry {
++        AccountBrowser::SignIn => "login",
++        AccountBrowser::CreateAccount => "signup",
++    };
++    format!(
++        "{}/{page}?next={}",
++        server_url.trim_end_matches('/'),
++        urlencoding::encode(&next)
++    )
++}
++
+ pub fn unix_now() -> i64 {
+     SystemTime::now()
+         .duration_since(UNIX_EPOCH)
+@@ -1027,6 +1106,88 @@ mod tests {
+         assert!(!encoded.contains("debug"));
+         let decoded = StoredAccount::decode(&encoded).unwrap();
+         assert_eq!(decoded.refresh_token, "refresh-secret");
++        assert_eq!(decoded.last_refresh_unix, 0);
+         assert!(StoredAccount::decode(r#"{"server_url":"http://localhost:3008"}"#).is_err());
++        let legacy = StoredAccount::decode(
++            r#"{"server_url":"http://localhost:3008","access_token":"a","refresh_token":"r","access_expires_at_unix":1,"user_id":"u","email":null,"offline":false}"#,
++        )
++        .unwrap();
++        assert_eq!(legacy.last_refresh_unix, 0);
++    }
++
++    #[test]
++    fn offline_grace_is_seven_days() {
++        let day = 24 * 60 * 60;
++        assert_eq!(OFFLINE_GRACE_SECONDS, 7 * day);
++        let start = 1_700_000_000;
++        assert!(offline_grace_allows(start, start));
++        assert!(offline_grace_allows(start, start + OFFLINE_GRACE_SECONDS));
++        assert!(!offline_grace_allows(
++            start,
++            start + OFFLINE_GRACE_SECONDS + 1
++        ));
++        assert!(!offline_grace_allows(0, start));
++        assert!(!offline_grace_allows(0, 0));
++    }
++
++    #[test]
++    fn gate_opens_online_keeps_a_grace_outage_and_drops_a_revoked_token() {
++        let start = 1_700_000_000;
++        assert_eq!(
++            gate_after_refresh(start, start + 10, RefreshOutcome::Online),
++            GateDecision::Open { offline: false }
++        );
++        assert_eq!(
++            gate_after_refresh(
++                start,
++                start + OFFLINE_GRACE_SECONDS,
++                RefreshOutcome::Offline
++            ),
++            GateDecision::Open { offline: true }
++        );
++        assert_eq!(
++            gate_after_refresh(
++                start,
++                start + OFFLINE_GRACE_SECONDS + 1,
++                RefreshOutcome::Offline
++            ),
++            GateDecision::Closed {
++                clear_secrets: false
++            }
++        );
++        assert_eq!(
++            gate_after_refresh(0, start, RefreshOutcome::Offline),
++            GateDecision::Closed {
++                clear_secrets: false
++            }
++        );
++        assert_eq!(
++            gate_after_refresh(start, start + 10, RefreshOutcome::Revoked),
++            GateDecision::Closed {
++                clear_secrets: true
++            }
++        );
++    }
++
++    #[test]
++    fn create_account_opens_signup_with_the_device_page_as_next() {
++        let sign_in = account_browser_url(
++            "http://localhost:3008/",
++            AccountBrowser::SignIn,
++            "ABCD-EFGH",
++        );
++        let create = account_browser_url(
++            "http://localhost:3008",
++            AccountBrowser::CreateAccount,
++            "ABCD-EFGH",
++        );
++        assert_eq!(
++            sign_in,
++            "http://localhost:3008/login?next=%2Fdevice%3Fuser_code%3DABCD-EFGH"
++        );
++        assert_eq!(
++            create,
++            "http://localhost:3008/signup?next=%2Fdevice%3Fuser_code%3DABCD-EFGH"
++        );
+     }
+ }
+-- 
+2.43.0
+

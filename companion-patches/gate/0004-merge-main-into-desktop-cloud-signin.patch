@@ -1,0 +1,1822 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index ebcc6be..e12d385 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -4,7 +4,7 @@ on:
+   push:
+     branches: [ "main", "codex/**" ]
+   pull_request:
+-    branches: [ "main", "gol/**", "codex/**" ]
++    branches: [ "main", "gol/**", "codex/**", "feat/**" ]
+   # Nightly safety net: the full CI, validation audits included, on main.
+   # 18:00 UTC is 02:00 in Manila.
+   schedule:
+diff --git a/app/main.js b/app/main.js
+index 81caded..daf6070 100644
+--- a/app/main.js
++++ b/app/main.js
+@@ -130,6 +130,10 @@ class BirApp extends View {
+     if (!storedRead) this.writeLocal(READ_KEY, [...this.readIds]);
+     this.knownEvents = new Set(this.notifications().map((n) => n.id));
+     this.prefs = { showRecent: true, compactFormNav: false, ...this.readLocal(PREFS_KEY, {}) };
++    this.settingsSection = "general";
++    this.settingsMenu = null;
++    this.settingsSearch = InputState.new({ placeholder: "Search" });
++    this.settingsSearch.on("change", (_e, cx) => cx.notify());
+ 
+     // Screen state.
+     this.palette = { input: InputState.new({ placeholder: "Search taxpayers, forms and pages" }), index: 0 };
+@@ -295,6 +299,7 @@ class BirApp extends View {
+       else if (key === "branch") this.selectBranch(value, cx);
+       else if (key === "theme") this.setThemePreference(value, cx);
+       else if (key === "view") this.go(value, cx);
++      else if (key === "section") this.settingsSection = value;
+       else if (key === "panel") this.togglePanel(value, cx);
+       else if (key === "scope") this.library.scope = value;
+       // Compact form sections for this run only; Settings is what saves it.
+@@ -550,6 +555,11 @@ class BirApp extends View {
+   go(view, cx) {
+     // A removal's Undo is for the page it was offered on.
+     this.formUi?.leavingPage?.();
++    // Background tasks live in Settings › Jobs.
++    if (view === "cron_tasks") {
++      this.settingsSection = "jobs";
++      view = "settings";
++    }
+     if (view !== this.view) {
+       this.history.push(this.view);
+       this.forward = [];
+@@ -641,13 +651,18 @@ class BirApp extends View {
+     cx.notify();
+   }
+ 
+-  /** Esc: the topmost thing closes — an overlay, then a menu, then a panel. */
++  /** Esc: the topmost thing closes — an overlay, a menu, Settings, then a panel. */
+   dismiss(cx) {
+     if (this.overlay) return this.closeOverlay(cx);
+     if (this.accountMenu) {
+       this.accountMenu = false;
+       return cx.notify();
+     }
++    if (this.settingsMenu) {
++      this.settingsMenu = null;
++      return cx.notify();
++    }
++    if (this.view === "settings") return this.closeSettings(cx);
+     if (this.panel) {
+       this.panel = null;
+       return cx.notify();
+@@ -744,6 +759,60 @@ class BirApp extends View {
+     cx.notify();
+   }
+ 
++  /** System info, re-read after a settings write clears the store cache. */
++  liveInfo() {
++    return this.store.systemInfo();
++  }
++
++  settingsQuery() {
++    return this.settingsSearch.value();
++  }
++
++  openSettings(cx) {
++    if (this.cloudLocked) return;
++    if (this.view !== "settings") this.go("settings", cx);
++  }
++
++  openSettingsSection(id, cx) {
++    this.settingsSection = id;
++    this.settingsMenu = null;
++    cx.notify();
++  }
++
++  /** Esc and Back to app. Leaving a finished computer-setup change signs out. */
++  closeSettings(cx) {
++    if (this.view !== "settings") return;
++    this.settingsMenu = null;
++    if (this.history.length) this.goBack(cx);
++    else this.go("home", cx);
++  }
++
++  /** The profile page's own editor, for the pencil on an account row. */
++  editTaxpayerSection(section, cx) {
++    this.go("profile", cx);
++    this.taxpayerUi.startEdit(section, cx);
++  }
++
++  setGlobalHotkey(combo, cx) {
++    try {
++      this.store.write("set_global_hotkey", combo);
++      this.settingsMenu = null;
++    } catch (e) {
++      this.toast(errorText(e), cx, "triangle-alert");
++    }
++    cx.notify();
++  }
++
++  setLogRetention(days, cx) {
++    try {
++      this.store.write("set_log_retention", days);
++      this.settingsMenu = null;
++    } catch (e) {
++      this.toast(errorText(e), cx, "triangle-alert");
++    }
++    cx.notify();
++  }
++
+   setAutoUpdateDownload(enabled, cx) {
+     setAutoUpdateDownload(enabled);
+     if (this.updateStatus) this.updateStatus.auto_download = Boolean(enabled);
+@@ -1519,51 +1588,57 @@ class BirApp extends View {
+ 
+     // A form on a wide window brings its own two scroll areas (the part
+     // navigator pinned beside the form); everything else scrolls as one.
+-    const formSplit = this.view === "form" && !this.isFresh() ? renderFormSplit(cx, this, L) : null;
+-    const main = div()
+-      .id("main-surface")
+-      .flex()
+-      .flex_col()
+-      .flex_1()
+-      .min_w(0)
+-      .min_h(0)
+-      .mb(SIZE.mainInset)
+-      .when(!L.sidebarDocked, (el) => el.ml(SIZE.mainInset))
+-      .when(!L.panelDocked, (el) => el.mr(SIZE.mainInset))
+-      .rounded(RADIUS.card)
+-      .border(1)
+-      .border_color(t.border)
+-      .bg(t.surface)
+-      .overflow_hidden()
+-      .when(Boolean(formSplit), (el) => el.child(formSplit))
+-      .when(!formSplit, (el) => el.child(
+-        div()
+-          .id("main-scroll")
++    const settingsOpen = this.view === "settings";
++    const formSplit = !settingsOpen && this.view === "form" && !this.isFresh() ? renderFormSplit(cx, this, L) : null;
++    const main = settingsOpen
++      ? null
++      : div()
++          .id("main-surface")
++          .flex()
++          .flex_col()
+           .flex_1()
++          .min_w(0)
+           .min_h(0)
+-          .overflow_y_scroll()
+-          .overflow_x_hidden()
+-          .child(
++          .mb(SIZE.mainInset)
++          .when(!L.sidebarDocked, (el) => el.ml(SIZE.mainInset))
++          .when(!L.panelDocked, (el) => el.mr(SIZE.mainInset))
++          .rounded(RADIUS.card)
++          .border(1)
++          .border_color(t.border)
++          .bg(t.surface)
++          .overflow_hidden()
++          .when(Boolean(formSplit), (el) => el.child(formSplit))
++          .when(!formSplit, (el) => el.child(
+             div()
+-              .flex()
+-              .flex_col()
+-              .items_center()
+-              .w_full()
+-              .px(L.padX)
+-              .pt(L.mainWidth < BREAK.narrowContent ? 20 : 28)
+-              .pb(56)
+-              // Fill the pane, capped by the settled column. A pixel `w()` from the
+-              // last poll stays wider than the pane during a drag and, centred,
+-              // paints under the sidebar. `w_full` tracks the pane every frame;
+-              // a stale `max_w` only delays growing, it does not overflow.
+-              .child(div().flex().flex_col().w_full().max_w(L.column).min_w(0).child(this.renderView(cx, L.column))),
+-          ),
+-      ));
+-
++              .id("main-scroll")
++              .flex_1()
++              .min_h(0)
++              .overflow_y_scroll()
++              .overflow_x_hidden()
++              .child(
++                div()
++                  .flex()
++                  .flex_col()
++                  .items_center()
++                  .w_full()
++                  .px(L.padX)
++                  .pt(L.mainWidth < BREAK.narrowContent ? 20 : 28)
++                  .pb(56)
++                  // Fill the pane, capped by the settled column. A pixel `w()` from the
++                  // last poll stays wider than the pane during a drag and, centred,
++                  // paints under the sidebar. `w_full` tracks the pane every frame;
++                  // a stale `max_w` only delays growing, it does not overflow.
++                  .child(div().flex().flex_col().w_full().max_w(L.column).min_w(0).child(this.renderView(cx, L.column))),
++              ),
++          ));
+     const body = div().flex().flex_row().flex_1().min_h(0).w_full();
+-    if (L.sidebarDocked) body.child(renderSidebar(cx, this));
+-    body.child(main);
+-    if (L.panelDocked) body.child(renderRightPanel(cx, this));
++    if (settingsOpen) {
++      body.child(renderSettings(cx, this, L.vp.width, L.vp.height - SIZE.titleBar));
++    } else {
++      if (L.sidebarDocked) body.child(renderSidebar(cx, this));
++      body.child(main);
++      if (L.panelDocked) body.child(renderRightPanel(cx, this));
++    }
+ 
+     const root = div()
+       .id("app-root")
+@@ -1579,7 +1654,7 @@ class BirApp extends View {
+       .on_action("new-return", (_e, cx) => this.startNewReturn(cx))
+       .on_action("toggle-theme", (_e, cx) => this.cycleTheme(cx))
+       .on_action("toggle-right-panel", (_e, cx) => this.toggleRightPanel(cx))
+-      .on_action("open-settings", (_e, cx) => this.go("settings", cx))
++      .on_action("open-settings", (_e, cx) => this.openSettings(cx))
+       .on_action("lock-app", (_e, cx) => this.lockApp(cx))
+       .on_action("cloud-sign-out", (_e, cx) => {
+         if (this.account) this.account.signOut(cx);
+@@ -1594,7 +1669,7 @@ class BirApp extends View {
+       .child(body);
+ 
+     // Below 860 px the sidebar and the panel float over the main surface.
+-    if (L.narrow && (this.sidebarOpen || this.panel)) {
++    if (!settingsOpen && L.narrow && (this.sidebarOpen || this.panel)) {
+       root.child(
+         div()
+           .id("overlay-scrim")
+diff --git a/app/shell/cron_tasks.js b/app/shell/cron_tasks.js
+index 23a19b0..e1368bc 100644
+--- a/app/shell/cron_tasks.js
++++ b/app/shell/cron_tasks.js
+@@ -197,16 +197,16 @@ function logsTab(cx, app, width) {
+   return page.child(box);
+ }
+ 
+-export function renderCronTasksPage(cx, app, width) {
++/** Jobs and today's log, without a page title. Settings › Jobs draws this. */
++export function renderJobsBody(cx, app, width) {
+   const tab = app.cronTab || "jobs";
+   return div()
+     .flex()
+     .flex_col()
+     .child(
+-      PageHeader(cx, {
+-        title: "Background tasks",
+-        lede: "Queued filings, scheduled jobs and today's log.",
+-        actions: [
++      div()
++        .mb(SPACE[4])
++        .child(
+           Segmented(
+             cx,
+             "jobs-tabs",
+@@ -218,8 +218,20 @@ export function renderCronTasksPage(cx, app, width) {
+             (v, cx) => app.setCronTab(v, cx),
+             { label: "Background tasks view" },
+           ),
+-        ],
++        ),
++    )
++    .child(tab === "logs" ? logsTab(cx, app, width) : jobsTab(cx, app, width));
++}
++
++export function renderCronTasksPage(cx, app, width) {
++  return div()
++    .flex()
++    .flex_col()
++    .child(
++      PageHeader(cx, {
++        title: "Background tasks",
++        lede: "Queued filings, scheduled jobs and today's log.",
+       }),
+     )
+-    .child(div().mt(28).child(tab === "logs" ? logsTab(cx, app, width) : jobsTab(cx, app, width)));
++    .child(div().mt(28).child(renderJobsBody(cx, app, width)));
+ }
+diff --git a/app/shell/gpui-kit.d.ts b/app/shell/gpui-kit.d.ts
+index 3958a2a..4355544 100644
+--- a/app/shell/gpui-kit.d.ts
++++ b/app/shell/gpui-kit.d.ts
+@@ -27709,11 +27709,22 @@ interface ImportMeta {
+ 
+ declare module "bir" {
+ 
++  export interface HotkeyPreset {
++      value: string;
++      label: string;
++  }
+   export interface SystemInfo {
+       os: string;
+       arch: string;
+       app_version: string;
+       database_path: string;
++      data_dir: string;
++      logs_dir: string;
++      /** Null when no global show chord is stored. */
++      global_hotkey: string | null;
++      hotkey_presets: HotkeyPreset[];
++      log_retention_days: number;
++      log_retention_choices: number[];
+       runtime: string;
+   }
+   export interface ProfileSummary {
+@@ -27737,6 +27748,32 @@ declare module "bir" {
+       is_deprecated: boolean;
+   }
+   export function system_info(): SystemInfo;
++  /** Empty string clears the chord. An unknown key is refused. */
++  export function set_global_hotkey(combo: string): null;
++  /** Days of daily log files to keep. Out of range is refused. */
++  export function set_log_retention(days: number): null;
++
++  export interface UpdateStatus {
++      /** idle, checking, downloading, ready, failed, up_to_date, available, or installing. */
++      phase: string;
++      /** The release that was found, or null. */
++      version: string | null;
++      /** A sentence for a failure or "already current", or null. */
++      message: string | null;
++      /** Whether a newer release downloads without asking. */
++      auto_download: boolean;
++      /** The version compiled into this binary. */
++      current_version: string;
++  }
++  export function update_status(): UpdateStatus;
++  /** Replace this install with the verified download and relaunch. */
++  export function install_update(): null;
++  /** Hide the update prompt until the next check. */
++  export function dismiss_update(): null;
++  /** Look for a release now, and download it even when auto-download is off. */
++  export function check_for_updates(): null;
++  /** `auto_update_download`. Off is `0`; anything else leaves downloading on. */
++  export function set_auto_update_download(enabled: boolean): null;
+   export function list_profiles(): ProfileSummary[];
+   export function forms_catalog(): FormCatalogEntry[];
+   export function get_setting(key: string): string | null;
+diff --git a/app/shell/settings.js b/app/shell/settings.js
+index f3fe321..3d894cf 100644
+--- a/app/shell/settings.js
++++ b/app/shell/settings.js
+@@ -1,146 +1,623 @@
+-// Settings: preferences for this computer and the signed-in account's own
+-// PIN and authenticator. A taxpayer sees Appearance and Security; the admin
+-// also sees Data, Background tasks, Computer setup (who this computer is set
+-// up for), the recovery key and where the database lives. Rows the prototype shows for features this build does not have yet
+-// are left out rather than drawn as dead switches
+-// (see docs/plans/gpui-shell-migration.md).
++// Settings: a full-height sidebar and a centered column of cards, opened
++// with Ctrl+, / Cmd+, or the application menu. Esc and Back to app close it.
++//
++// Every control writes a setting this build already has. Accent, language,
++// spellcheck, and launch-at-login are not here: nothing stores them.
++// Tray behaviour is described, not switched: close hides when a tray exists
++// and quits when it does not, and that is not a preference.
+ 
+ import { div } from "gpui-kit";
++import { Popup } from "gpui-base";
+ import {
+   tokens,
+   SPACE,
+   RADIUS,
+   SIZE,
+   Text,
++  Line,
++  Icon,
++  IconButton,
+   AppButton,
+-  Segmented,
+   Switch,
+-  Chip,
+   Card,
+   SettingRow,
+-  PageHeader,
+-  SectionTitle,
++  PageTitle,
++  NavRow,
++  GroupLabel,
++  Avatar,
++  TextField,
+ } from "./ui.js";
+ import { SecurityCard } from "./security.js";
+ import { SetupCard } from "./setup_change.js";
+ import { AccountCard } from "./account.js";
++import { profileExportCard } from "./taxpayer.js";
++import { renderJobsBody } from "./cron_tasks.js";
++import {
++  THEME_OPTIONS,
++  settingsView,
++  shownSection,
++  sectionById,
++  hotkeyOptions,
++  retentionLabel,
++  accountSummary,
++} from "./settings_model.js";
+ 
++const SIDEBAR = 220;
++const COLUMN = 420;
++const JOBS_COLUMN = 680;
+ 
+-function jobChip(cx, status) {
+-  const s = String(status || "").toLowerCase();
+-  if (s === "running" || s === "active" || s === "scheduled") return Chip(cx, "Running", "success");
+-  if (s === "failed" || s === "error") return Chip(cx, "Failed", "danger");
+-  if (s === "queued" || s === "pending") return Chip(cx, "Waiting", "accent");
+-  return Chip(cx, status ? status[0].toUpperCase() + status.slice(1).toLowerCase() : "Paused");
++function SearchBox(cx, state) {
++  const t = tokens(cx);
++  // Same chrome as the library search: the field's own border is off so the
++  // icon and the placeholder sit in one rounded box.
++  return div()
++    .id("settings-search")
++    .flex()
++    .flex_row()
++    .items_center()
++    .gap(SPACE[2])
++    .h(SIZE.control)
++    .mt(SPACE[3])
++    .pl(10)
++    .pr(SPACE[2])
++    .rounded(RADIUS.row)
++    .border(1)
++    .border_color(t.borderStrong)
++    .bg(t.surface)
++    .child(Icon(cx, "search", { color: "fg3" }))
++    .child(TextField(cx, state, { id: "settings-search-input", label: "Search settings" }).border(0).px(0).h(30).flex_1().bg(t.surface));
+ }
+ 
+-export function renderSettings(cx, app, _width) {
+-  const os = app.isMac ? "macOS" : app.info.os === "windows" ? "Windows" : "system";
++function BackLink(cx, app) {
++  const t = tokens(cx);
++  return div()
++    .id("settings-back")
++    .flex()
++    .flex_row()
++    .items_center()
++    .gap(6)
++    .h(SIZE.control)
++    .px(SPACE[2])
++    .rounded(RADIUS.row)
++    .cursor_pointer()
++    .accessibility_label("Back to app")
++    .hover((s) => s.bg(t.hover))
++    .on_click((_e, cx) => app.closeSettings(cx))
++    .child(Icon(cx, "chevron-left", { size: SIZE.iconSmall, color: "fg2" }))
++    .child(Text(cx, "control", "Back to app", "fg2"));
++}
+ 
+-  const appearance = Card(cx, "settings-appearance", [
+-    SettingRow(
+-      cx,
+-      "settings-theme",
+-      "Theme",
+-      `System follows your ${os} setting`,
+-      Segmented(
++function sidebar(cx, app, view, shownId) {
++  const t = tokens(cx);
++  const scroll = div().id("settings-nav").flex().flex_col().flex_1().min_h(0).mt(SPACE[2]).overflow_y_scroll().overflow_x_hidden();
++  let group = "";
++  for (const section of view) {
++    if (section.group !== group) {
++      group = section.group;
++      scroll.child(GroupLabel(cx, group));
++    }
++    scroll.child(
++      NavRow(cx, `settings-nav-${section.id}`, section.icon, section.label, {
++        current: section.id === shownId,
++        onClick: (_e, cx) => app.openSettingsSection(section.id, cx),
++      }),
++    );
++  }
++  if (!view.length) scroll.child(Text(cx, "meta", "No matching settings.", "fg3").px(SPACE[2]).mt(SPACE[4]).whitespace_normal());
++  return div()
++    .id("settings-sidebar")
++    .flex()
++    .flex_col()
++    .flex_none()
++    .w(SIDEBAR)
++    .h_full()
++    .min_h(0)
++    .pt(SPACE[3])
++    .px(SPACE[3])
++    .pb(SPACE[2])
++    .border_r(1)
++    .border_color(t.border)
++    .child(BackLink(cx, app))
++    .child(SearchBox(cx, app.settingsSearch))
++    .child(scroll);
++}
++
++/** A compact dropdown pill: the current value and a chevron. */
++function PillSelect(cx, id, opts) {
++  const t = tokens(cx);
++  const current = opts.options.find((option) => option.value === opts.value);
++  const trigger = div()
++    .id(`${id}-trigger`)
++    .flex()
++    .flex_row()
++    .items_center()
++    .gap(6)
++    .h(SIZE.controlSm)
++    .pl(12)
++    .pr(8)
++    .rounded(RADIUS.full)
++    .border(1)
++    .border_color(t.borderStrong)
++    .bg(t.bg)
++    .cursor_pointer()
++    .accessibility_label(opts.label || id)
++    .on_click((_e, cx) => opts.onOpenChange(!opts.open, cx))
++    .child(Text(cx, "body", current ? current.label : opts.placeholder || "Choose"))
++    .child(Icon(cx, "chevron-down", { size: SIZE.iconSmall, color: "fg3" }));
++  const popup = Popup.new(id, trigger).anchor("top_right");
++  if (opts.open) {
++    const list = div()
++      .id(`${id}-list`)
++      .flex()
++      .flex_col()
++      .gap(2)
++      .mt(SPACE[1])
++      .p(SPACE[1])
++      .min_w(140)
++      .rounded(RADIUS.card)
++      .border(1)
++      .border_color(t.border)
++      .bg(t.raised)
++      .shadow_lg()
++      .on_mouse_down_out((_e, cx) => opts.onOpenChange(false, cx));
++    for (const option of opts.options) {
++      const on = option.value === opts.value;
++      const valueId = option.value === "" ? "off" : String(option.value).replace(/[^A-Za-z0-9]+/g, "-");
++      list.child(
++        div()
++          .id(`${id}-opt-${valueId}`)
++          .flex()
++          .items_center()
++          .h(SIZE.controlSm)
++          .flex_shrink(0)
++          .px(SPACE[2])
++          .rounded(RADIUS.ctl)
++          .cursor_pointer()
++          .when(on, (el) => el.bg(t.selected))
++          .hover((s) => s.bg(t.hover))
++          .on_click((_e, cx) => {
++            opts.onChange(option.value, cx);
++            opts.onOpenChange(false, cx);
++          })
++          .child(Text(cx, "body", option.label)),
++      );
++    }
++    popup.content(list);
++  }
++  return popup;
++}
++
++function menuOpen(app, id) {
++  return app.settingsMenu === id;
++}
++
++function setMenu(app, id, open, cx) {
++  app.settingsMenu = open ? id : null;
++  cx.notify();
++}
++
++function labeled(cx, label, card) {
++  const block = div().flex().flex_col().gap(SPACE[2]);
++  if (label) block.child(Text(cx, "metaStrong", label, "fg3"));
++  return block.child(card);
++}
++
++function noteRow(cx, id, title, note) {
++  return div()
++    .id(id)
++    .flex()
++    .flex_col()
++    .gap(4)
++    .py(14)
++    .child(Text(cx, "control", title))
++    .child(Text(cx, "meta", note, "fg3").whitespace_normal());
++}
++
++function valueEdit(cx, id, value, onEdit) {
++  return div()
++    .flex()
++    .flex_row()
++    .items_center()
++    .gap(2)
++    .child(Line(cx, "body", value || "Not set", "fg2").max_w(160))
++    .child(IconButton(cx, id, "pencil", { tooltip: "Edit", onClick: onEdit }));
++}
++
++function generalCards(cx, app, rows) {
++  const appearance = [];
++  if (rows.includes("theme")) {
++    appearance.push(
++        SettingRow(
+         cx,
+-        "settings-theme-seg",
+-        [
+-          { value: "light", label: "Light" },
+-          { value: "dark", label: "Dark" },
+-          { value: "system", label: "System" },
+-        ],
+-        app.themePref,
+-        (v, cx) => app.setThemePreference(v, cx),
+-        { label: "Theme" },
++        "settings-theme-row",
++        "Theme",
++        "System follows this computer",
++        PillSelect(cx, "settings-theme", {
++          label: "Theme",
++          options: THEME_OPTIONS,
++          value: app.themePref,
++          open: menuOpen(app, "theme"),
++          onOpenChange: (open, cx) => setMenu(app, "theme", open, cx),
++          onChange: (value, cx) => app.setThemePreference(value, cx),
++        }),
+       ),
+-    ),
+-    SettingRow(
+-      cx,
+-      "settings-recent",
+-      "Show recent returns in the sidebar",
+-      "The last four returns you opened",
+-      Switch(cx, "settings-recent-switch", app.prefs.showRecent, (v, cx) => app.setPref("showRecent", v, cx), "Show recent returns"),
+-    ),
+-    SettingRow(
+-      cx,
+-      "settings-compact-form-nav",
+-      "Compact form sections",
+-      "One line per part in On this form; point at a part for its full name",
+-      Switch(cx, "settings-compact-form-nav-switch", app.prefs.compactFormNav, (v, cx) => app.setPref("compactFormNav", v, cx), "Compact form sections"),
+-    ),
+-    SettingRow(
+-      cx,
+-      "settings-auto-update",
+-      "Download updates automatically",
+-      "A newer release downloads in the background. You choose when to install.",
+-      Switch(
++    );
++  }
++  if (rows.includes("recent")) {
++    appearance.push(
++      SettingRow(
+         cx,
+-        "settings-auto-update-switch",
+-        !app.updateStatus || app.updateStatus.auto_download !== false,
+-        (v, cx) => app.setAutoUpdateDownload(v, cx),
++        "settings-recent",
++        "Show recent returns",
++        "The last four returns in the sidebar",
++        Switch(cx, "settings-recent-switch", app.prefs.showRecent, (v, cx) => app.setPref("showRecent", v, cx), "Show recent returns"),
++      ),
++    );
++  }
++  if (rows.includes("compact")) {
++    appearance.push(
++      SettingRow(
++        cx,
++        "settings-compact-form-nav",
++        "Compact form sections",
++        "One line per part; point at a part for its name",
++        Switch(cx, "settings-compact-form-nav-switch", app.prefs.compactFormNav, (v, cx) => app.setPref("compactFormNav", v, cx), "Compact form sections"),
++      ),
++    );
++  }
++  if (rows.includes("updates")) {
++    appearance.push(
++      SettingRow(
++        cx,
++        "settings-auto-update",
+         "Download updates automatically",
++        "A newer release downloads in the background. You choose when to install.",
++        Switch(
++          cx,
++          "settings-auto-update-switch",
++          !app.updateStatus || app.updateStatus.auto_download !== false,
++          (v, cx) => app.setAutoUpdateDownload(v, cx),
++          "Download updates automatically",
++        ),
+       ),
+-    ),
+-  ]);
++    );
++  }
++  return appearance.length ? [labeled(cx, "Appearance", Card(cx, "settings-appearance", appearance))] : [];
++}
+ 
+-  const data = Card(cx, "settings-data", [
++function accountCards(cx, app, rows) {
++  const blocks = [];
++  if (rows.includes("buwiz")) {
++    blocks.push(labeled(cx, "Buwiz", AccountCard(cx, app)));
++  }
++  const summary = accountSummary({
++    isAdmin: app.isAdmin(),
++    isHelpdesk: app.isHelpdesk(),
++    adminRoot: app.adminRoot(),
++    sessionKind: app.session.kind,
++    sessionRoot: app.session.root,
++    taxpayers: app.taxpayers(),
++    branch: app.branch(),
++    canAddTaxpayer: app.canAddTaxpayer(),
++  });
++  if (rows.includes("identity")) {
++    const t = tokens(cx);
++    const hero = div()
++      .id("settings-account-card")
++      .flex()
++      .flex_col()
++      .gap(SPACE[4])
++      .p(SPACE[4])
++      .rounded(RADIUS.card)
++      .border(1)
++      .border_color(t.border)
++      .bg(t.surface)
++      .child(
++        div()
++          .flex()
++          .flex_row()
++          .items_center()
++          .gap(12)
++          .child(Avatar(cx, summary.name, 40, summary.name))
++          .child(
++            div()
++              .flex()
++              .flex_col()
++              .min_w(0)
++              .flex_1()
++              .child(Line(cx, "emph", summary.name))
++              .child(Line(cx, "meta", summary.email || summary.detail, "fg3"))
++              .child(summary.email ? Line(cx, "meta", summary.detail, "fg3") : div()),
++          ),
++      );
++    const actions = div().flex().flex_row().flex_wrap().gap(SPACE[2]);
++    if (summary.showAdd) {
++      actions.child(
++        AppButton(cx, "settings-add-account", "Add account", {
++          size: "sm",
++          icon: "plus",
++          onClick: (_e, cx) => app.taxpayerUi.openNewTaxpayer(cx),
++        }),
++      );
++    }
++    actions.child(AppButton(cx, "settings-sign-out", "Sign out", { size: "sm", icon: "log-out", onClick: (_e, cx) => app.logOut(cx) }));
++    hero.child(actions);
++    const profile = app.taxpayer();
++    const branch = app.branch();
++    if (profile && branch) {
++      blocks.push(
++        labeled(
++          cx,
++          null,
++          div()
++            .flex()
++            .flex_col()
++            .gap(SPACE[4])
++            .child(hero)
++            .child(
++              Card(cx, "settings-profile", [
++                SettingRow(
++                  cx,
++                  "settings-profile-name",
++                  "Registered name",
++                  profile.tin_display ? `TIN ${profile.tin_display}` : summary.detail,
++                  valueEdit(cx, "settings-profile-name-edit", profile.name, (_e, cx) => app.editTaxpayerSection("taxpayer", cx)),
++                ),
++                SettingRow(
++                  cx,
++                  "settings-profile-email",
++                  "Email",
++                  "Printed on this profile's returns",
++                  valueEdit(cx, "settings-profile-email-edit", branch.facts.email, (_e, cx) => app.editTaxpayerSection("address", cx)),
++                ),
++              ]),
++            ),
++        ),
++      );
++    } else {
++      blocks.push(hero);
++    }
++  }
++  if (rows.includes("google")) blocks.push(googleBlock(cx, app));
++  if (rows.includes("security")) blocks.push(labeled(cx, "Security", SecurityCard(cx, app)));
++  return blocks.filter(Boolean);
++}
++
++function googleBlock(cx, app) {
++  const branch = app.branch();
++  if (!branch) {
++    return labeled(cx, "Google", Card(cx, "settings-google", [noteRow(cx, "settings-google-empty", "No taxpayer yet", "Add a taxpayer before connecting a Gmail account.")]));
++  }
++  let state = null;
++  try {
++    state = app.store.inboxState(branch.tin);
++  } catch (e) {
++    return labeled(cx, "Google", Card(cx, "settings-google", [noteRow(cx, "settings-google-error", "Google account", String(e))]));
++  }
++  const connected = Boolean(state.oauth_connected);
++  const who = state.oauth_inbox_email || state.inbox_email || "";
++  const ui = app.taxpayerUi;
++  const rows = [
+     SettingRow(
+       cx,
+-      "settings-import",
+-      "Import data",
+-      "Restore a taxpayer or database export (.zip)",
+-      AppButton(cx, "settings-import-btn", "Import", { size: "sm", icon: "upload", onClick: (_e, cx) => app.runImport(cx) }),
++      "settings-google",
++      "Gmail",
++      connected ? `Connected as ${who}` : `Not connected. Reads BIR confirmation mail for ${branch.name || "this profile"}.`,
++      AppButton(cx, "settings-google-connect", connected ? "Reconnect" : "Connect", {
++        size: "sm",
++        icon: "key-round",
++        disabled: ui.inboxBusy,
++        onClick: (_e, cx) => ui.inboxConnect(cx),
++      }),
+     ),
+-  ]);
+-
+-  const jobs = app.backgroundJobs().filter((j) => j.kind === "job").slice(0, 5);
+-  const jobRows = jobs.map((j, i) =>
+-    SettingRow(cx, `settings-job-${i}`, j.name, j.cron_expr ? `Schedule: ${j.cron_expr}` : j.job_type, jobChip(cx, j.status)),
+-  );
+-  jobRows.push(
+     SettingRow(
+       cx,
+-      "settings-jobs-open",
+-      jobs.length ? "All background tasks" : "No background tasks yet",
+-      "Jobs, submissions and the task log",
+-      AppButton(cx, "settings-jobs-btn", "Open", { size: "sm", onClick: (_e, cx) => app.go("cron_tasks", cx) }),
++      "settings-google-tracking",
++      "Receipt tracking",
++      "Watch this inbox for BIR confirmation mail",
++      Switch(cx, "settings-google-tracking-switch", Boolean(state.tracking_enabled), (v, cx) => ui.inboxToggleTracking(v, cx), "Receipt tracking"),
+     ),
+-  );
+-  const tasks = Card(cx, "settings-tasks", jobRows);
++  ];
++  const blocks = [labeled(cx, "Google", Card(cx, "settings-google", rows))];
++  if (connected) {
++    blocks.push(
++      Card(cx, "settings-google-disconnect", [
++        SettingRow(
++          cx,
++          "settings-google-disconnect-row",
++          "Disconnect Google",
++          "Clears the grant for every profile that shares this inbox",
++          AppButton(cx, "settings-google-disconnect", "Disconnect", {
++            variant: "danger",
++            size: "sm",
++            onClick: (_e, cx) => ui.inboxDisconnect(cx),
++          }),
++        ),
++      ]),
++    );
++  }
++  if (ui.inboxMsg) {
++    blocks.push(Text(cx, "meta", ui.inboxMsg.text, ui.inboxMsg.ok ? "success" : "danger").whitespace_normal());
++  }
++  return div()
++    .flex()
++    .flex_col()
++    .gap(SPACE[4])
++    .children(blocks);
++}
++
++function transferCards(cx, app, rows) {
++  const blocks = [];
++  if (rows.includes("import")) {
++    blocks.push(
++      labeled(
++        cx,
++        "Import",
++        Card(cx, "settings-data", [
++          SettingRow(
++            cx,
++            "settings-import",
++            "Import data",
++            "Restore a taxpayer or database export (.zip)",
++            AppButton(cx, "settings-import-btn", "Import", { size: "sm", icon: "upload", onClick: (_e, cx) => app.runImport(cx) }),
++          ),
++        ]),
++      ),
++    );
++  }
++  if (rows.includes("export") && app.taxpayer()) {
++    blocks.push(labeled(cx, "Export", profileExportCard(cx, app, app.taxpayer())));
++  }
++  if (!blocks.length) {
++    blocks.push(Text(cx, "body", "Add a taxpayer before exporting a profile.", "fg3").whitespace_normal());
++  }
++  return blocks;
++}
+ 
+-  const page = div()
++function computerCards(cx, app, rows) {
++  const info = app.liveInfo();
++  const blocks = [];
++  const files = [];
++  if (rows.includes("data")) {
++    files.push(noteRow(cx, "settings-database", "Database", info.database_path || "Not available"));
++    files.push(noteRow(cx, "settings-data-dir", "Data folder", info.data_dir || "Not available"));
++  }
++  if (rows.includes("logs")) {
++    files.push(noteRow(cx, "settings-logs", "Logs folder", info.logs_dir || "Not available"));
++    const choices = (info.log_retention_choices || [3, 7, 14, 30, 90]).map((days) => ({
++      value: String(days),
++      label: retentionLabel(days),
++    }));
++    const current = String(info.log_retention_days || 7);
++    if (!choices.some((option) => option.value === current)) choices.push({ value: current, label: retentionLabel(current) });
++    files.push(
++      SettingRow(
++        cx,
++        "settings-retention-row",
++        "Keep logs for",
++        "Older daily log files are deleted",
++        PillSelect(cx, "settings-retention-pill", {
++          label: "Keep logs for",
++          options: choices,
++          value: current,
++          open: menuOpen(app, "retention"),
++          onOpenChange: (open, cx) => setMenu(app, "retention", open, cx),
++          onChange: (value, cx) => app.setLogRetention(Number(value), cx),
++        }),
++      ),
++    );
++  }
++  if (files.length) blocks.push(labeled(cx, "Local files", Card(cx, "settings-files", files)));
++  if (rows.includes("hotkey")) {
++    const presets = info.hotkey_presets || [];
++    const combo = info.global_hotkey || "";
++    blocks.push(
++      labeled(
++        cx,
++        "Shortcuts",
++        Card(cx, "settings-hotkey", [
++          SettingRow(
++            cx,
++            "settings-hotkey-row",
++            "Global show hotkey",
++            "Shows or hides eBIRForms from any app",
++            PillSelect(cx, "settings-hotkey-pill", {
++              label: "Global show hotkey",
++              options: hotkeyOptions(combo, presets),
++              value: combo,
++              open: menuOpen(app, "hotkey"),
++              onOpenChange: (open, cx) => setMenu(app, "hotkey", open, cx),
++              onChange: (value, cx) => app.setGlobalHotkey(value, cx),
++            }),
++          ),
++        ]),
++      ),
++    );
++  }
++  if (rows.includes("tray")) {
++    blocks.push(
++      labeled(
++        cx,
++        "Window",
++        Card(cx, "settings-tray", [
++          noteRow(
++            cx,
++            "settings-tray-row",
++            "Close window",
++            "Closing hides eBIRForms to the menu bar when a tray icon exists. With no tray, closing quits. Quit is always in the application menu.",
++          ),
++        ]),
++      ),
++    );
++  }
++  if (rows.includes("setup")) blocks.push(labeled(cx, "Computer setup", SetupCard(cx, app)));
++  if (rows.includes("version")) {
++    blocks.push(Text(cx, "meta", `eBIRForms ${info.app_version || ""}`.trim(), "fg3"));
++  }
++  return blocks;
++}
++
++function sectionBody(cx, app, shown, width) {
++  if (!shown) return [Text(cx, "body", "No settings match that search.", "fg3").whitespace_normal()];
++  if (shown.id === "general") return generalCards(cx, app, shown.rows);
++  if (shown.id === "account") return accountCards(cx, app, shown.rows);
++  if (shown.id === "transfer") return transferCards(cx, app, shown.rows);
++  if (shown.id === "jobs") return [renderJobsBody(cx, app, Math.min(JOBS_COLUMN, width))];
++  if (shown.id === "computer") return computerCards(cx, app, shown.rows);
++  return [];
++}
++
++export function renderSettings(cx, app, width, _height) {
++  const t = tokens(cx);
++  const keyOnly = app.setupChange.step === "key";
++  const view = keyOnly ? [] : settingsView(app.settingsQuery(), app.isAdmin());
++  const shownId = keyOnly ? null : shownSection(app.settingsSection, view);
++  const shown = shownId ? sectionById(view, shownId) : null;
++  const paneWidth = Math.max(240, width - (keyOnly ? 0 : SIDEBAR));
++  const columnWidth = Math.min(shown && shown.id === "jobs" ? JOBS_COLUMN : COLUMN, paneWidth - SPACE[6] * 2);
++  const column = div().id("settings-column").flex().flex_col().w(columnWidth).gap(SPACE[5]);
++  column.child(div().id("settings-title").child(PageTitle(cx, keyOnly ? "Computer" : shown ? shown.label : "Settings")));
++  const blocks = keyOnly ? [labeled(cx, "Computer setup", SetupCard(cx, app))] : sectionBody(cx, app, shown, columnWidth);
++  for (const block of blocks) column.child(block);
++
++  const pane = div()
++    .id("settings-content")
+     .flex()
+     .flex_col()
+-    .child(PageHeader(cx, { title: "Settings", lede: "Preferences for this computer, and your PIN. Taxpayer details live in each tax profile." }))
+-    .child(div().mt(28).child(SectionTitle(cx, "Account", true)))
+-    .child(AccountCard(cx, app))
+-    .child(SectionTitle(cx, "Appearance"))
+-    .child(appearance);
+-  const version = `eBIRForms ${app.info.app_version || ""}`;
+-  // A setup change just moved the admin. Until the old session signs out,
+-  // show only the new recovery key: the rest of Settings already belongs to
+-  // the new admin.
+-  if (app.setupChange.step === "key") {
+-    return page.child(SectionTitle(cx, "Computer setup")).child(SetupCard(cx, app));
+-  }
+-  // A taxpayer: appearance and its own PIN. Import, background tasks, the
+-  // database's location and every other taxpayer belong to the admin.
+-  if (!app.isAdmin()) {
+-    return page
+-      .child(SectionTitle(cx, "Security"))
+-      .child(SecurityCard(cx, app))
+-      .child(Text(cx, "meta", version, "fg3").mt(SPACE[6]).whitespace_normal());
+-  }
+-  return page
+-    .child(SectionTitle(cx, "Data"))
+-    .child(data)
+-    .child(SectionTitle(cx, "Background tasks"))
+-    .child(tasks)
+-    .child(SectionTitle(cx, "Computer setup"))
+-    .child(SetupCard(cx, app))
+-    .child(SectionTitle(cx, "Security"))
+-    .child(SecurityCard(cx, app))
+-    .child(Text(cx, "meta", `${version} · ${app.info.database_path || ""}`, "fg3").mt(SPACE[6]).whitespace_normal());
++    .flex_1()
++    .min_w(0)
++    .min_h(0)
++    .overflow_y_scroll()
++    .overflow_x_hidden()
++    .child(
++      div()
++        .flex()
++        .flex_col()
++        .items_center()
++        .w_full()
++        .px(SPACE[6])
++        .pt(28)
++        .pb(56)
++        .child(column),
++    );
++
++  const shell = div().id("settings-shell").flex().flex_row().flex_1().w_full().h_full().min_w(0).min_h(0).bg(t.bg);
++  if (!keyOnly) shell.child(sidebar(cx, app, view, shownId));
++  else {
++    shell.child(
++      div()
++        .flex()
++        .flex_col()
++        .flex_none()
++        .w(SIDEBAR)
++        .h_full()
++        .pt(SPACE[3])
++        .px(SPACE[3])
++        .border_r(1)
++        .border_color(t.border)
++        .child(BackLink(cx, app)),
++    );
++  }
++  return shell.child(pane);
+ }
++
+diff --git a/app/shell/settings_model.js b/app/shell/settings_model.js
+new file mode 100644
+index 0000000..9224fd6
+--- /dev/null
++++ b/app/shell/settings_model.js
+@@ -0,0 +1,179 @@
++// What Settings can show, and which of it a search keeps.
++//
++// Pure data: the screen draws a row only when its id is in the result, so a
++// control that is not wired never appears here. Search is the ChatGPT kind:
++// a section name keeps every row of that section; otherwise only the rows
++// whose own words match. Every word of the query has to match.
++
++/** @typedef {{ id: string, label: string, icon: string, group: string, adminOnly: boolean, search: string }} SettingsSection */
++/** @typedef {{ id: string, search: string, adminOnly?: boolean }} SettingsRow */
++
++/** @type {SettingsSection[]} */
++export const SETTINGS_SECTIONS = [
++  { id: "general", label: "General", icon: "settings", group: "Personal", adminOnly: false, search: "general personal appearance" },
++  { id: "account", label: "Account", icon: "user", group: "Personal", adminOnly: false, search: "account personal profile" },
++  { id: "transfer", label: "Import / Export", icon: "archive", group: "Data", adminOnly: false, search: "import export data transfer" },
++  { id: "jobs", label: "Jobs", icon: "list", group: "Data", adminOnly: true, search: "jobs data background tasks" },
++  { id: "computer", label: "Computer", icon: "laptop", group: "System", adminOnly: true, search: "computer system this computer" },
++];
++
++/** @type {Record<string, SettingsRow[]>} */
++export const SETTINGS_ROWS = {
++  general: [
++    { id: "theme", search: "theme appearance light dark system" },
++    { id: "recent", search: "recent returns sidebar" },
++    { id: "compact", search: "compact form sections" },
++    { id: "updates", search: "download updates automatically release install" },
++  ],
++  account: [
++    { id: "buwiz", search: "buwiz server cloud sign in sign out device" },
++    { id: "identity", search: "account name email tin profile sign out add account taxpayer" },
++    { id: "google", search: "google gmail connect disconnect oauth inbox tracking mail" },
++    { id: "security", search: "pin authenticator recovery key security" },
++  ],
++  transfer: [
++    { id: "import", search: "import zip restore database", adminOnly: true },
++    { id: "export", search: "export profile archive backup zip" },
++  ],
++  jobs: [{ id: "jobs", search: "jobs background tasks queue logs confirmation watcher cron archive" }],
++  computer: [
++    { id: "data", search: "database data location path local files" },
++    { id: "logs", search: "logs folder retention log files" },
++    { id: "hotkey", search: "hotkey shortcut global show keyboard" },
++    { id: "tray", search: "tray menu bar close window hide quit" },
++    { id: "setup", search: "setup owner help desk who this computer is for" },
++    { id: "version", search: "version about ebirforms" },
++  ],
++};
++
++export const THEME_OPTIONS = [
++  { value: "system", label: "System" },
++  { value: "light", label: "Light" },
++  { value: "dark", label: "Dark" },
++];
++
++/** @param {string} query */
++export function queryWords(query) {
++  return String(query || "")
++    .trim()
++    .toLowerCase()
++    .split(/\s+/)
++    .filter(Boolean);
++}
++
++/** Every word of `query` occurs in `blob`. An empty query matches. */
++export function hits(query, blob) {
++  const words = queryWords(query);
++  if (!words.length) return true;
++  const hay = String(blob || "").toLowerCase();
++  return words.every((word) => hay.includes(word));
++}
++
++/**
++ * Sections and rows the search keeps for this role.
++ * `isAdmin` is the signed-in admin (or an unlocked computer with no PIN).
++ * @returns {{ id: string, label: string, icon: string, group: string, rows: string[] }[]}
++ */
++export function settingsView(query, isAdmin) {
++  const out = [];
++  for (const section of SETTINGS_SECTIONS) {
++    if (section.adminOnly && !isAdmin) continue;
++    const rows = (SETTINGS_ROWS[section.id] || []).filter((row) => isAdmin || !row.adminOnly);
++    const shown = visibleRows(query, section.search, rows);
++    if (shown.length) {
++      out.push({
++        id: section.id,
++        label: section.label,
++        icon: section.icon,
++        group: section.group,
++        rows: shown.map((row) => row.id),
++      });
++    }
++  }
++  return out;
++}
++
++function visibleRows(query, sectionSearch, rows) {
++  if (!queryWords(query).length || hits(query, sectionSearch)) return rows;
++  return rows.filter((row) => hits(query, row.search));
++}
++
++/** The section to draw: the one selected, or the first the search still shows. */
++export function shownSection(selected, view) {
++  if (view.some((section) => section.id === selected)) return selected;
++  return view.length ? view[0].id : null;
++}
++
++export function sectionById(view, id) {
++  return view.find((section) => section.id === id) || null;
++}
++
++export function rowShown(section, rowId) {
++  return Boolean(section && section.rows.includes(rowId));
++}
++
++/** Label for a stored chord. Empty is Off; an unknown chord is shown as stored. */
++export function hotkeyLabel(combo, presets) {
++  const value = String(combo || "").trim();
++  if (!value) return "Off";
++  const found = (presets || []).find((preset) => preset.value === value);
++  return found ? found.label : value;
++}
++
++/** Options for the hotkey pill, with Off first and a custom chord kept. */
++export function hotkeyOptions(combo, presets) {
++  const options = [{ value: "", label: "Off" }, ...(presets || [])];
++  const value = String(combo || "").trim();
++  if (value && !options.some((option) => option.value === value)) {
++    options.push({ value, label: value });
++  }
++  return options;
++}
++
++export function retentionLabel(days) {
++  const n = Number(days);
++  const count = Number.isFinite(n) && n > 0 ? n : 7;
++  return count === 1 ? "1 day" : `${count} days`;
++}
++
++/**
++ * The account card. Email is the signed-in person's own branch email.
++ * A help desk admin is not that taxpayer, so their card has no email;
++ * the selected profile's mailbox is separate (`mailbox`).
++ */
++export function accountSummary(input) {
++  const taxpayers = input.taxpayers || [];
++  const own = (root) => taxpayers.find((t) => t.tin_root === root) || null;
++  const branch = input.branch || null;
++  const emailOf = (b) => (b && b.facts && b.facts.email ? String(b.facts.email) : "");
++  let name = "Local account";
++  let detail = "This computer";
++  let email = "";
++  if (input.isAdmin && input.isHelpdesk) {
++    name = "Help desk admin";
++    detail = "TIN 000-000-000";
++  } else if (input.isAdmin) {
++    const owner = own(input.adminRoot);
++    name = (owner && owner.name) || name;
++    detail = "Admin · this computer";
++    email = emailOf(branch);
++  } else if (input.sessionKind === "taxpayer") {
++    const taxpayer = own(input.sessionRoot);
++    name = (taxpayer && taxpayer.name) || name;
++    detail = taxpayer && taxpayer.tin_display ? `TIN ${taxpayer.tin_display}` : detail;
++    email = emailOf(branch);
++  }
++  return {
++    name,
++    detail,
++    email,
++    mailbox: branch
++      ? {
++          tin: branch.tin,
++          label: branch.name || name,
++          email: emailOf(branch),
++        }
++      : null,
++    showAdd: Boolean(input.canAddTaxpayer),
++  };
++}
+diff --git a/app/shell/taxpayer.js b/app/shell/taxpayer.js
+index 848f216..6c49c00 100644
+--- a/app/shell/taxpayer.js
++++ b/app/shell/taxpayer.js
+@@ -1035,7 +1035,7 @@ function profileTab(cx, app, width) {
+     ),
+     section("inbox", "Confirmation inbox", inboxMeta, inboxBody(cx, app, inner), false),
+   ]);
+-  const out = div().flex().flex_col().child(group).child(exportCard(cx, app, t));
++  const out = div().flex().flex_col().child(group);
+   if (ui.canRemove()) out.child(removeCard(cx, app, t));
+   return out;
+ }
+@@ -1100,11 +1100,6 @@ function inboxBody(cx, app, inner) {
+       }),
+     });
+   }
+-  cells.push({
+-    el: Field(cx, "BIR receipt tracking", {
+-      input: Switch(cx, "tp-inbox-tracking", s.tracking_enabled, (v, cx) => ui.inboxToggleTracking(v, cx), "Automated BIR receipt tracking"),
+-    }),
+-  });
+   if (s.last_check_at) {
+     cells.push({
+       el: Field(cx, "Last check", {
+@@ -1140,19 +1135,6 @@ function inboxBody(cx, app, inner) {
+   }
+ 
+   const actions = div().flex().flex_row().flex_wrap().items_center().gap(SPACE[2]).mt(SPACE[3]);
+-  if (method === "GoogleOAuth") {
+-    actions.child(
+-      AppButton(cx, "tp-inbox-connect", s.oauth_connected ? "Re-authorize" : "Connect Google account", {
+-        variant: "primary",
+-        size: "sm",
+-        icon: "key-round",
+-        onClick: (_e, cx) => ui.inboxConnect(cx),
+-      }),
+-    );
+-    if (s.oauth_connected) {
+-      actions.child(AppButton(cx, "tp-inbox-disconnect", "Disconnect", { variant: "ghost", size: "sm", onClick: (_e, cx) => ui.inboxDisconnect(cx) }));
+-    }
+-  }
+   if (editing) {
+     actions.child(AppButton(cx, "tp-inbox-cancel", "Cancel", { variant: "ghost", size: "sm", onClick: (_e, cx) => ui.cancelInboxEdit(cx) }));
+     if (method === "AppPassword") {
+@@ -1176,6 +1158,16 @@ function inboxBody(cx, app, inner) {
+     }),
+   );
+   body.child(actions);
++  body.child(
++    Text(
++      cx,
++      "meta",
++      "Connect, disconnect, and receipt tracking for this inbox are in Settings, under Account.",
++      "fg3",
++    )
++      .mt(SPACE[2])
++      .whitespace_normal(),
++  );
+ 
+   if (ui.inboxMsg) {
+     body.child(
+@@ -1207,30 +1199,25 @@ function inboxBody(cx, app, inner) {
+  * to the host's export_profile verb; the cells are cleared by exportProfile
+  * after every attempt, and the save dialog itself is the host's.
+  */
+-function exportCard(cx, app, tp) {
++/** Profile export, drawn in Settings › Import / Export. The save dialog is the host's. */
++export function profileExportCard(cx, app, tp) {
+   const ui = app.taxpayerUi;
+   const hasPin = Boolean(app.taxpayerCreds(tp.tin_root).has_pin);
+-  return div()
+-    .flex()
+-    .flex_col()
+-    .child(SectionTitle(cx, "Export"))
+-    .child(
+-      Card(cx, "tp-export", [
+-        SettingRow(
+-          cx,
+-          "tp-export",
+-          "Export this profile",
+-          hasPin ? "The archive leaves out credentials; the profile PIN gates saving it" : "Saves a credential-free archive of every branch and return",
+-          div()
+-            .flex()
+-            .flex_row()
+-            .items_center()
+-            .gap(SPACE[2])
+-            .when(hasPin, (el) => el.child(PinCells(cx, ui.exportOtp, "tp-export-pin")))
+-            .child(AppButton(cx, "tp-export-btn", "Export", { size: "sm", icon: "download", onClick: (_e, cx) => ui.exportProfile(cx) })),
+-        ),
+-      ]),
+-    );
++  return Card(cx, "tp-export", [
++    SettingRow(
++      cx,
++      "tp-export",
++      "Export this profile",
++      hasPin ? "The archive leaves out credentials; the profile PIN gates saving it" : "Saves a credential-free archive of every branch and return",
++      div()
++        .flex()
++        .flex_row()
++        .items_center()
++        .gap(SPACE[2])
++        .when(hasPin, (el) => el.child(PinCells(cx, ui.exportOtp, "tp-export-pin")))
++        .child(AppButton(cx, "tp-export-btn", "Export", { size: "sm", icon: "download", onClick: (_e, cx) => ui.exportProfile(cx) })),
++    ),
++  ]);
+ }
+ 
+ /**
+diff --git a/app/shell/ui.js b/app/shell/ui.js
+index 5a01624..5a3d992 100644
+--- a/app/shell/ui.js
++++ b/app/shell/ui.js
+@@ -1112,7 +1112,7 @@ export function SettingRow(cx, id, title, hint, control) {
+ /** A bordered card that stacks SettingRows with hairlines between them. */
+ export function Card(cx, id, rows) {
+   const t = tokens(cx);
+-  const card = div().id(id).flex().flex_col().px(SPACE[4]).py(SPACE[1]).rounded(RADIUS.card).border(1).border_color(t.border);
++  const card = div().id(id).flex().flex_col().px(SPACE[4]).py(SPACE[1]).rounded(RADIUS.card).border(1).border_color(t.border).bg(t.surface);
+   rows.forEach((row, i) => {
+     if (i > 0) row.border_t(1).border_color(t.border);
+     card.child(row);
+diff --git a/crates/bir-shell/src/bir_module.rs b/crates/bir-shell/src/bir_module.rs
+index cfec210..f26f01f 100644
+--- a/crates/bir-shell/src/bir_module.rs
++++ b/crates/bir-shell/src/bir_module.rs
+@@ -316,7 +316,49 @@ pub(crate) fn to_json(value: &HostValue) -> serde_json::Value {
+     }
+ }
+ 
++/// Hotkey, log retention, and the paths Settings shows. A database that is
++/// not open yet answers the defaults; this must not fail the boot read.
++fn computer_snapshot() -> (Option<String>, u32) {
++    let Some(handle) = DATABASE.with(|slot| slot.borrow().clone()) else {
++        return (None, bir_core::log_files::DEFAULT_RETENTION_DAYS);
++    };
++    let Ok(db) = handle.lock() else {
++        return (None, bir_core::log_files::DEFAULT_RETENTION_DAYS);
++    };
++    let hotkey = db
++        .get_setting("global_hotkey_key")
++        .ok()
++        .flatten()
++        .filter(|value| !value.trim().is_empty());
++    (hotkey, bir_core::log_files::retention_days(&db))
++}
++
++/// Chords the Settings picker offers. The same combo language as
++/// [`crate::hotkey::build_hotkey`]: explicit modifiers, not a bare key.
++fn hotkey_presets() -> Vec<HostValue> {
++    let (stored_prefix, label_prefix) = if cfg!(target_os = "macos") {
++        ("control+alt", "Ctrl+Option")
++    } else {
++        ("super+shift", "Super+Shift")
++    };
++    ["E", "B", "H", "F12"]
++        .into_iter()
++        .map(|key| {
++            HostValue::from(
++                HostObject::new()
++                    .field("value", format!("{stored_prefix}+{key}"))
++                    .field("label", format!("{label_prefix}+{key}")),
++            )
++        })
++        .collect()
++}
++
+ fn system_info() -> HostResult {
++    let (hotkey, retention) = computer_snapshot();
++    let choices = bir_core::log_files::RETENTION_CHOICES
++        .iter()
++        .map(|days| HostValue::from(i64::from(*days)))
++        .collect::<Vec<_>>();
+     Ok(HostObject::new()
+         .field("os", std::env::consts::OS)
+         .field("arch", std::env::consts::ARCH)
+@@ -325,10 +367,63 @@ fn system_info() -> HostResult {
+             "database_path",
+             db::app_database_path().display().to_string(),
+         )
++        .field(
++            "data_dir",
++            bir_core::platform::data_dir().display().to_string(),
++        )
++        .field(
++            "logs_dir",
++            bir_core::log_files::log_dir().display().to_string(),
++        )
++        .field(
++            "global_hotkey",
++            hotkey.map_or(HostValue::Null, HostValue::Str),
++        )
++        .field("hotkey_presets", HostValue::Array(hotkey_presets()))
++        .field("log_retention_days", i64::from(retention))
++        .field("log_retention_choices", HostValue::Array(choices))
+         .field("runtime", "gpui-shell")
+         .into())
+ }
+ 
++/// Store the global show chord the tray already polls, or clear it.
++/// An unknown key is refused and the stored chord is left as it was.
++fn set_global_hotkey(arguments: &gpui_shell::HostArguments) -> HostResult {
++    let combo = arguments.string(0)?.trim().to_string();
++    if !combo.is_empty() && crate::hotkey::build_hotkey(&combo).is_none() {
++        return Err(HostError::new(
++            "That shortcut is not one this computer can register. Use a letter, digit, or F-key with modifiers, like super+shift+E.",
++        ));
++    }
++    with_database(|db| {
++        db.set_setting("global_hotkey_key", &combo)
++            .map(|_| HostValue::Null)
++            .map_err(|error| HostError::new(error.to_string()))
++    })
++}
++
++/// How many days of `ebirforms.*.log` to keep. Out of range is refused.
++fn set_log_retention(arguments: &gpui_shell::HostArguments) -> HostResult {
++    let days = arguments.integer(0)?;
++    if !(i64::from(bir_core::log_files::MIN_RETENTION_DAYS)
++        ..=i64::from(bir_core::log_files::MAX_RETENTION_DAYS))
++        .contains(&days)
++    {
++        return Err(HostError::new(format!(
++            "Log retention must be between {} and {} days.",
++            bir_core::log_files::MIN_RETENTION_DAYS,
++            bir_core::log_files::MAX_RETENTION_DAYS
++        )));
++    }
++    with_database(|db| {
++        db.set_setting(bir_core::log_files::RETENTION_SETTING, &days.to_string())
++            .map(|_| HostValue::Null)
++            .map_err(|error| HostError::new(error.to_string()))?;
++        let _ = bir_core::log_files::maintain(&bir_core::log_files::log_dir(), db);
++        Ok(HostValue::Null)
++    })
++}
++
+ fn update_status() -> HostResult {
+     let status = crate::updater::current_status();
+     let version = match status.version {
+@@ -2171,6 +2266,8 @@ fn list_deadlines() -> HostResult {
+ pub fn module() -> HostModule {
+     let module = HostModule::new("bir")
+         .function("system_info", |_| system_info())
++        .function("set_global_hotkey", set_global_hotkey)
++        .function("set_log_retention", set_log_retention)
+         .function("update_status", |_| update_status())
+         .function("install_update", |_| install_update())
+         .function("dismiss_update", |_| dismiss_update())
+@@ -2240,11 +2337,22 @@ pub fn module() -> HostModule {
+ /// screen-form files append their own (`declarations` replaces, so `module`
+ /// concatenates them).
+ const BASE_DECLARATIONS: &str = r#"
++export interface HotkeyPreset {
++    value: string;
++    label: string;
++}
+ export interface SystemInfo {
+     os: string;
+     arch: string;
+     app_version: string;
+     database_path: string;
++    data_dir: string;
++    logs_dir: string;
++    /** Null when no global show chord is stored. */
++    global_hotkey: string | null;
++    hotkey_presets: HotkeyPreset[];
++    log_retention_days: number;
++    log_retention_choices: number[];
+     runtime: string;
+ }
+ export interface ProfileSummary {
+@@ -2268,6 +2376,10 @@ export interface FormCatalogEntry {
+     is_deprecated: boolean;
+ }
+ export function system_info(): SystemInfo;
++/** Empty string clears the chord. An unknown key is refused. */
++export function set_global_hotkey(combo: string): null;
++/** Days of daily log files to keep. Out of range is refused. */
++export function set_log_retention(days: number): null;
+ 
+ export interface UpdateStatus {
+     /** idle, checking, downloading, ready, failed, up_to_date, available, or installing. */
+@@ -2692,6 +2804,61 @@ mod tests {
+         HostValue::Str(value.into())
+     }
+ 
++    #[test]
++    fn global_hotkey_round_trip_rejects_an_unknown_key() {
++        setup();
++        let info = to_json(&system_info().unwrap());
++        assert!(info["global_hotkey"].is_null());
++        assert!(
++            info["logs_dir"].as_str().unwrap().ends_with("logs"),
++            "{}",
++            info["logs_dir"]
++        );
++        // Linux is ~/.taxman-ebir. macOS is the App Group container, Windows
++        // is %LOCALAPPDATA%\Taxman\eBIRForms. The field must be that path.
++        assert_eq!(
++            info["data_dir"].as_str().unwrap(),
++            bir_core::platform::data_dir().display().to_string()
++        );
++        assert!(info["hotkey_presets"].as_array().unwrap().len() >= 4);
++
++        set_global_hotkey(&args(vec![s("control+alt+E")])).unwrap();
++        assert_eq!(
++            to_json(&system_info().unwrap())["global_hotkey"],
++            "control+alt+E"
++        );
++
++        let refused = set_global_hotkey(&args(vec![s("control+notakey")])).unwrap_err();
++        assert!(refused.message().contains("not one"));
++        assert_eq!(
++            to_json(&system_info().unwrap())["global_hotkey"],
++            "control+alt+E",
++            "a refused chord leaves the stored one"
++        );
++
++        set_global_hotkey(&args(vec![s("  ")])).unwrap();
++        assert!(to_json(&system_info().unwrap())["global_hotkey"].is_null());
++    }
++
++    #[test]
++    fn log_retention_round_trip_refuses_out_of_range() {
++        setup();
++        set_log_retention(&args(vec![30_i64.into()])).unwrap();
++        assert_eq!(to_json(&system_info().unwrap())["log_retention_days"], 30);
++
++        let refused = set_log_retention(&args(vec![0_i64.into()])).unwrap_err();
++        assert!(refused.message().contains("between"));
++        assert_eq!(
++            to_json(&system_info().unwrap())["log_retention_days"],
++            30,
++            "a refused value leaves the stored one"
++        );
++
++        let refused = set_log_retention(&args(vec![400_i64.into()])).unwrap_err();
++        assert!(refused.message().contains("between"));
++        assert_eq!(to_json(&system_info().unwrap())["log_retention_days"], 30);
++    }
++
+     fn add_branch() {
+         with_database(|db| {
+             db.create_branch(
+diff --git a/justfile b/justfile
+index bd62e89..e94bde5 100644
+--- a/justfile
++++ b/justfile
+@@ -91,6 +91,7 @@ shell-ui-test:
+     node --experimental-vm-modules tools/test_form_decisions_round_3.mjs
+     node --experimental-vm-modules tools/test_home_calendar_as_needed.mjs
+     node --experimental-vm-modules tools/test_taxpayer_export.mjs
++    node --experimental-vm-modules tools/test_settings_window.mjs
+ 
+ shell-check: shell-ui-test
+     cargo fmt --manifest-path crates/bir-shell/Cargo.toml -- --check
+diff --git a/tools/test_settings_window.mjs b/tools/test_settings_window.mjs
+new file mode 100644
+index 0000000..2a79a95
+--- /dev/null
++++ b/tools/test_settings_window.mjs
+@@ -0,0 +1,111 @@
++// Settings search and the account card. The screen draws a row only when
++// settingsView names it, so this is the list of controls Settings can show.
++import assert from "node:assert/strict";
++import fs from "node:fs";
++import vm from "node:vm";
++
++const root = new URL("../", import.meta.url);
++const context = vm.createContext({ console });
++const source = new vm.SourceTextModule(fs.readFileSync(new URL("app/shell/settings_model.js", root), "utf8"), {
++  context,
++  identifier: "app/shell/settings_model.js",
++});
++await source.link(() => {
++  throw new Error("settings_model.js imports nothing");
++});
++await source.evaluate();
++const { settingsView, shownSection, accountSummary, hotkeyLabel, hotkeyOptions, retentionLabel, hits } = source.namespace;
++
++const host = (value) => JSON.parse(JSON.stringify(value));
++const ids = (view) => host(view.map((section) => section.id));
++const rows = (view, id) => host(view.find((section) => section.id === id).rows);
++
++{
++  const view = settingsView("", true);
++  assert.deepEqual(ids(view), ["general", "account", "transfer", "jobs", "computer"]);
++  assert.deepEqual(rows(view, "general"), ["theme", "recent", "compact", "updates"]);
++  assert.ok(rows(view, "transfer").includes("import"));
++  assert.equal(String(shownSection("account", view)), "account");
++}
++
++{
++  const view = settingsView("", false);
++  assert.deepEqual(ids(view), ["general", "account", "transfer"]);
++  assert.deepEqual(rows(view, "transfer"), ["export"]);
++  assert.equal(String(shownSection("jobs", view)), "general");
++}
++
++{
++  const view = settingsView("theme", true);
++  assert.deepEqual(ids(view), ["general"]);
++  assert.deepEqual(rows(view, "general"), ["theme"]);
++}
++
++{
++  const view = settingsView("buwiz", true);
++  assert.deepEqual(ids(view), ["account"]);
++  assert.deepEqual(rows(view, "account"), ["buwiz"]);
++}
++
++{
++  const view = settingsView("HOTKEY", true);
++  assert.deepEqual(ids(view), ["computer"]);
++  assert.deepEqual(rows(view, "computer"), ["hotkey"]);
++}
++
++{
++  const view = settingsView("personal", true);
++  assert.deepEqual(ids(view), ["general", "account"]);
++  assert.deepEqual(rows(view, "general"), ["theme", "recent", "compact", "updates"], "a section word keeps every row");
++}
++
++{
++  assert.deepEqual(host(settingsView("zzzz-not-a-setting", true)), []);
++  assert.equal(shownSection("general", []), null);
++  assert.equal(Boolean(hits("gmail connect", "google gmail connect disconnect")), true);
++  assert.equal(Boolean(hits("gmail calendar", "google gmail connect")), false);
++}
++
++{
++  assert.equal(String(hotkeyLabel("", [])), "Off");
++  assert.equal(String(hotkeyLabel("super+shift+E", [{ value: "super+shift+E", label: "Super+Shift+E" }])), "Super+Shift+E");
++  assert.equal(String(hotkeyLabel("ctrl+alt+Z", [])), "ctrl+alt+Z");
++  const options = host(hotkeyOptions("ctrl+alt+Z", [{ value: "super+shift+E", label: "Super+Shift+E" }]));
++  assert.equal(options[0].label, "Off");
++  assert.ok(options.some((option) => option.value === "ctrl+alt+Z"));
++  assert.equal(String(retentionLabel(1)), "1 day");
++  assert.equal(String(retentionLabel(14)), "14 days");
++  assert.equal(String(retentionLabel(0)), "7 days");
++}
++
++{
++  const helpdesk = accountSummary({
++    isAdmin: true,
++    isHelpdesk: true,
++    adminRoot: "000000000",
++    sessionKind: "admin",
++    taxpayers: [{ tin_root: "123456788", name: "Example Trading", tin_display: "123-456-788-00000" }],
++    branch: { tin: "12345678800000", name: "Head office", facts: { email: "office@example.com" } },
++    canAddTaxpayer: true,
++  });
++  assert.equal(String(helpdesk.name), "Help desk admin");
++  assert.equal(String(helpdesk.email), "");
++  assert.equal(String(helpdesk.mailbox.email), "office@example.com");
++  assert.equal(Boolean(helpdesk.showAdd), true);
++
++  const owner = accountSummary({
++    isAdmin: true,
++    isHelpdesk: false,
++    adminRoot: "123456788",
++    sessionKind: "admin",
++    taxpayers: [{ tin_root: "123456788", name: "Example Trading", tin_display: "123-456-788-00000" }],
++    branch: { tin: "12345678800000", name: "Head office", facts: { email: "office@example.com" } },
++    canAddTaxpayer: false,
++  });
++  assert.equal(String(owner.name), "Example Trading");
++  assert.equal(String(owner.email), "office@example.com");
++  assert.equal(Boolean(owner.showAdd), false);
++  assert.equal(String(owner.detail), "Admin · this computer");
++}
++
++console.log("test_settings_window: ok");
+diff --git a/tools/test_taxpayer_export.mjs b/tools/test_taxpayer_export.mjs
+index 7b910b0..6b3c746 100644
+--- a/tools/test_taxpayer_export.mjs
++++ b/tools/test_taxpayer_export.mjs
+@@ -145,7 +145,7 @@ const linked = {
+ };
+ await taxpayerMod.link((s) => linked[s]);
+ await taxpayerMod.evaluate();
+-const { TaxpayerActions, renderTaxpayerPage } = taxpayerMod.namespace;
++const { TaxpayerActions, renderTaxpayerPage, profileExportCard } = taxpayerMod.namespace;
+ 
+ const TIN = "12345678800000";
+ const ROOT = "123456788";
+@@ -195,11 +195,19 @@ function makeApp({ hasPin, exportResult, exportError }) {
+ 
+ const exportBtn = (tree) => find(tree, (i) => i.button === "tp-export-btn")[0];
+ const pinCells = (tree) => find(tree, (i) => i.pinCells === "tp-export-pin");
++const exportTree = (app) => profileExportCard(cx, app, app.taxpayer());
++
++// The profile page no longer draws export; Settings does.
++{
++  const { app } = makeApp({ hasPin: false, exportResult: { kind: "exported" } });
++  const page = renderTaxpayerPage(cx, app, "profile", 900);
++  assert.equal(exportBtn(page), undefined, "export moved off the tax profile page");
++}
+ 
+ // No PIN configured: a direct Export button, no PIN cells.
+ {
+   const { app, calls, toasts } = makeApp({ hasPin: false, exportResult: { kind: "exported", path: "/tmp/p.zip" } });
+-  const tree = renderTaxpayerPage(cx, app, "profile", 900);
++  const tree = exportTree(app);
+   assert.equal(pinCells(tree).length, 0, "no PIN cells without a configured PIN");
+   const btn = exportBtn(tree);
+   assert.ok(btn, "Export button rendered");
+@@ -211,7 +219,7 @@ const pinCells = (tree) => find(tree, (i) => i.pinCells === "tp-export-pin");
+ // PIN configured: PIN cells render, and Export sends the typed digits.
+ {
+   const { app, calls, toasts } = makeApp({ hasPin: true, exportResult: { kind: "exported", path: "/tmp/p.zip" } });
+-  const tree = renderTaxpayerPage(cx, app, "profile", 900);
++  const tree = exportTree(app);
+   assert.equal(pinCells(tree).length, 1, "PIN cells render when has_pin");
+   app.taxpayerUi.exportOtp.set_value("4321");
+   click(exportBtn(tree));
+@@ -223,7 +231,7 @@ const pinCells = (tree) => find(tree, (i) => i.pinCells === "tp-export-pin");
+ // PIN configured: the host's refusal is toasted and the cells still clear.
+ {
+   const { app, calls, toasts } = makeApp({ hasPin: true, exportError: new Error("Wrong PIN.") });
+-  const tree = renderTaxpayerPage(cx, app, "profile", 900);
++  const tree = exportTree(app);
+   assert.equal(pinCells(tree).length, 1);
+   app.taxpayerUi.exportOtp.set_value("0000");
+   click(exportBtn(tree));
+@@ -236,7 +244,7 @@ const pinCells = (tree) => find(tree, (i) => i.pinCells === "tp-export-pin");
+ // PIN would still burn a rate-limited attempt); the cells clear.
+ {
+   const { app, calls, toasts } = makeApp({ hasPin: true, exportResult: { kind: "exported" } });
+-  renderTaxpayerPage(cx, app, "profile", 900);
++  exportTree(app);
+   app.taxpayerUi.exportOtp.set_value("12");
+   app.taxpayerUi.exportProfile(cx);
+   assert.equal(calls.length, 0, "partial PIN never reaches the host");
+@@ -247,7 +255,7 @@ const pinCells = (tree) => find(tree, (i) => i.pinCells === "tp-export-pin");
+ // A cancelled save dialog is quiet: no toast, no export claim.
+ {
+   const { app, calls, toasts } = makeApp({ hasPin: false, exportResult: { kind: "cancelled" } });
+-  const tree = renderTaxpayerPage(cx, app, "profile", 900);
++  const tree = exportTree(app);
+   click(exportBtn(tree));
+   assert.deepEqual(calls, [["export_profile", TIN, null]]);
+   assert.equal(toasts.length, 0, "cancelled dialog makes no toast");

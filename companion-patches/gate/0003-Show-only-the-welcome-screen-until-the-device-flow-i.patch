@@ -1,0 +1,349 @@
+From 187ef705fa05ba45d5be617c3d9e72e7b9be244b Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Fri, 23 Oct 2026 02:01:23 +0000
+Subject: [PATCH 3/3] Show only the welcome screen until the device flow is
+ approved
+
+Sign in and Create account are the whole window. Create account opens the
+server signup page and returns through the same device code. Sign out drops
+the saved refresh token and brings the gate back.
+---
+ app/main.js             |  77 ++++++++++++++++++++++++++++++-
+ app/shell/account.js    |   2 +
+ app/shell/gate.js       | 100 ++++++++++++++++++++++++++++++++++++++++
+ app/shell/gpui-kit.d.ts |  11 +++++
+ app/shell/theme.js      |  13 ++++++
+ 5 files changed, 201 insertions(+), 2 deletions(-)
+ create mode 100644 app/shell/gate.js
+
+diff --git a/app/main.js b/app/main.js
+index 878f28e..81caded 100644
+--- a/app/main.js
++++ b/app/main.js
+@@ -17,6 +17,7 @@ import {
+   nextThemePreference,
+   parseThemePreference,
+   storedThemePreference,
++  themePreferenceFromEnv,
+   THEME_PREF_KEY,
+ } from "./shell/theme.js";
+ import { tokens, SIZE, BREAK, RADIUS, Toast, DigitEntry } from "./shell/ui.js";
+@@ -37,6 +38,7 @@ import { renderTaxpayerPage, renderNewTaxpayer, TaxpayerActions } from "./shell/
+ import { renderFormPage, renderFormSplit, renderExistingOffer, renderRemovalConfirm, renderSamplePeriod, FormPageActions } from "./shell/form_page.js";
+ import { renderGallery } from "./shell/gallery.js";
+ import { renderSignIn, renderSetup } from "./shell/auth.js";
++import { renderAccountGate } from "./shell/gate.js";
+ import { installReadyUpdate, pollUpdateStatus, renderUpdatePrompt, setAutoUpdateDownload } from "./shell/update.js";
+ import { SecurityActions } from "./shell/security.js";
+ import { AccountActions } from "./shell/account.js";
+@@ -63,6 +65,30 @@ class BirApp extends View {
+   init(_props, cx) {
+     this.invalidate = _props.invalidate;
+     this.store = new Store();
++    this.booted = false;
++    this.cloudLocked = true;
++    this.gateBusy = false;
++    this.gateError = null;
++    this.gateDetail = "";
++    this.gatePhase = "welcome";
++    this.focusRoot = cx.focus_handle();
++    this.serverUrl = InputState.new({});
++    let gate = { unlocked: false, server_url: "" };
++    try {
++      gate = this.store.call("cloud_account_gate");
++    } catch (error) {
++      this.gateError = errorText(error);
++    }
++    this.serverUrl.set_value(gate.server_url || "");
++    const forced = themePreferenceFromEnv(process.env.BIR_SHELL_START);
++    applyThemePreference(cx, forced || "system");
++    if (gate.unlocked) this.boot(cx);
++  }
++
++  /** The filing UI. Reached only after the Buwiz account gate is open. */
++  boot(cx) {
++    this.booted = true;
++    this.cloudLocked = false;
+     this.info = this.store.systemInfo();
+     this.isMac = this.info.os === "macos";
+ 
+@@ -121,7 +147,6 @@ class BirApp extends View {
+     this.formUi = new FormPageActions(this);
+ 
+     this.initAuth();
+-    this.focusRoot = cx.focus_handle();
+     // Development aid: BIR_SHELL_START="tp=123456788;theme=dark;view=library"
+     // (also "palette=<query>", "edit=<profile section>", and on a form
+     // "choose=<key>~<value>|...", "select=<key>", "more=<part>:<item>",
+@@ -136,13 +161,17 @@ class BirApp extends View {
+     // (started by this shell's host at launch, on the same database
+     // connection) records new submissions and BIR confirmations there, and
+     // polling picks them up as a toast plus an unread dot on the bell.
+-    cx.timer.every(30000, (cx) => this.pollEvents(cx));
++    cx.timer.every(30000, (cx) => {
++      if (this.cloudLocked) return;
++      this.pollEvents(cx);
++    });
+ 
+     // The host checks for a release on its own thread. Polling is how the
+     // prompt appears: the host does not push into the script.
+     this.updateStatus = null;
+     this.updateInstallArmed = false;
+     const watchUpdate = (cx) => {
++      if (this.cloudLocked) return;
+       if (pollUpdateStatus(this)) cx.notify();
+       const delay = Number(process.env.BIR_UPDATE_INSTALL_AFTER_SECS || "");
+       if (
+@@ -172,6 +201,7 @@ class BirApp extends View {
+     this.wasNarrow = null;
+     this.viewportSettled = false;
+     cx.timer.every(200, (cx) => {
++      if (this.cloudLocked) return;
+       if (this.view === "form") this.formUi.refreshLayout();
+       const vp = window.viewport_size();
+       const key = `${Math.round(vp.width)}x${Math.round(vp.height)}`;
+@@ -220,6 +250,44 @@ class BirApp extends View {
+     ]);
+   }
+ 
++  /** Device approval finished. Open the database UI, once. */
++  finishUnlock(cx) {
++    try {
++      this.store.call("cloud_account_session_opened");
++    } catch (error) {
++      this.gateError = errorText(error);
++      this.gateBusy = false;
++      this.cloudLocked = true;
++      cx.notify();
++      return;
++    }
++    this.cloudLocked = false;
++    this.gateBusy = false;
++    this.gatePhase = "welcome";
++    this.gateDetail = "";
++    this.gateError = null;
++    if (!this.booted) this.boot(cx);
++    else {
++      this.store.bump();
++      cx.notify();
++    }
++  }
++
++  /** Sign-out. The host has already dropped the refresh token. */
++  lockCloud(cx) {
++    try {
++      this.store.call("cloud_account_session_closed");
++    } catch (_error) {
++      /* the host already locked the process */
++    }
++    this.cloudLocked = true;
++    this.gateBusy = false;
++    this.gatePhase = "welcome";
++    this.gateDetail = "";
++    this.gateError = null;
++    cx.notify();
++  }
++
+   runStartRoute(route, cx) {
+     for (const step of route.split(";")) {
+       const [key, value = ""] = step.split("=");
+@@ -1437,6 +1505,7 @@ class BirApp extends View {
+   }
+ 
+   paint(cx) {
++    if (this.cloudLocked || !this.booted) return renderAccountGate(cx, this);
+     const t = tokens(cx);
+     // First launch and sign-in take the whole window: nothing that names a
+     // taxpayer is drawn behind them. First launch's "Just me" types its
+@@ -1512,6 +1581,10 @@ class BirApp extends View {
+       .on_action("toggle-right-panel", (_e, cx) => this.toggleRightPanel(cx))
+       .on_action("open-settings", (_e, cx) => this.go("settings", cx))
+       .on_action("lock-app", (_e, cx) => this.lockApp(cx))
++      .on_action("cloud-sign-out", (_e, cx) => {
++        if (this.account) this.account.signOut(cx);
++        else this.lockCloud(cx);
++      })
+       .on_action("go-back", (_e, cx) => this.goBack(cx))
+       .on_action("go-forward", (_e, cx) => this.goForward(cx))
+       .on_action("dismiss", (_e, cx) => this.dismiss(cx))
+diff --git a/app/shell/account.js b/app/shell/account.js
+index b57331a..81ff37b 100644
+--- a/app/shell/account.js
++++ b/app/shell/account.js
+@@ -79,6 +79,7 @@ export class AccountActions {
+         acx.notify();
+         this.status = await this.app.store.call("cloud_account_finish_sign_in");
+         this.error = null;
++        if (this.app.finishUnlock) this.app.finishUnlock(acx);
+       } catch (error) {
+         this.error = errorText(error);
+         try {
+@@ -101,6 +102,7 @@ export class AccountActions {
+       try {
+         this.status = await this.app.store.call("cloud_account_sign_out");
+         this.error = null;
++        if (this.app.lockCloud) this.app.lockCloud(acx);
+       } catch (error) {
+         this.error = errorText(error);
+       }
+diff --git a/app/shell/gate.js b/app/shell/gate.js
+new file mode 100644
+index 0000000..af45d5c
+--- /dev/null
++++ b/app/shell/gate.js
+@@ -0,0 +1,100 @@
++// Full-window Buwiz account gate. Nothing that names a taxpayer is drawn
++// until the device flow is approved. The host refuses data verbs on its own;
++// this screen is only how a person gets there.
++
++import { div } from "gpui-kit";
++import { tokens, SPACE, RADIUS, Text, AppButton, TextField } from "./ui.js";
++import { errorText } from "./store.js";
++
++const CARD_W = 400;
++
++export function renderAccountGate(cx, app) {
++  const t = tokens(cx);
++  const busy = Boolean(app.gateBusy);
++  const detail =
++    app.gateError ||
++    app.gateDetail ||
++    "Sign in with your Buwiz account to file from this computer.";
++  return div()
++    .id("gate-root")
++    .flex()
++    .flex_col()
++    .size_full()
++    .bg(t.bg)
++    .text_color(t.fg)
++    .track_focus(app.focusRoot)
++    .on_action("cloud-sign-out", (_e, cx) => app.lockCloud(cx))
++    .child(
++      div()
++        .flex()
++        .flex_1()
++        .min_h(0)
++        .items_center()
++        .justify_center()
++        .px(SPACE[4])
++        .child(
++          div()
++            .id("gate-card")
++            .flex()
++            .flex_col()
++            .gap(SPACE[4])
++            .w(CARD_W)
++            .p(SPACE[8])
++            .rounded(RADIUS.dialog)
++            .border(1)
++            .border_color(t.border)
++            .bg(t.surface)
++            .child(Text(cx, "page", "Welcome to eBIRForms").text_center())
++            .child(
++              Text(cx, "meta", detail, app.gateError ? "danger" : "fg2")
++                .text_center()
++                .whitespace_normal(),
++            )
++            .child(TextField(cx, app.serverUrl, { id: "gate-server", label: "Buwiz server" }))
++            .child(
++              AppButton(cx, "gate-sign-in", busy ? "Waiting…" : "Sign in", {
++                variant: "primary",
++                block: true,
++                disabled: busy,
++                onClick: (_e, cx) => startAccountFlow(app, "sign-in", cx),
++              }),
++            )
++            .child(
++              AppButton(cx, "gate-create-account", busy ? "Waiting…" : "Create account", {
++                block: true,
++                disabled: busy,
++                onClick: (_e, cx) => startAccountFlow(app, "create", cx),
++              }),
++            ),
++        ),
++    );
++}
++
++export function startAccountFlow(app, kind, cx) {
++  if (app.gateBusy) return;
++  app.gateBusy = true;
++  app.gateError = null;
++  app.gateDetail = "Opening your browser…";
++  cx.notify();
++  const verb = kind === "create" ? "cloud_account_begin_sign_up" : "cloud_account_begin_sign_in";
++  cx.spawn(async (acx) => {
++    try {
++      const url = app.serverUrl && app.serverUrl.value ? app.serverUrl.value().trim() : "";
++      if (url) app.store.call("cloud_account_set_server_url", url);
++      const started = await app.store.call(verb);
++      const code = started.user_code ? ` Code ${started.user_code}.` : "";
++      app.gatePhase = "waiting";
++      app.gateDetail = started.browser_opened
++        ? `Finish in the browser, then return here.${code}`
++        : `Open ${started.verification_uri_complete} and approve this computer.${code}`;
++      acx.notify();
++      await app.store.call("cloud_account_finish_sign_in");
++      app.finishUnlock(acx);
++    } catch (error) {
++      app.gateError = errorText(error);
++      app.gateBusy = false;
++      app.gatePhase = "welcome";
++      acx.notify();
++    }
++  });
++}
+diff --git a/app/shell/gpui-kit.d.ts b/app/shell/gpui-kit.d.ts
+index 6fa0c87..3958a2a 100644
+--- a/app/shell/gpui-kit.d.ts
++++ b/app/shell/gpui-kit.d.ts
+@@ -27894,12 +27894,23 @@ declare module "bir" {
+       verification_uri_complete: string;
+       browser_opened: boolean;
+   }
++  export interface CloudAccountGate {
++      unlocked: boolean;
++      offline: boolean;
++      server_url: string;
++      email: string | null;
++      detail: string;
++  }
+   export function cloud_account_status(): CloudAccountStatus;
++  export function cloud_account_gate(): CloudAccountGate;
+   export function cloud_account_set_server_url(url: string): CloudAccountStatus;
+   export function cloud_account_begin_sign_in(): Promise<CloudSignInStart>;
++  export function cloud_account_begin_sign_up(): Promise<CloudSignInStart>;
+   export function cloud_account_finish_sign_in(): Promise<CloudAccountStatus>;
+   export function cloud_account_refresh(): Promise<CloudAccountStatus>;
+   export function cloud_account_sign_out(): Promise<CloudAccountStatus>;
++  export function cloud_account_session_opened(): null;
++  export function cloud_account_session_closed(): null;
+ 
+   export type BranchFieldName = "rdo_code" | "registered_address" | "zip_code" | "phone" | "email";
+   export interface BranchFacts {
+diff --git a/app/shell/theme.js b/app/shell/theme.js
+index f629122..81d2766 100644
+--- a/app/shell/theme.js
++++ b/app/shell/theme.js
+@@ -13,6 +13,19 @@ export const THEME_PREF_KEY = "theme_preference";
+ 
+ /** @typedef {"system" | "dark" | "light"} ThemePreference */
+ 
++/**
++ * `BIR_SHELL_START=theme=dark` (or `light`) before the database is open.
++ * The account gate uses this so a screenshot can pick a theme without a session.
++ */
++export function themePreferenceFromEnv(raw) {
++  const start = raw == null ? "" : String(raw);
++  for (const part of start.split(";")) {
++    const [key, value = ""] = part.split("=");
++    if (key.trim() === "theme" && value.trim()) return parseThemePreference(value);
++  }
++  return null;
++}
++
+ /** Parse the painted app's stored value ("System"/"Dark"/"Light" or lowercase). */
+ export function parseThemePreference(raw) {
+   const v = (raw == null ? "" : String(raw)).trim().toLowerCase();
+-- 
+2.43.0
+
