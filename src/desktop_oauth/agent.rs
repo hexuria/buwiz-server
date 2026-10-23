@@ -26,8 +26,7 @@ use crate::error::{AuthStackError, AuthStackResult};
 
 use super::{
     html, html_escape, json_response, oauth_error, oauth_page, pkce_s256, pkce_verifier_valid,
-    query_map, random_token, read_body, redirect, session_from_headers, session_from_request,
-    urlencoding_encode, RestRequest, RestResponse,
+    query_map, random_token, redirect, session_from_headers, urlencoding_encode, RestResponse,
 };
 
 /// Registrations allowed per hour across the server, so an open endpoint
@@ -70,9 +69,8 @@ struct RegistrationRequest {
     response_types: Option<Vec<String>>,
 }
 
-pub(super) async fn register(req: RestRequest) -> AuthStackResult<RestResponse> {
-    let body = read_body(req).await?;
-    let Ok(request) = serde_json::from_slice::<RegistrationRequest>(&body) else {
+pub(super) async fn register(body: &[u8]) -> AuthStackResult<RestResponse> {
+    let Ok(request) = serde_json::from_slice::<RegistrationRequest>(body) else {
         return oauth_error(
             StatusCode::BAD_REQUEST,
             "invalid_client_metadata",
@@ -185,7 +183,7 @@ async fn check_authorize(params: &HashMap<String, String>) -> Result<AgentAuthor
 }
 
 pub(super) async fn authorize_get(
-    req: &RestRequest,
+    headers: &http::HeaderMap,
     uri: &http::Uri,
 ) -> AuthStackResult<RestResponse> {
     let params = query_map(uri.query().unwrap_or_default());
@@ -198,7 +196,7 @@ pub(super) async fn authorize_get(
             );
         }
     };
-    let Some(session) = session_from_request(req).await? else {
+    let Some(session) = session_from_headers(headers).await? else {
         let next = format!("/oauth/authorize?{}", uri.query().unwrap_or_default());
         return redirect(&format!("/login?next={}", urlencoding_encode(&next)));
     };

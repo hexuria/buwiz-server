@@ -52,6 +52,21 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .try_init();
+        // Desktop OAuth reads the POST body itself. That read has to be the
+        // first await in this future: a Postgres wait (trusted context,
+        // session lookup) puts the incoming stream on a waitable set, and
+        // the later read traps (`waitable cannot be used synchronously`).
+        if crate::desktop_oauth::is_desktop_oauth_request(&request_path) {
+            let response = crate::desktop_oauth::serve(req).await.map_err(|error| {
+                tracing::error!(
+                    error = %error,
+                    error_code = error.public_code(),
+                    "failed to build desktop OAuth response"
+                );
+                ErrorCode::InternalError(None)
+            })?;
+            return wasip3::http_compat::http_into_wasi_response(response);
+        }
         let trusted_context = match crate::application::trusted_context_from_request(&req).await {
             Ok(context) => context,
             Err(error) => {
@@ -101,17 +116,6 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
                     error = %error,
                     error_code = error.public_code(),
                     "failed to build MCP response"
-                );
-                ErrorCode::InternalError(None)
-            })?;
-            return wasip3::http_compat::http_into_wasi_response(response);
-        }
-        if crate::desktop_oauth::is_desktop_oauth_request(&request_path) {
-            let response = crate::desktop_oauth::serve(req).await.map_err(|error| {
-                tracing::error!(
-                    error = %error,
-                    error_code = error.public_code(),
-                    "failed to build desktop OAuth response"
                 );
                 ErrorCode::InternalError(None)
             })?;
