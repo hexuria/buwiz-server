@@ -43,6 +43,102 @@ pub fn is_agent_token(token: &str) -> bool {
     token.starts_with(AGENT_ACCESS_PREFIX) || token.starts_with(AGENT_REFRESH_PREFIX)
 }
 
+/// Audience for an agent access token (RFC 8707 resource indicator).
+///
+/// An empty request, the issuer, or the issuer's `/mcp` URL is this
+/// server's own MCP resource. A loopback `http` URL with an explicit port
+/// and path `/mcp` is bir-mcp on the same computer. A loopback alias of
+/// the issuer's own MCP URL stays this server's resource, so one token
+/// cannot be good for both. Anything else is refused.
+pub fn canonical_agent_resource(issuer: &str, requested: &str) -> Result<String, String> {
+    let issuer = issuer.trim().trim_end_matches('/');
+    if issuer.is_empty() {
+        return Err("authorization server issuer is empty".to_owned());
+    }
+    let own = format!("{issuer}/mcp");
+    let requested = requested.trim().trim_end_matches('/');
+    if requested.is_empty()
+        || requested == issuer
+        || requested == own
+        || same_loopback_mcp(&own, requested)
+    {
+        return Ok(own);
+    }
+    let Some(canonical) = loopback_mcp_resource(requested) else {
+        return Err(
+            "resource is not this server's MCP endpoint or a loopback bir-mcp address".to_owned(),
+        );
+    };
+    if same_loopback_mcp(&own, &canonical) {
+        return Ok(own);
+    }
+    Ok(canonical)
+}
+
+/// `stored` is the audience saved on the connection. Empty means a token
+/// issued before audiences existed: it is this server's own MCP resource.
+pub fn audience_is_own_mcp(own_mcp: &str, stored: &str) -> bool {
+    let stored = stored.trim();
+    stored.is_empty() || stored == own_mcp || same_loopback_mcp(own_mcp, stored)
+}
+
+/// The `resource` on a token request must be the audience the user allowed.
+/// Clients that still omit it keep working for this server's own MCP only.
+pub fn resource_matches_grant(issuer: &str, granted: &str, requested: &str) -> Result<(), String> {
+    let own = format!("{}/mcp", issuer.trim().trim_end_matches('/'));
+    let granted = granted.trim();
+    let granted_audience = if granted.is_empty() {
+        own.clone()
+    } else {
+        granted.to_owned()
+    };
+    if requested.trim().is_empty() {
+        if audience_is_own_mcp(&own, &granted_audience) {
+            return Ok(());
+        }
+        return Err("resource is required".to_owned());
+    }
+    let canonical = canonical_agent_resource(issuer, requested)?;
+    if canonical == granted_audience || same_loopback_mcp(&canonical, &granted_audience) {
+        return Ok(());
+    }
+    Err("resource does not match the authorization".to_owned())
+}
+
+/// Canonical `http://host:port/mcp` for a loopback bir-mcp URL, or `None`.
+fn loopback_mcp_resource(uri: &str) -> Option<String> {
+    if uri.len() > 512 || !uri.is_ascii() || uri.contains(['#', '?', '\\', ' ']) {
+        return None;
+    }
+    let (scheme, rest) = uri.split_once(':')?;
+    if !scheme.eq_ignore_ascii_case("http") {
+        return None;
+    }
+    let authority = authority(rest)?;
+    let (host, port) = parse_authority(authority)?;
+    let port = port?;
+    if port == 0 || !is_loopback(&host) {
+        return None;
+    }
+    let tail = &rest[2 + authority.len()..];
+    (tail == "/mcp").then(|| format!("http://{host}:{port}/mcp"))
+}
+
+/// Same loopback MCP port, host spelling aside (`localhost` and `127.0.0.1`).
+fn same_loopback_mcp(left: &str, right: &str) -> bool {
+    match (loopback_mcp_resource(left), loopback_mcp_resource(right)) {
+        (Some(left), Some(right)) => mcp_port(&left) == mcp_port(&right),
+        _ => false,
+    }
+}
+
+fn mcp_port(canonical: &str) -> Option<u16> {
+    canonical
+        .strip_suffix("/mcp")
+        .and_then(|origin| origin.rsplit_once(':'))
+        .and_then(|(_, port)| port.parse().ok())
+}
+
 /// A registration request that passed the checks.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentRegistration {
@@ -518,6 +614,56 @@ mod tests {
                 let _ = redirect_uri_matches(&["http://localhost/cb".to_owned()], &raw);
             }
         }
+    }
+
+    #[test]
+    fn agent_resource_is_this_server_or_a_loopback_bir_mcp() {
+        let issuer = "http://localhost:3008";
+        let own = "http://localhost:3008/mcp";
+        assert_eq!(canonical_agent_resource(issuer, "").unwrap(), own);
+        assert_eq!(canonical_agent_resource(issuer, issuer).unwrap(), own);
+        assert_eq!(canonical_agent_resource(issuer, own).unwrap(), own);
+        assert_eq!(
+            canonical_agent_resource(issuer, "http://127.0.0.1:3008/mcp").unwrap(),
+            own
+        );
+        assert_eq!(
+            canonical_agent_resource(issuer, "http://127.0.0.1:8765/mcp").unwrap(),
+            "http://127.0.0.1:8765/mcp"
+        );
+        assert_eq!(
+            canonical_agent_resource(issuer, "http://LOCALHOST:8765/mcp/").unwrap(),
+            "http://localhost:8765/mcp"
+        );
+        assert_eq!(
+            canonical_agent_resource(issuer, "http://[::1]:8765/mcp").unwrap(),
+            "http://[::1]:8765/mcp"
+        );
+        for refused in [
+            "https://evil.example/mcp",
+            "http://127.0.0.1.evil/mcp",
+            "http://user@127.0.0.1:8765/mcp",
+            "http://127.0.0.1:8765/mcp/extra",
+            "http://127.0.0.1:8765/mcp?x=1",
+            "http://127.0.0.1/mcp",
+            "http://10.0.0.5:8765/mcp",
+        ] {
+            assert!(canonical_agent_resource(issuer, refused).is_err(), "{refused}");
+        }
+        let bir = "http://127.0.0.1:8765/mcp";
+        assert!(audience_is_own_mcp(own, ""));
+        assert!(audience_is_own_mcp(own, own));
+        assert!(audience_is_own_mcp(own, "http://127.0.0.1:3008/mcp"));
+        assert!(!audience_is_own_mcp(own, bir));
+        assert!(resource_matches_grant(issuer, own, "").is_ok());
+        assert!(resource_matches_grant(issuer, bir, "").is_err());
+        assert!(resource_matches_grant(issuer, bir, bir).is_ok());
+        assert!(resource_matches_grant(issuer, bir, "http://localhost:8765/mcp").is_ok());
+        assert!(resource_matches_grant(issuer, bir, own).is_err());
+        assert_eq!(
+            canonical_agent_resource("https://account.buwiz.com", "").unwrap(),
+            "https://account.buwiz.com/mcp"
+        );
     }
 
     #[test]
