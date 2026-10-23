@@ -32,6 +32,7 @@ pub fn is_desktop_oauth_request(path: &str) -> bool {
             | "/oauth/register"
             | "/oauth/authorize"
             | "/oauth/token"
+            | "/oauth/introspect"
             | "/oauth/device/code"
             | "/auth/device/start"
             | "/auth/device/poll"
@@ -67,6 +68,7 @@ pub async fn serve(req: RestRequest) -> AuthStackResult<RestResponse> {
         }
         (Method::POST, "/oauth/authorize") => authorize_post(&prepared).await,
         (Method::POST, "/oauth/token") => token(&prepared).await,
+        (Method::POST, "/oauth/introspect") => agent::introspect(&prepared.body).await,
         (Method::POST, "/oauth/device/code") | (Method::POST, "/auth/device/start") => {
             device_code(&prepared).await
         }
@@ -129,6 +131,8 @@ async fn authorization_server_metadata() -> serde_json::Value {
         "authorization_endpoint": format!("{issuer}/oauth/authorize"),
         "token_endpoint": format!("{issuer}/oauth/token"),
         "registration_endpoint": format!("{issuer}/oauth/register"),
+        "introspection_endpoint": format!("{issuer}/oauth/introspect"),
+        "introspection_endpoint_auth_methods_supported": ["none"],
         "device_authorization_endpoint": format!("{issuer}/oauth/device/code"),
         "buwiz_device_start_endpoint": format!("{issuer}/auth/device/start"),
         "buwiz_device_poll_endpoint": format!("{issuer}/auth/device/poll"),
