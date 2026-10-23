@@ -112,6 +112,7 @@ async fn a_connection_refuses_a_profile_the_user_cannot_hand_on() {
                 "http://127.0.0.1:9/cb",
                 "challenge",
                 60,
+                "http://127.0.0.1:9/mcp",
             )
             .await
         }
