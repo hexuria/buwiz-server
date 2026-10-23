@@ -441,21 +441,41 @@ async fn device_poll(req: RestRequest) -> AuthStackResult<RestResponse> {
     device_grant(&form).await
 }
 
+/// Sign-in and signup URLs that return to this device approval page.
+pub(crate) fn device_account_links(next_path: &str) -> (String, String) {
+    let next = urlencoding_encode(next_path);
+    (
+        format!("/login?next={next}"),
+        format!("/signup?next={next}"),
+    )
+}
+
 async fn device_get(req: &RestRequest, uri: &http::Uri) -> AuthStackResult<RestResponse> {
     let Some(session) = session_from_request(req).await? else {
         // `/login/device` is rejected by the sign-in page's `next` allowlist
         // (`next` must not send the browser back to `/login`). `/device` is
-        // the same approval screen and is a safe post-login path.
+        // the same approval screen and is a safe post-login path. Signup uses
+        // that same `next`, so a new account lands back here signed in.
         let query = uri.query().unwrap_or_default();
         let next = if query.is_empty() {
             "/device".to_owned()
         } else {
             format!("/device?{query}")
         };
-        return redirect(&format!(
-            "/login?next={}",
-            urlencoding_encode(&next)
-        ));
+        let (sign_in, create) = device_account_links(&next);
+        let body = format!(
+            r#"<p>Sign in or create a Buwiz account to authorize this computer.</p>
+<p><a href="{sign_in}">Sign in</a></p>
+<p><a href="{create}">Create account</a></p>"#
+        );
+        return html(
+            StatusCode::OK,
+            &oauth_page(
+                "Authorize a device",
+                "Create an account or sign in, then come back to this page to approve the Buwiz desktop app.",
+                &body,
+            ),
+        );
     };
     let params = query_map(uri.query().unwrap_or_default());
     let user_code = params.get("user_code").cloned().unwrap_or_default();
@@ -885,6 +905,23 @@ mod tests {
         assert!(html.contains("x-buwiz-request-body"));
         assert!(html.contains("x-buwiz-request-body-enc"));
         assert!(html.contains("action=\"/login/device\""));
+    }
+
+    #[test]
+    fn device_guest_page_offers_sign_in_and_signup() {
+        let (sign_in, create) = device_account_links("/device?user_code=ABCD-EFGH");
+        assert_eq!(
+            sign_in,
+            "/login?next=%2Fdevice%3Fuser_code%3DABCD-EFGH"
+        );
+        assert_eq!(
+            create,
+            "/signup?next=%2Fdevice%3Fuser_code%3DABCD-EFGH"
+        );
+        assert_eq!(
+            crate::app::helpers::post_login_path("/device?user_code=ABCD-EFGH"),
+            Some("/device?user_code=ABCD-EFGH")
+        );
     }
 
     #[test]

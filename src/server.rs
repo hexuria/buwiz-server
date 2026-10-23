@@ -223,6 +223,12 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
             return redirect_response("/");
         }
 
+        // `/signup` is the path the desktop app opens. The form lives at
+        // `/register` and keeps `next` so a new account returns to the device page.
+        if request_path == "/signup" {
+            return redirect_response(&signup_alias_location(request_query.as_deref()));
+        }
+
         // Guest-only pages bounce authenticated browsers away, but one-time
         // token links must still render. Dropping `?token=` here is what made
         // password reset appear to "already be signed in" without a form.
@@ -230,7 +236,7 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
             && !tokenized_public_ui_route(&request_path, request_query.as_deref())
             && authenticated_session(session_id.clone()).await
         {
-            return redirect_response(login_success_redirect(request_query.as_deref()));
+            return redirect_response(&login_success_redirect(request_query.as_deref()));
         }
 
         if let Some(location) =
@@ -584,13 +590,29 @@ fn protected_ui_route(path: &str) -> bool {
         || path.starts_with("/admin/")
 }
 
-fn login_success_redirect(query: Option<&str>) -> &str {
-    query
-        .and_then(|query| query.split('&').find_map(|part| part.strip_prefix("next=")))
-        .filter(|value| {
-            value.starts_with('/') && !value.starts_with("//") && !guest_only_ui_route(value)
-        })
-        .unwrap_or("/dashboard")
+fn signup_alias_location(query: Option<&str>) -> String {
+    match query {
+        Some(query) if !query.is_empty() => format!("/register?{query}"),
+        _ => "/register".to_owned(),
+    }
+}
+
+fn login_success_redirect(query: Option<&str>) -> String {
+    let Some(raw) = query.and_then(|query| {
+        query
+            .split('&')
+            .find_map(|part| part.strip_prefix("next="))
+    }) else {
+        return "/dashboard".to_owned();
+    };
+    let value = crate::app::helpers::percent_decode_component(raw);
+    let path_only = value.split(['?', '#']).next().unwrap_or(value.as_str());
+    if guest_only_ui_route(path_only) {
+        return "/dashboard".to_owned();
+    }
+    crate::app::helpers::post_login_path(&value)
+        .map(str::to_owned)
+        .unwrap_or_else(|| "/dashboard".to_owned())
 }
 
 fn session_id_from_headers(headers: &http::HeaderMap) -> Option<String> {
@@ -889,6 +911,30 @@ fn loopback_ip_to_localhost_redirect(
 fn internal_error(error: impl std::fmt::Display) -> ErrorCode {
     tracing::error!(error = %error, "fullstack WASI request failed");
     ErrorCode::InternalError(None)
+}
+
+#[cfg(test)]
+mod signup_alias_tests {
+    use super::{login_success_redirect, signup_alias_location};
+
+    #[test]
+    fn signup_keeps_the_device_next_query() {
+        assert_eq!(signup_alias_location(None), "/register");
+        assert_eq!(
+            signup_alias_location(Some("next=%2Fdevice%3Fuser_code%3DABCD")),
+            "/register?next=%2Fdevice%3Fuser_code%3DABCD"
+        );
+    }
+
+    #[test]
+    fn encoded_device_next_returns_to_the_approval_page() {
+        assert_eq!(
+            login_success_redirect(Some("next=%2Fdevice%3Fuser_code%3DABCD")),
+            "/device?user_code=ABCD"
+        );
+        assert_eq!(login_success_redirect(Some("next=%2Flogin")), "/dashboard");
+        assert_eq!(login_success_redirect(None), "/dashboard");
+    }
 }
 
 #[cfg(test)]
