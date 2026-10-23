@@ -9,9 +9,13 @@
 //!   what it may do there.
 //! - `POST /oauth/token`: PKCE code exchange and refresh. Tokens belong to
 //!   the agent connection, not to the taxpayer's browser session, so ending
-//!   one never signs the other out.
+//!   one never signs the other out. The `resource` the user allowed is the
+//!   token's audience.
+//! - `POST /oauth/introspect`: RFC 7662 for a resource server. Agent clients
+//!   are public, so the access token itself is the credential. An unknown
+//!   token is `{"active": false}` and nothing else.
 //! - `GET /.well-known/oauth-protected-resource[/mcp]`: RFC 9728 metadata
-//!   for the MCP endpoint.
+//!   for this server's own MCP endpoint. bir-mcp serves its own document.
 
 use std::collections::HashMap;
 
@@ -144,6 +148,8 @@ struct AgentAuthorize {
     redirect_uri: String,
     state: String,
     challenge: String,
+    /// Canonical audience (this server's `/mcp`, or a loopback bir-mcp URL).
+    resource: String,
 }
 
 async fn check_authorize(params: &HashMap<String, String>) -> Result<AgentAuthorize, String> {
@@ -167,18 +173,14 @@ async fn check_authorize(params: &HashMap<String, String>) -> Result<AgentAuthor
     if challenge.len() < 43 {
         return Err("code_challenge is required".to_owned());
     }
-    let resource = get("resource");
-    if !resource.is_empty() {
-        let issuer = crate::application::public_base_url().await;
-        if resource != format!("{issuer}/mcp") && resource != issuer {
-            return Err("resource is not this server's MCP endpoint".to_owned());
-        }
-    }
+    let issuer = crate::application::public_base_url().await;
+    let resource = crate::domain::canonical_agent_resource(&issuer, &get("resource"))?;
     Ok(AgentAuthorize {
         client,
         redirect_uri,
         state: get("state"),
         challenge,
+        resource,
     })
 }
 
@@ -259,7 +261,8 @@ pub(super) async fn authorize_get(
     let body = format!(
         r#"<style>.row{{display:flex;gap:.5rem;align-items:baseline;margin:.45rem 0;font-size:.95rem}} .row input{{width:auto;margin:0}} .dim{{color:#9a9a9a;font-size:.85rem}} fieldset{{border:1px solid #333;border-radius:.5rem;margin:0 0 1rem;padding:.6rem .8rem}} legend{{font-size:.85rem;color:#c4c4c4}} .deny{{background:transparent;color:#fff;border:1px solid #444;margin-left:.5rem}}</style>
 <form method="post" action="/oauth/authorize">
-{client}{redirect}{state}{challenge}<input type="hidden" name="code_challenge_method" value="S256" />{csrf}
+{client}{redirect}{state}{challenge}{resource}<input type="hidden" name="code_challenge_method" value="S256" />{csrf}
+<p class="dim">This access token works only for {resource_label}.</p>
 <fieldset><legend>Profiles it may reach</legend>{profile_boxes}</fieldset>
 <fieldset><legend>What it may do</legend>{presets}<p class="dim">An agent can never publish to BIR, share profiles, archive or delete them. It never gets more than you have (on a firm's pass, no more than that pass), and it stops the moment you end it, the owner ends the pass, or you leave the workspace.</p></fieldset>
 <p class="dim">Signed in as {user}. You go back to {target} after you choose. You can end this any time under Tax profiles → Connected agents.</p>
@@ -269,6 +272,8 @@ pub(super) async fn authorize_get(
         redirect = hidden("redirect_uri", &checked.redirect_uri),
         state = hidden("state", &checked.state),
         challenge = hidden("code_challenge", &checked.challenge),
+        resource = hidden("resource", &checked.resource),
+        resource_label = html_escape(&checked.resource),
         csrf = hidden("csrf", &csrf),
         user = html_escape(session.primary_email.as_deref().unwrap_or("your account")),
         target = html_escape(&redirect_target(&checked.redirect_uri)),
@@ -353,6 +358,7 @@ pub(super) async fn authorize_post(
         &checked.redirect_uri,
         &checked.challenge,
         AGENT_CODE_TTL_SECONDS,
+        &checked.resource,
     )
     .await?;
     redirect(&with_query(
@@ -394,6 +400,14 @@ pub(super) async fn authorization_code_grant(
             "PKCE verification failed",
         );
     }
+    let issuer = crate::application::public_base_url().await;
+    if let Err(message) = crate::domain::resource_matches_grant(
+        &issuer,
+        &stored.resource,
+        form.get("resource").map(String::as_str).unwrap_or(""),
+    ) {
+        return oauth_error(StatusCode::BAD_REQUEST, "invalid_target", &message);
+    }
     let (access, refresh) = new_token_pair()?;
     crate::store::insert_agent_tokens(
         &stored.connection_id,
@@ -420,6 +434,26 @@ pub(super) async fn refresh_grant(
             "client_id is required",
         );
     }
+    let Some(granted) = crate::store::live_agent_refresh_audience(
+        &crate::store::sha256_b64url(refresh),
+        client_id,
+    )
+    .await?
+    else {
+        return oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "refresh token is invalid, expired or the connection ended",
+        );
+    };
+    let issuer = crate::application::public_base_url().await;
+    if let Err(message) = crate::domain::resource_matches_grant(
+        &issuer,
+        &granted,
+        form.get("resource").map(String::as_str).unwrap_or(""),
+    ) {
+        return oauth_error(StatusCode::BAD_REQUEST, "invalid_target", &message);
+    }
     let (access, new_refresh) = new_token_pair()?;
     let rotated = crate::store::rotate_agent_refresh(
         &crate::store::sha256_b64url(refresh),
@@ -445,6 +479,62 @@ fn new_token_pair() -> AuthStackResult<(String, String)> {
         format!("{AGENT_ACCESS_PREFIX}{}", random_token(32)?),
         format!("{AGENT_REFRESH_PREFIX}{}", random_token(32)?),
     ))
+}
+
+/// RFC 7662. The access token is the credential: agent clients have no
+/// secret. A token that is missing, unknown, expired, or revoked is
+/// `{"active": false}` with no other fields, so this endpoint cannot be
+/// used to learn whether a guess was close.
+pub(super) async fn introspect(body: &[u8]) -> AuthStackResult<RestResponse> {
+    let pairs = form_pairs(body.to_vec());
+    let mut token = String::new();
+    for (key, value) in &pairs {
+        if key == "token" && token.is_empty() {
+            token = value.clone();
+        }
+    }
+    let token = token.trim();
+    if token.is_empty() {
+        return oauth_error(StatusCode::BAD_REQUEST, "invalid_request", "token is required");
+    }
+    let agent = match crate::application::agent_from_bearer(token).await {
+        Ok(agent) => agent,
+        Err(AuthStackError::InvalidToken) => {
+            return json_response(StatusCode::OK, &serde_json::json!({"active": false}));
+        }
+        Err(error) => return Err(error),
+    };
+    let profiles = crate::application::agent_tax_profiles(&agent).await?;
+    let issuer = crate::application::public_base_url().await;
+    let own = format!("{issuer}/mcp");
+    let audience = if crate::domain::audience_is_own_mcp(&own, &agent.resource) {
+        own
+    } else {
+        agent.resource.clone()
+    };
+    let listed: Vec<serde_json::Value> = profiles
+        .iter()
+        .map(|profile| {
+            serde_json::json!({
+                "profile_id": profile.view.profile_id,
+                "permissions": profile.permissions.ids(),
+            })
+        })
+        .collect();
+    json_response(
+        StatusCode::OK,
+        &serde_json::json!({
+            "active": true,
+            "scope": AGENT_SCOPE,
+            "client_id": agent.client_id,
+            "token_type": "Bearer",
+            "exp": agent.expires_at,
+            "sub": agent.user_id,
+            "aud": audience,
+            "iss": issuer,
+            "profiles": listed,
+        }),
+    )
 }
 
 fn token_response(access: &str, refresh: &str) -> AuthStackResult<RestResponse> {
