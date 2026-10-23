@@ -21,7 +21,8 @@ pub mod tin;
 pub mod tin_identity;
 
 pub use agent::{
-    agent_effective_permissions, agent_permissions_from_choice, is_agent_token, redirect_uri_matches,
+    agent_effective_permissions, agent_permissions_from_choice, audience_is_own_mcp,
+    canonical_agent_resource, is_agent_token, redirect_uri_matches, resource_matches_grant,
     validate_registration, AgentRegistration, AGENT_ACCESS_PREFIX, AGENT_ACCESS_TTL_SECONDS,
     AGENT_CLIENT_PREFIX, AGENT_CODE_TTL_SECONDS, AGENT_REFRESH_PREFIX,
     AGENT_REFRESH_TTL_SECONDS, AGENT_SCOPE,
