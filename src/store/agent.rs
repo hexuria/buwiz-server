@@ -50,6 +50,8 @@ pub(crate) struct ConsumedAgentCode {
     pub client_id: String,
     pub redirect_uri: String,
     pub code_challenge: String,
+    /// Canonical audience. Empty on a connection from before audiences.
+    pub resource: String,
 }
 
 /// The agent behind a valid access token.
@@ -57,11 +59,14 @@ pub(crate) struct ConsumedAgentCode {
 pub(crate) struct AgentActor {
     pub connection_id: String,
     pub user_id: String,
-    #[allow(dead_code)] // kept for audit logs
     pub client_id: String,
     pub client_name: String,
     pub permissions: PassPermissions,
     pub profile_ids: Vec<String>,
+    /// Canonical audience. Empty on a connection from before audiences.
+    pub resource: String,
+    /// Access-token expiry, unix seconds. Zero when the column was unreadable.
+    pub expires_at: i64,
 }
 
 /// Drops apps that registered over a week ago and were never allowed.
@@ -220,6 +225,7 @@ pub(crate) async fn create_agent_connection(
     redirect_uri: &str,
     code_challenge: &str,
     code_ttl_seconds: i64,
+    resource: &str,
 ) -> AuthStackResult<()> {
     initialize_schema_async().await?;
     execute_sql_atomic(vec![
@@ -237,8 +243,8 @@ pub(crate) async fn create_agent_connection(
         ),
         AtomicSqlStatement::guard(
             "INSERT INTO buwiz_server.agent_connections \
-                 (connection_id, client_id, user_id, security_revision, permissions) \
-             SELECT ?1::uuid, ?2, u.user_id, u.security_revision, ?4::jsonb \
+                 (connection_id, client_id, user_id, security_revision, permissions, resource) \
+             SELECT ?1::uuid, ?2, u.user_id, u.security_revision, ?4::jsonb, ?5 \
              FROM auth_users u WHERE u.user_id = ?3::uuid AND u.status = 'active' \
              RETURNING connection_id",
             vec![
@@ -246,6 +252,7 @@ pub(crate) async fn create_agent_connection(
                 json!(client_id),
                 json!(user_id),
                 json!(permissions.ids()),
+                json!(resource),
             ],
         ),
         // Re-checks reach here so a forged form cannot add a profile the
@@ -285,7 +292,8 @@ pub(crate) async fn consume_agent_code(code_hash: &str) -> AuthStackResult<Optio
          FROM buwiz_server.agent_connections c \
          WHERE a.code_hash = ?1 AND a.consumed_at IS NULL AND a.expires_at > CURRENT_TIMESTAMP \
            AND c.connection_id = a.connection_id AND c.revoked_at IS NULL \
-         RETURNING a.connection_id::text AS connection_id, c.client_id, a.redirect_uri, a.code_challenge",
+         RETURNING a.connection_id::text AS connection_id, c.client_id, a.redirect_uri, \
+                   a.code_challenge, COALESCE(c.resource, '') AS resource",
         vec![json!(code_hash)],
     )
     .await?;
@@ -297,6 +305,7 @@ pub(crate) async fn consume_agent_code(code_hash: &str) -> AuthStackResult<Optio
         client_id: required_string(row, "client_id")?,
         redirect_uri: required_string(row, "redirect_uri")?,
         code_challenge: required_string(row, "code_challenge")?,
+        resource: row_string(row, "resource").unwrap_or_default(),
     }))
 }
 
@@ -338,6 +347,29 @@ pub(crate) async fn insert_agent_tokens(
     ])
     .await?;
     Ok(())
+}
+
+/// Audience of a refresh token that is still good for `client_id`.
+/// `Ok(None)` when that refresh token cannot be used.
+pub(crate) async fn live_agent_refresh_audience(
+    refresh_hash: &str,
+    client_id: &str,
+) -> AuthStackResult<Option<String>> {
+    initialize_schema_async().await?;
+    let rows = execute_sql(
+        &format!(
+            "SELECT COALESCE(c.resource, '') AS resource \
+             FROM buwiz_server.agent_tokens t \
+             JOIN buwiz_server.agent_connections c ON c.connection_id = t.connection_id \
+             JOIN auth_users u ON u.user_id = c.user_id \
+             WHERE {LIVE_REFRESH}"
+        ),
+        vec![json!(refresh_hash), json!(client_id)],
+    )
+    .await?;
+    Ok(rows
+        .first()
+        .map(|row| row_string(row, "resource").unwrap_or_default()))
 }
 
 /// A refresh token still good for `client_id`: unexpired, not revoked, its
@@ -466,6 +498,8 @@ pub(crate) async fn resolve_agent_access_token(
     let rows = execute_sql(
         "SELECT c.connection_id::text AS connection_id, c.user_id::text AS user_id, \
                 c.client_id, ac.client_name, c.permissions, \
+                COALESCE(c.resource, '') AS resource, \
+                EXTRACT(EPOCH FROM t.expires_at)::bigint AS expires_at, \
                 COALESCE((SELECT jsonb_agg(cp.profile_id::text) \
                           FROM buwiz_server.agent_connection_profiles cp \
                           WHERE cp.connection_id = c.connection_id), '[]'::jsonb) AS profile_ids \
@@ -489,6 +523,15 @@ pub(crate) async fn resolve_agent_access_token(
         client_name: required_string(row, "client_name")?,
         permissions: PassPermissions::from_stored(&row_string_list(row, "permissions")),
         profile_ids: row_string_list(row, "profile_ids"),
+        resource: row_string(row, "resource").unwrap_or_default(),
+        expires_at: row
+            .get("expires_at")
+            .and_then(|value| match value {
+                Value::Number(number) => number.as_i64().or_else(|| number.as_f64().map(|n| n as i64)),
+                Value::String(text) => text.parse().ok(),
+                _ => None,
+            })
+            .unwrap_or(0),
     };
     // Best effort: a failed timestamp must not fail the agent's call.
     let _ = execute_sql(

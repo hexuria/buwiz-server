@@ -32,6 +32,7 @@ pub fn is_desktop_oauth_request(path: &str) -> bool {
             | "/oauth/register"
             | "/oauth/authorize"
             | "/oauth/token"
+            | "/oauth/introspect"
             | "/oauth/device/code"
             | "/auth/device/start"
             | "/auth/device/poll"
@@ -67,6 +68,7 @@ pub async fn serve(req: RestRequest) -> AuthStackResult<RestResponse> {
         }
         (Method::POST, "/oauth/authorize") => authorize_post(&prepared).await,
         (Method::POST, "/oauth/token") => token(&prepared).await,
+        (Method::POST, "/oauth/introspect") => agent::introspect(&prepared.body).await,
         (Method::POST, "/oauth/device/code") | (Method::POST, "/auth/device/start") => {
             device_code(&prepared).await
         }
@@ -129,6 +131,8 @@ async fn authorization_server_metadata() -> serde_json::Value {
         "authorization_endpoint": format!("{issuer}/oauth/authorize"),
         "token_endpoint": format!("{issuer}/oauth/token"),
         "registration_endpoint": format!("{issuer}/oauth/register"),
+        "introspection_endpoint": format!("{issuer}/oauth/introspect"),
+        "introspection_endpoint_auth_methods_supported": ["none"],
         "device_authorization_endpoint": format!("{issuer}/oauth/device/code"),
         "buwiz_device_start_endpoint": format!("{issuer}/auth/device/start"),
         "buwiz_device_poll_endpoint": format!("{issuer}/auth/device/poll"),
@@ -764,45 +768,13 @@ fn urlencoding_encode(value: &str) -> String {
     form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
-/// Spin's WASI HTTP host traps if a request body is read after another
-/// wait. The approval form still copies its fields into
-/// `x-buwiz-request-body` and posts an empty body. A native submit, with
-/// the fields in the real body, is drained in `prepare_request` before any
-/// session lookup.
-const FORM_SUBMIT_SCRIPT: &str = r#"<script>
-(function () {
-  var form = document.querySelector("form");
-  if (!form) return;
-  form.addEventListener("submit", function (event) {
-    event.preventDefault();
-    var body = new URLSearchParams(new FormData(form)).toString();
-    fetch(form.getAttribute("action") || location.pathname, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        "x-buwiz-request-body": btoa(unescape(encodeURIComponent(body))),
-        "x-buwiz-request-body-enc": "b64"
-      },
-      body: ""
-    }).then(function (response) {
-      if (response.redirected && response.url) {
-        location.href = response.url;
-        return;
-      }
-      return response.text().then(function (html) {
-        document.open();
-        document.write(html);
-        document.close();
-      });
-    }).catch(function () {
-      var note = document.createElement("p");
-      note.textContent = "Could not reach Buwiz. Try again.";
-      form.appendChild(note);
-    });
-  });
-})();
-</script>"#;
+/// The approval form is a normal browser POST. `prepare_request` drains
+/// that body before any session lookup, so Spin never reads it after a
+/// wait. The page must not intercept the submit: `FormData` omits the
+/// clicked button, so `decision=allow` never arrived and the server
+/// answered `access_denied`, and `fetch` cannot follow the authorization
+/// redirect onto another origin.
+const FORM_SUBMIT_SCRIPT: &str = "";
 
 fn oauth_page(title: &str, copy: &str, body: &str) -> String {
     format!(
@@ -914,15 +886,16 @@ mod tests {
     }
 
     #[test]
-    fn approval_page_posts_the_body_in_a_header() {
+    fn approval_page_is_a_native_form_post() {
         let html = oauth_page(
             "Authorize a device",
             "Enter the code.",
-            "<form method=\"post\" action=\"/login/device\"></form>",
+            "<form method=\"post\" action=\"/login/device\"><button type=\"submit\" name=\"decision\" value=\"allow\">Allow</button></form>",
         );
-        assert!(html.contains("x-buwiz-request-body"));
-        assert!(html.contains("x-buwiz-request-body-enc"));
         assert!(html.contains("action=\"/login/device\""));
+        assert!(html.contains("name=\"decision\""));
+        assert!(!html.contains("preventDefault"));
+        assert!(!html.contains("x-buwiz-request-body"));
     }
 
     #[test]

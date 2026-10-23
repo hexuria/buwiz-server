@@ -70,6 +70,13 @@ pub async fn serve(req: McpRequest) -> AuthStackResult<McpResponse> {
             Err(error) => return Err(error),
         },
     };
+    // A token minted for another resource (bir-mcp on loopback) is not a
+    // token for this endpoint. Empty audience is a connection from before
+    // audiences existed and stays this server's own MCP resource.
+    let own = format!("{base}/mcp");
+    if !crate::domain::audience_is_own_mcp(&own, &agent.resource) {
+        return unauthorized(&base, Some("invalid_token"));
+    }
     let header_version = header(&headers, "mcp-protocol-version");
     let (messages, batch) = match protocol::parse_body(&body, header_version.as_deref()) {
         Ok(parsed) => parsed,
