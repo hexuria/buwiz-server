@@ -210,6 +210,45 @@ pub async fn loopback_public_base_url() -> bool {
         .is_some_and(|origin| is_loopback_host(&origin.host))
 }
 
+/// Browser origins for REST CORS: this deployment, its API hostname, and
+/// `AUTH_CORS_ORIGINS` (the marketing site).
+pub async fn cors_allowed_origins() -> Vec<String> {
+    let public_base = public_base_url().await;
+    let api_base = config_value("AUTH_API_BASE_URL").await.unwrap_or_default();
+    let extra = config_value("AUTH_CORS_ORIGINS").await.unwrap_or_default();
+    crate::domain::site_split::cors_origins(&public_base, &api_base, &extra)
+}
+
+/// Send a browser that opened the API hostname to the account hostname.
+pub async fn account_document_redirect(
+    headers: &http::HeaderMap,
+    path: &str,
+    query: Option<&str>,
+) -> Option<String> {
+    let api_base = config_value("AUTH_API_BASE_URL").await.unwrap_or_default();
+    let account_base = public_base_url().await;
+    let host = headers
+        .get(http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let has_authorization = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| !value.trim().is_empty());
+    let accept = headers
+        .get(http::header::ACCEPT)
+        .and_then(|value| value.to_str().ok());
+    crate::domain::site_split::account_document_redirect(
+        &api_base,
+        &account_base,
+        host,
+        path,
+        query,
+        has_authorization,
+        accept,
+    )
+}
+
 pub async fn require_loopback_public_base_url(surface: &str) -> AuthStackResult<()> {
     if loopback_public_base_url().await {
         return Ok(());

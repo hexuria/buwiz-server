@@ -20,7 +20,8 @@ buwiz-forms app, which owns the tunnel / egress reroute to the BIR SFTP path.
 
 | Repo | Role | Used here as |
 |------|------|--------------|
-| [hexuria/buwiz-forms](https://github.com/hexuria/buwiz-forms) | Desktop app: forms, local tax profiles, local PIN/admin model, filing to BIR | Client of this server (planned, see below) |
+| [hexuria/buwiz-forms](https://github.com/hexuria/buwiz-forms) | Desktop app: forms, local tax profiles, local PIN/admin model, filing to BIR | Client of this server (Settings → Account) |
+| [hexuria/buwiz.com](https://github.com/hexuria/buwiz.com) | Marketing site | Links to the desktop releases and to `https://account.buwiz.com/login` |
 | [codeitlikemiley/wasi-auth](https://github.com/codeitlikemiley/wasi-auth) | Identity: accounts, email verification, sessions, MFA, passkeys, organizations and roles, mail outbox | Crate `wasi-auth = "=0.1.0-rc.5"`, plus the native `wasi-auth-outbox-worker` that `make dev` installs |
 | [codeitlikemiley/ddd-cqrs-es](https://github.com/codeitlikemiley/ddd-cqrs-es) | Event-sourcing kit and the `examples/fullstack-app` template this repo was made from | Git dependency (pinned rev in `Cargo.toml`); its Spin Postgres adapter runs every query |
 | [codeitlikemiley/spin-rust-sdk](https://github.com/codeitlikemiley/spin-rust-sdk) | Spin SDK with blocking Postgres imports | Vendored in `vendor/spin-sdk` (see `vendor/README.md`) |
@@ -30,15 +31,20 @@ Versions are pinned in README, "Version pins".
 
 ## buwiz-forms (desktop app)
 
-**Status:** the desktop app does not call this server yet. This is the
-contract it should use when cloud backup and sharing are wired in.
+**Status:** Settings → Account signs in with the device flow below. The
+default server is `https://api.buwiz.com` (`BUWIZ_SERVER_URL` or the saved
+setting overrides it). Filing does not wait on this server. Hostnames:
+[domains.md](domains.md).
 
 1. **Sign in** with the first-party client `buwiz-desktop`:
-   - device flow (preferred): `POST /auth/device/start`, show the code, the
-     user approves at `/login/device`, then poll `POST /auth/device/poll`;
-   - or loopback PKCE: `/oauth/authorize` then `/oauth/token`.
+   - device flow (what the app uses): `POST /auth/device/start`, open
+     `verification_uri_complete`, the user approves at `/login/device`, then
+     poll `POST /auth/device/poll`;
+   - loopback PKCE remains available on the server (`/oauth/authorize` then
+     `/oauth/token`) for a client that can bind a local port.
 
-   Keep the refresh token in the OS keychain. Details: README, "Desktop auth".
+   The app stores the refresh token in the OS keychain and in a mode-0600
+   file beside the local database. Details: README, "Desktop auth".
 2. **List and read profiles:** `GET /api/tax-profiles` and
    `GET /api/tax-profiles/{id}` with `Authorization: Bearer …`. Each profile
    carries `access` (`owner`, `holding_org` for a firm's own draft, `pass`) and

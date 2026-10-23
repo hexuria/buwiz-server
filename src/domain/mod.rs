@@ -15,6 +15,7 @@ pub mod pass;
 pub mod provenance;
 pub mod queries;
 pub mod records;
+pub mod site_split;
 pub mod tax_profile;
 pub mod tin;
 pub mod tin_identity;

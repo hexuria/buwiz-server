@@ -1,6 +1,7 @@
 # Production manifest example for the buwiz-server reference app.
-# Replace auth.example.com and the database hostnames with deployment-specific
-# values before use. Keep outbound hosts exact for production.
+# Browser origin is https://account.buwiz.com. The same app also answers
+# https://api.buwiz.com for bearer clients. Replace the database hostnames
+# before use. Keep outbound hosts exact for production. See DEPLOY.md.
 
 spin_manifest_version = 2
 
@@ -24,7 +25,7 @@ auth_password_argon2_memory_kib = { default = "19456" }
 auth_password_argon2_iterations = { default = "2" }
 auth_password_argon2_parallelism = { default = "1" }
 auth_password_pbkdf2_iterations = { default = "600000" }
-auth_jwt_issuer = { default = "https://auth.example.com" }
+auth_jwt_issuer = { default = "https://account.buwiz.com" }
 auth_jwt_audience = { default = "buwiz-server" }
 auth_jwt_kid = { default = "" }
 auth_jwt_secret = { default = "" }
@@ -53,13 +54,13 @@ auth_session_ttl_seconds = { default = "3600" }
 auth_access_token_ttl_seconds = { default = "900" }
 auth_refresh_token_ttl_seconds = { default = "2592000" }
 auth_cookie_secure = { default = "true" }
-auth_public_base_url = { default = "https://auth.example.com" }
+auth_public_base_url = { default = "https://account.buwiz.com" }
 auth_enable_oauth = { default = "false" }
 auth_oauth_development_callback_bypass = { default = "false" }
 auth_enable_passkeys = { default = "false" }
-auth_passkey_rp_id = { default = "auth.example.com" }
+auth_passkey_rp_id = { default = "account.buwiz.com" }
 auth_passkey_rp_name = { default = "Buwiz" }
-auth_passkey_origin = { default = "https://auth.example.com" }
+auth_passkey_origin = { default = "https://account.buwiz.com" }
 auth_passkey_require_user_verification = { default = "true" }
 auth_passkey_require_user_handle = { default = "false" }
 auth_passkey_strict_base64 = { default = "true" }
@@ -75,7 +76,7 @@ auth_google_jwks_url = { default = "https://www.googleapis.com/oauth2/v3/certs" 
 auth_google_jwks_json = { default = "" }
 auth_google_userinfo_url = { default = "https://openidconnect.googleapis.com/v1/userinfo" }
 auth_google_scopes = { default = "openid email profile" }
-auth_google_redirect_uri = { default = "https://auth.example.com/api/auth/oauth/google/callback" }
+auth_google_redirect_uri = { default = "https://account.buwiz.com/api/auth/oauth/google/callback" }
 auth_facebook_enabled = { default = "false" }
 auth_facebook_client_id = { default = "" }
 auth_facebook_client_secret = { default = "" }
@@ -84,7 +85,7 @@ auth_facebook_authorization_url = { default = "https://www.facebook.com/v20.0/di
 auth_facebook_token_url = { default = "https://graph.facebook.com/v20.0/oauth/access_token" }
 auth_facebook_userinfo_url = { default = "https://graph.facebook.com/v20.0/me?fields=id,email,name" }
 auth_facebook_scopes = { default = "email public_profile" }
-auth_facebook_redirect_uri = { default = "https://auth.example.com/api/auth/oauth/facebook/callback" }
+auth_facebook_redirect_uri = { default = "https://account.buwiz.com/api/auth/oauth/facebook/callback" }
 auth_apple_enabled = { default = "false" }
 auth_apple_client_id = { default = "" }
 auth_apple_generated_client_secret = { default = "" }
@@ -98,12 +99,15 @@ auth_apple_token_url = { default = "https://appleid.apple.com/auth/token" }
 auth_apple_jwks_url = { default = "https://appleid.apple.com/auth/keys" }
 auth_apple_jwks_json = { default = "" }
 auth_apple_scopes = { default = "openid email name" }
-auth_apple_redirect_uri = { default = "https://auth.example.com/api/auth/oauth/apple/callback" }
+auth_apple_redirect_uri = { default = "https://account.buwiz.com/api/auth/oauth/apple/callback" }
 redis_url = { default = "" }
 redis_channel = { default = "buwiz-tax-profiles" }
 orus_fake_verifier = { default = "false" }
 webmcp_enabled = { default = "true" }
 desktop_oauth_redirect_uris = { default = "" }
+auth_api_base_url = { default = "https://api.buwiz.com" }
+auth_marketing_base_url = { default = "https://buwiz.com" }
+auth_cors_origins = { default = "https://buwiz.com,https://www.buwiz.com" }
 
 [[trigger.http]]
 route = "/api/auth/..."
@@ -228,6 +232,9 @@ redis_channel = "{{ redis_channel }}"
 orus_fake_verifier = "{{ orus_fake_verifier }}"
 webmcp_enabled = "{{ webmcp_enabled }}"
 desktop_oauth_redirect_uris = "{{ desktop_oauth_redirect_uris }}"
+auth_api_base_url = "{{ auth_api_base_url }}"
+auth_marketing_base_url = "{{ auth_marketing_base_url }}"
+auth_cors_origins = "{{ auth_cors_origins }}"
 
 [component.authorization-api]
 source = "target/wasm32-wasip2/release/buwiz_server.wasm"
@@ -334,6 +341,9 @@ redis_channel = "{{ redis_channel }}"
 orus_fake_verifier = "{{ orus_fake_verifier }}"
 webmcp_enabled = "{{ webmcp_enabled }}"
 desktop_oauth_redirect_uris = "{{ desktop_oauth_redirect_uris }}"
+auth_api_base_url = "{{ auth_api_base_url }}"
+auth_marketing_base_url = "{{ auth_marketing_base_url }}"
+auth_cors_origins = "{{ auth_cors_origins }}"
 
 [component.auth-ui]
 source = "target/wasm32-wasip2/release/buwiz_server.wasm"
@@ -446,6 +456,9 @@ redis_channel = "{{ redis_channel }}"
 orus_fake_verifier = "{{ orus_fake_verifier }}"
 webmcp_enabled = "{{ webmcp_enabled }}"
 desktop_oauth_redirect_uris = "{{ desktop_oauth_redirect_uris }}"
+auth_api_base_url = "{{ auth_api_base_url }}"
+auth_marketing_base_url = "{{ auth_marketing_base_url }}"
+auth_cors_origins = "{{ auth_cors_origins }}"
 
 [component.auth-api.build]
 command = "bash scripts/verify_toolchain.sh && WASI_RUNTIME=spin AUTH_TRANSPORT=both LEPTOS_OUTPUT_NAME=buwiz_server cargo build --lib --target wasm32-wasip2 --release --no-default-features --features ${FULLSTACK_FEATURES:-ssr,postgres,spin-grpc,mail-http} && bash scripts/verify_wasi_artifact.sh"
