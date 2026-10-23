@@ -1,7 +1,7 @@
 //! Development verification actions: captured link, copy, skip.
 
 use crate::app::helpers::{
-    first_http_url_in_text, query_value_from_url, redirect_browser, selected_action_error,
+    first_http_url_in_text, next_url, query_value_from_url, redirect_browser, selected_action_error,
 };
 use crate::app::{
     LatestDevelopmentMail, SkipDevelopmentEmailVerification, browser_load,
@@ -155,7 +155,7 @@ pub fn DevelopmentVerificationActions(#[prop(into)] email: Signal<String>) -> im
                         on:click=move |_| {
                             skip_action.dispatch(SkipDevelopmentEmailVerification {
                                 email: email.get_untracked(),
-                                redirect_url: Some("/dashboard".to_owned()),
+                                redirect_url: Some(next_url()),
                             });
                         }
                     >

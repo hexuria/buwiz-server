@@ -286,6 +286,21 @@ mod post_login_path_tests {
         assert_eq!(post_login_path("//evil.example"), None);
         assert_eq!(post_login_path("https://evil.example"), None);
     }
+
+    #[test]
+    fn verified_registration_returns_to_the_device_page() {
+        use super::registration_browser_target;
+
+        assert_eq!(
+            registration_browser_target(true, "/device?user_code=ABCD-EFGH"),
+            Some("/device?user_code=ABCD-EFGH")
+        );
+        assert_eq!(
+            registration_browser_target(false, "/device?user_code=ABCD-EFGH"),
+            None
+        );
+        assert_eq!(registration_browser_target(true, "https://evil.example"), None);
+    }
 }
 
 #[cfg(test)]
@@ -426,6 +441,17 @@ pub(crate) fn post_login_path(value: &str) -> Option<&str> {
         }
     }
     Some(value)
+}
+
+/// A successful registration that already has a session (development
+/// auto-verify) continues to the same safe `next` a sign-in would use.
+/// An account that still needs email verification stays on the page.
+pub(crate) fn registration_browser_target(authenticated: bool, redirect_url: &str) -> Option<&str> {
+    if authenticated {
+        post_login_path(redirect_url)
+    } else {
+        None
+    }
 }
 
 pub(crate) fn next_url() -> String {
