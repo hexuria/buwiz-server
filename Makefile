@@ -154,6 +154,18 @@ endif
 REDIS_URL ?= redis://127.0.0.1:6379
 REDIS_CHANNEL ?= buwiz-tax-profiles
 ORUS_FAKE_VERIFIER ?= false
+# AI review aid for ownership claims; see src/claim_ai/config.rs. Empty = off.
+AI_GATEWAY_BASE_URL ?=
+AI_GATEWAY_API_KEY ?=
+AI_READER_SHAPE ?=
+AI_READER_BASE_URL ?=
+AI_READER_API_KEY ?=
+AI_READER_MODEL ?=
+AI_CLASSIFIER ?=
+AI_CLASSIFIER_ROUTE ?=
+AI_CLASSIFIER_BASE_URL ?=
+AI_CLASSIFIER_API_KEY ?=
+AI_CLASSIFIER_MODEL ?=
 WEBMCP_ENABLED ?= true
 DESKTOP_OAUTH_REDIRECT_URIS ?=
 
@@ -271,7 +283,18 @@ SPIN_VARIABLE_ARGS = \
 	--variable redis_channel='$(REDIS_CHANNEL)' \
 	--variable orus_fake_verifier=$(ORUS_FAKE_VERIFIER) \
 	--variable webmcp_enabled=$(WEBMCP_ENABLED) \
-	--variable desktop_oauth_redirect_uris='$(DESKTOP_OAUTH_REDIRECT_URIS)'
+	--variable desktop_oauth_redirect_uris='$(DESKTOP_OAUTH_REDIRECT_URIS)' \
+	--variable ai_gateway_base_url='$(AI_GATEWAY_BASE_URL)' \
+	--variable ai_gateway_api_key='$(AI_GATEWAY_API_KEY)' \
+	--variable ai_reader_shape='$(AI_READER_SHAPE)' \
+	--variable ai_reader_base_url='$(AI_READER_BASE_URL)' \
+	--variable ai_reader_api_key='$(AI_READER_API_KEY)' \
+	--variable ai_reader_model='$(AI_READER_MODEL)' \
+	--variable ai_classifier='$(AI_CLASSIFIER)' \
+	--variable ai_classifier_route='$(AI_CLASSIFIER_ROUTE)' \
+	--variable ai_classifier_base_url='$(AI_CLASSIFIER_BASE_URL)' \
+	--variable ai_classifier_api_key='$(AI_CLASSIFIER_API_KEY)' \
+	--variable ai_classifier_model='$(AI_CLASSIFIER_MODEL)'
 
 .PHONY: help validate-toolchain validate-mail db-up db-down migration-preflight db-migrate db-verify check grpc-check dev spin spin-backend spin-backend-prebuilt trusted-ingress install-outbox-worker outbox-worker fresh smoke oauth-credentials oauth-preflight oauth-evidence oauth-callback oauth-browser-smoke oauth-dev-browser-smoke browser-smoke passkey-browser-smoke workspace-settings-smoke
 

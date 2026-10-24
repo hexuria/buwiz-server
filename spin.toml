@@ -106,6 +106,18 @@ redis_channel = { default = "buwiz-tax-profiles" }
 orus_fake_verifier = { default = "false" }
 webmcp_enabled = { default = "true" }
 desktop_oauth_redirect_uris = { default = "" }
+# AI review aid for ownership claims (`src/claim_ai/config.rs`). Empty = off.
+ai_gateway_base_url = { default = "" }
+ai_gateway_api_key = { default = "", secret = true }
+ai_reader_shape = { default = "" }
+ai_reader_base_url = { default = "" }
+ai_reader_api_key = { default = "", secret = true }
+ai_reader_model = { default = "" }
+ai_classifier = { default = "" }
+ai_classifier_route = { default = "" }
+ai_classifier_base_url = { default = "" }
+ai_classifier_api_key = { default = "", secret = true }
+ai_classifier_model = { default = "" }
 
 [[trigger.http]]
 route = "/api/auth/..."
@@ -254,6 +266,17 @@ redis_channel = "{{ redis_channel }}"
 orus_fake_verifier = "{{ orus_fake_verifier }}"
 webmcp_enabled = "{{ webmcp_enabled }}"
 desktop_oauth_redirect_uris = "{{ desktop_oauth_redirect_uris }}"
+ai_gateway_base_url = "{{ ai_gateway_base_url }}"
+ai_gateway_api_key = "{{ ai_gateway_api_key }}"
+ai_reader_shape = "{{ ai_reader_shape }}"
+ai_reader_base_url = "{{ ai_reader_base_url }}"
+ai_reader_api_key = "{{ ai_reader_api_key }}"
+ai_reader_model = "{{ ai_reader_model }}"
+ai_classifier = "{{ ai_classifier }}"
+ai_classifier_route = "{{ ai_classifier_route }}"
+ai_classifier_base_url = "{{ ai_classifier_base_url }}"
+ai_classifier_api_key = "{{ ai_classifier_api_key }}"
+ai_classifier_model = "{{ ai_classifier_model }}"
 
 [component.auth-api.build]
 command = "bash scripts/verify_toolchain.sh && WASI_RUNTIME=spin AUTH_TRANSPORT=both cargo leptos build --release --split --frontend-only && WASI_RUNTIME=spin AUTH_TRANSPORT=both LEPTOS_OUTPUT_NAME=buwiz_server cargo build --lib --target wasm32-wasip2 --release --no-default-features --features ${FULLSTACK_FEATURES:-ssr,postgres,spin-grpc,mail-capture} && bash scripts/verify_wasi_artifact.sh"
@@ -381,6 +404,17 @@ redis_channel = "{{ redis_channel }}"
 orus_fake_verifier = "{{ orus_fake_verifier }}"
 webmcp_enabled = "{{ webmcp_enabled }}"
 desktop_oauth_redirect_uris = "{{ desktop_oauth_redirect_uris }}"
+ai_gateway_base_url = "{{ ai_gateway_base_url }}"
+ai_gateway_api_key = "{{ ai_gateway_api_key }}"
+ai_reader_shape = "{{ ai_reader_shape }}"
+ai_reader_base_url = "{{ ai_reader_base_url }}"
+ai_reader_api_key = "{{ ai_reader_api_key }}"
+ai_reader_model = "{{ ai_reader_model }}"
+ai_classifier = "{{ ai_classifier }}"
+ai_classifier_route = "{{ ai_classifier_route }}"
+ai_classifier_base_url = "{{ ai_classifier_base_url }}"
+ai_classifier_api_key = "{{ ai_classifier_api_key }}"
+ai_classifier_model = "{{ ai_classifier_model }}"
 
 [component.auth-ui]
 source = "target/wasm32-wasip2/release/buwiz_server.wasm"
@@ -504,6 +538,17 @@ redis_channel = "{{ redis_channel }}"
 orus_fake_verifier = "{{ orus_fake_verifier }}"
 webmcp_enabled = "{{ webmcp_enabled }}"
 desktop_oauth_redirect_uris = "{{ desktop_oauth_redirect_uris }}"
+ai_gateway_base_url = "{{ ai_gateway_base_url }}"
+ai_gateway_api_key = "{{ ai_gateway_api_key }}"
+ai_reader_shape = "{{ ai_reader_shape }}"
+ai_reader_base_url = "{{ ai_reader_base_url }}"
+ai_reader_api_key = "{{ ai_reader_api_key }}"
+ai_reader_model = "{{ ai_reader_model }}"
+ai_classifier = "{{ ai_classifier }}"
+ai_classifier_route = "{{ ai_classifier_route }}"
+ai_classifier_base_url = "{{ ai_classifier_base_url }}"
+ai_classifier_api_key = "{{ ai_classifier_api_key }}"
+ai_classifier_model = "{{ ai_classifier_model }}"
 
 [component.auth-static]
 source = { url = "https://github.com/fermyon/spin-fileserver/releases/download/v0.1.0/spin_static_fs.wasm", digest = "sha256:96c76d9af86420b39eb6cd7be5550e3cb5d4cc4de572ce0fd1f6a29471536cb4" }

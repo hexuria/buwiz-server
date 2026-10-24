@@ -5,12 +5,15 @@
 //! recent step-up; nobody decides their own claim.
 
 use crate::contracts::{
-    OwnershipClaimDecisionRequest, OwnershipClaimListResponse, OwnershipClaimPartRequest,
+    ClaimAssessmentView, ClaimFindingView, OwnershipClaimDecisionRequest, OwnershipClaimListResponse, OwnershipClaimPartRequest,
     OwnershipClaimStartRequest, OwnershipClaimView,
+};
+use crate::domain::claim_assessment::{
+    DocumentReading, ProfileExpectation, TinCheck, UploadSignals, assess,
 };
 use crate::domain::ownership_claim::{check_part, next_status, ClaimCaseStatus, ClaimStep};
 use crate::domain::provenance::{screen_upload, UploadKind, UploadRefusal};
-use crate::domain::{AccountHolder, ProofMethod, TaxProfileCommand, TinIdentityHash};
+use crate::domain::{AccountHolder, ProofMethod, RegistrationKey, TaxProfileCommand, TinIdentityHash};
 use crate::error::{AuthStackError, AuthStackResult};
 
 use super::{parse_registration, require_step_up_permission_for, require_verified_actor, RequestAuth};
@@ -74,13 +77,22 @@ pub async fn upload_ownership_claim_part(
     let (nonce, ciphertext) = crate::store::encrypt_claim_part(&claim.claim_id, index, &part, &key)?;
     crate::store::store_ownership_claim_part(&claim.claim_id, index, &nonce, &ciphertext).await?;
     if index + 1 == total {
-        finish_upload(&claim.claim_id, total, &key).await?;
+        let (kind, file) = finish_upload(&claim.claim_id, total, &key).await?;
+        // Best effort: a failed or unconfigured AI check leaves the claim
+        // pending for a plain human review.
+        if let Err(error) = run_ai_review(&claim, kind, &file).await {
+            tracing::warn!(claim = %claim.claim_id, error = %error, "AI review not stored");
+        }
     }
     my_claim(&user_id, &claim.claim_id).await
 }
 
 /// Joins the parts, screens the file, and stores it or refuses it.
-async fn finish_upload(claim_id: &str, total: usize, key: &[u8; 32]) -> AuthStackResult<()> {
+async fn finish_upload(
+    claim_id: &str,
+    total: usize,
+    key: &[u8; 32],
+) -> AuthStackResult<(UploadKind, Vec<u8>)> {
     let parts = crate::store::ownership_claim_parts(claim_id).await?;
     if parts.len() != total || parts.iter().enumerate().any(|(at, (index, _, _))| *index != at) {
         crate::store::discard_ownership_claim_parts(claim_id).await?;
@@ -103,7 +115,99 @@ async fn finish_upload(claim_id: &str, total: usize, key: &[u8; 32]) -> AuthStac
         }
     };
     let (nonce, ciphertext) = crate::store::encrypt_claim_file(claim_id, &file, key)?;
-    crate::store::store_ownership_claim_file(claim_id, &screened, &nonce, &ciphertext).await
+    crate::store::store_ownership_claim_file(claim_id, &screened, &nonce, &ciphertext).await?;
+    Ok((screened.kind, file))
+}
+
+/// Has the configured models look at the file and stores their
+/// recommendation for staff. Returns whether AI review is configured.
+async fn run_ai_review(
+    claim: &crate::store::StoredClaim,
+    kind: UploadKind,
+    file: &[u8],
+) -> AuthStackResult<bool> {
+    let mut view = ClaimAssessmentView::default();
+    let config = match crate::claim_ai::load_config().await {
+        Ok(config) if !config.is_enabled() => return Ok(false),
+        Ok(config) => Some(config),
+        Err(problem) => {
+            view.problems.push(format!("AI review is misconfigured: {problem}"));
+            None
+        }
+    };
+    let mut recommendation = None;
+    if let Some(config) = config {
+        let run = crate::claim_ai::read_and_classify(&config, kind, file).await;
+        view.reader_model = run.reader_model;
+        view.classifier_model = run.classifier_model;
+        view.problems = run.problems;
+        if let Some(reading) = &run.reading {
+            let loaded = crate::store::load_tax_profile_by_id(&claim.profile_id).await?;
+            let state = &loaded.state;
+            let facts = state.facts.as_ref();
+            let known = |value: Option<&String>| value.filter(|v| !v.trim().is_empty()).cloned();
+            let expected = ProfileExpectation {
+                branch_code: state.branch_code.clone().unwrap_or_else(|| "00000".to_owned()),
+                registered_name: known(facts.map(|f| &f.registered_name)),
+                rdo_code: known(facts.map(|f| &f.rdo_code)),
+                registered_address: known(facts.map(|f| &f.registered_address)),
+            };
+            let tin = match (read_registration(reading, &expected.branch_code), &state.identity_hash) {
+                (Some(key), Some(profile_hash)) => {
+                    let pepper = crate::store::tin_identity_pepper().await?;
+                    if &TinIdentityHash::compute(&pepper, &key.tin_root, &key.branch_code) == profile_hash {
+                        TinCheck::Matches
+                    } else {
+                        TinCheck::Differs
+                    }
+                }
+                _ => TinCheck::Unreadable,
+            };
+            let assessment =
+                assess(reading, tin, &expected, UploadSignals { ai_refusals: claim.ai_refusals });
+            recommendation = Some(snake_case(&assessment.recommendation));
+            view.findings = assessment
+                .findings
+                .iter()
+                .map(|finding| ClaimFindingView {
+                    check: finding.check.clone(),
+                    outcome: snake_case(&finding.outcome),
+                    detail: finding.detail.clone(),
+                })
+                .collect();
+        }
+    }
+    view.recommendation = recommendation.clone();
+    let stored = serde_json::to_value(&view)
+        .map_err(|_| AuthStackError::store("AI review could not be encoded"))?;
+    crate::store::store_ownership_claim_assessment(&claim.claim_id, recommendation.as_deref(), &stored)
+        .await?;
+    Ok(true)
+}
+
+/// The TIN and branch the model read. A branch the document doesn't show
+/// is taken to be the profile's, so only the TIN root is compared.
+fn read_registration(reading: &DocumentReading, profile_branch: &str) -> Option<RegistrationKey> {
+    let digits: String = reading.tin.as_deref()?.chars().filter(char::is_ascii_digit).collect();
+    if digits.len() < 9 {
+        return None;
+    }
+    let (root, rest) = digits.split_at(9);
+    let branch = reading
+        .branch_code
+        .as_deref()
+        .filter(|code| code.chars().any(|ch| ch.is_ascii_digit()))
+        .map(str::to_owned)
+        .or_else(|| matches!(rest.len(), 3 | 5).then(|| rest.to_owned()))
+        .unwrap_or_else(|| profile_branch.to_owned());
+    RegistrationKey::parse(root, &branch).ok()
+}
+
+fn snake_case(value: &impl serde::Serialize) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 pub async fn withdraw_ownership_claim(
@@ -157,6 +261,38 @@ pub async fn ownership_claim_file_for_review(
     let key = crate::store::claim_file_key().await?;
     let bytes = crate::store::decrypt_claim_file(&claim.claim_id, &nonce, &ciphertext, &key)?;
     Ok((kind.mime(), bytes))
+}
+
+/// Staff: runs the AI review aid again on a pending claim's file (after a
+/// configuration change, or when the upload-time run failed).
+pub async fn reassess_ownership_claim(
+    claim_id: String,
+    auth: RequestAuth,
+) -> AuthStackResult<OwnershipClaimListResponse> {
+    let session = require_step_up_permission_for(STAFF_PERMISSION, auth).await?;
+    let staff_id = session.user_id.ok_or(AuthStackError::AuthRequired)?;
+    let claim = crate::store::load_ownership_claim(&claim_id)
+        .await?
+        .ok_or_else(|| AuthStackError::not_found("claim not found"))?;
+    if claim.claimant_user_id == staff_id {
+        return Err(AuthStackError::Forbidden);
+    }
+    if claim.status != ClaimCaseStatus::Pending {
+        return Err(AuthStackError::conflict("only a pending claim can be checked"));
+    }
+    let (kind, nonce, ciphertext) = crate::store::ownership_claim_file(&claim.claim_id)
+        .await?
+        .ok_or_else(|| AuthStackError::not_found("this claim has no file"))?;
+    let key = crate::store::claim_file_key().await?;
+    let file = crate::store::decrypt_claim_file(&claim.claim_id, &nonce, &ciphertext, &key)?;
+    if !run_ai_review(&claim, kind, &file).await? {
+        return Err(AuthStackError::configuration(
+            "AI review is not configured: set AI_GATEWAY_API_KEY or a per-role key",
+        ));
+    }
+    Ok(OwnershipClaimListResponse {
+        claims: crate::store::list_pending_ownership_claims().await?,
+    })
 }
 
 /// Approve: the claimant becomes the owner (every open pass and invite
@@ -250,4 +386,38 @@ async fn my_claim(user_id: &str, claim_id: &str) -> AuthStackResult<OwnershipCla
         .into_iter()
         .find(|claim| claim.claim_id == claim_id)
         .ok_or_else(|| AuthStackError::store("claim missing after write"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read(tin: &str, branch: Option<&str>) -> DocumentReading {
+        DocumentReading {
+            is_form_2303: true,
+            document_confidence: 0.95,
+            tin: Some(tin.to_owned()),
+            branch_code: branch.map(str::to_owned),
+            ..DocumentReading::default()
+        }
+    }
+
+    #[test]
+    fn the_branch_comes_from_the_document_then_the_tin_then_the_profile() {
+        let key = read_registration(&read("123-456-789-001", None), "00000").unwrap();
+        assert_eq!((key.tin_root.as_str(), key.branch_code.as_str()), ("123456789", "00001"));
+        let key = read_registration(&read("123 456 789", Some("00002")), "00000").unwrap();
+        assert_eq!(key.branch_code.as_str(), "00002");
+        let key = read_registration(&read("123456789", None), "00007").unwrap();
+        assert_eq!(key.branch_code.as_str(), "00007");
+        assert!(read_registration(&read("12345", None), "00000").is_none());
+        assert!(read_registration(&DocumentReading::default(), "00000").is_none());
+    }
+
+    #[test]
+    fn recommendations_and_outcomes_are_stored_in_snake_case() {
+        use crate::domain::claim_assessment::{Outcome, Recommendation};
+        assert_eq!(snake_case(&Recommendation::NeedsReview), "needs_review");
+        assert_eq!(snake_case(&Outcome::Unchecked), "unchecked");
+    }
 }

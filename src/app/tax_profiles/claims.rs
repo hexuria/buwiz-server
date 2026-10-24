@@ -5,12 +5,12 @@
 //! server runtime cannot take one large body yet).
 
 use crate::app::{
-    DecideOwnershipClaim, WithdrawOwnershipClaim, browser_load, list_my_ownership_claims,
+    DecideOwnershipClaim, ReassessOwnershipClaim, WithdrawOwnershipClaim, browser_load, list_my_ownership_claims,
     list_ownership_claim_queue, start_ownership_claim, upload_ownership_claim_part,
 };
-use crate::contracts::{OwnershipClaimListResponse, OwnershipClaimView};
+use crate::contracts::{ClaimAssessmentView, OwnershipClaimListResponse, OwnershipClaimView};
 use crate::ui::classes::{
-    BANNER_ERROR, BANNER_OK, BTN_PRIMARY, BTN_SECONDARY, FIELD, FIELD_GROUP, INPUT, PANEL,
+    BANNER_ERROR, BANNER_OK, BANNER_SUCCESS, BTN_PRIMARY, BTN_SECONDARY, FIELD, FIELD_GROUP, INPUT, PANEL,
     RESULT_LINE, SECTION_LABEL,
 };
 use crate::ui::page_shell;
@@ -231,6 +231,7 @@ pub fn AdminOwnershipClaimsPage() -> impl IntoView {
 pub fn OwnershipClaimQueue() -> impl IntoView {
     let loaded = browser_load(list_ownership_claim_queue);
     let decide = ServerAction::<DecideOwnershipClaim>::new();
+    let reassess = ServerAction::<ReassessOwnershipClaim>::new();
     let queue = RwSignal::new(Vec::<OwnershipClaimView>::new());
     let load_error = RwSignal::new(None::<String>);
     Effect::new(move |_| match loaded.get() {
@@ -243,11 +244,17 @@ pub fn OwnershipClaimQueue() -> impl IntoView {
             queue.set(list.claims);
         }
     });
+    Effect::new(move |_| {
+        if let Some(Ok(list)) = reassess.value().get() {
+            queue.set(list.claims);
+        }
+    });
     let error = move || {
         decide
             .value()
             .get()
             .and_then(Result::err)
+            .or_else(|| reassess.value().get().and_then(Result::err))
             .map(|e| e.to_string())
             .or_else(|| load_error.get())
     };
@@ -281,10 +288,18 @@ pub fn OwnershipClaimQueue() -> impl IntoView {
                             },
                         );
                         let hash = c.file_sha256.clone().unwrap_or_default();
+                        let rerun_label = if c.ai_assessment.is_some() { "Run the AI check again" } else { "Run the AI check" };
                         view! {
                             <li class="mb-4 rounded-xl border border-border-subtle p-4">
                                 <p class=RESULT_LINE>{facts}</p>
                                 <p class=RESULT_LINE>{format!("SHA-256 {hash}")}</p>
+                                {c.ai_assessment.clone().map(ai_review)}
+                                <button class=BTN_SECONDARY type="button" disabled=move || reassess.pending().get()
+                                    on:click=move |_| {
+                                        reassess.dispatch(ReassessOwnershipClaim { claim_id: id.get_value() });
+                                    }>
+                                    {move || if reassess.pending().get() { "Checking…" } else { rerun_label }}
+                                </button>
                                 <a class=BTN_SECONDARY href=file_href>"Download the file"</a>
                                 <label class=FIELD>
                                     <span>"Note for the claimant (needed to reject)"</span>
@@ -319,9 +334,66 @@ pub fn OwnershipClaimQueue() -> impl IntoView {
     }
 }
 
+/// The AI's recommendation. It is advice: the buttons below decide.
+fn ai_verdict(recommendation: Option<&str>) -> (&'static str, &'static str) {
+    match recommendation {
+        Some("claimable") => ("AI: everything it checked matches", BANNER_OK),
+        Some("needs_review") => ("AI: needs a closer look", BANNER_SUCCESS),
+        Some("not_claimable") => ("AI: does not support this claim", BANNER_ERROR),
+        _ => ("AI: no recommendation", BANNER_SUCCESS),
+    }
+}
+
+fn ai_review(assessment: ClaimAssessmentView) -> impl IntoView {
+    let (label, class) = ai_verdict(assessment.recommendation.as_deref());
+    let models = [assessment.reader_model.clone(), assessment.classifier_model.clone()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" + ");
+    view! {
+        <div class=format!("{class} my-2")>
+            <p class="m-0 font-semibold">{label}</p>
+            <ul class="m-0 list-disc pl-5">
+                {assessment.findings.into_iter().map(|finding| {
+                    let mark = match finding.outcome.as_str() {
+                        "matches" => "✓",
+                        "differs" => "✗",
+                        _ => "?",
+                    };
+                    view! { <li>{format!("{mark} {}: {}", finding.check.replace('_', " "), finding.detail)}</li> }
+                }).collect_view()}
+                {assessment.problems.into_iter().map(|problem| view! { <li>{format!("! {problem}")}</li> }).collect_view()}
+            </ul>
+            <p class="m-0 text-[12px]">{format!(
+                "{}{}",
+                if models.is_empty() { String::new() } else { format!("{models} · ") },
+                assessment.assessed_at.unwrap_or_default()
+            )}</p>
+        </div>
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_ai_recommendation_has_its_own_label() {
+        let labels: Vec<&str> = [Some("claimable"), Some("needs_review"), Some("not_claimable"), None]
+            .into_iter()
+            .map(|rec| ai_verdict(rec).0)
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "AI: everything it checked matches",
+                "AI: needs a closer look",
+                "AI: does not support this claim",
+                "AI: no recommendation"
+            ]
+        );
+    }
 
     #[test]
     fn every_claim_status_has_its_own_label() {
