@@ -28,7 +28,7 @@ pub fn MarketingHomePage() -> impl IntoView {
         <Title text="Buwiz Forms | The Modern Alternative to eBIRForms" />
         <Meta
             name="description"
-            content="Meet Buwiz Forms. A faster, free, AI-ready alternative to eBIRForms. Native on Windows, macOS, and Linux, with BIR-matched form validation, live side-by-side preview, templates, Guided Mode, and a built-in MCP server for AI agents."
+            content="Buwiz Forms is a fast, free alternative to eBIRForms for Windows, macOS, and Linux: all 43 BIR forms with official rule checks, live print preview, templates, Guided Mode, and AI agent drafting."
         />
         <MarketingLayout>
             <Showcase />
@@ -62,12 +62,12 @@ fn MarketingLayout(children: Children) -> impl IntoView {
                             <img src="/assets/brand/buwiz_logo_dark.webp" alt="" width="30" height="30" class="hidden h-7 w-7 shrink-0 object-contain object-bottom dark:block" />
                             <span class="text-lg font-black tracking-tighter leading-none text-gc-text uppercase pb-px">"BUWIZ"</span>
                         </a>
-                        <nav class="hidden lg:flex items-center gap-6" aria-label="Primary Navigation">
-                            <a href="/#workspace" class=NAV_LINK>"Workspace"</a>
-                            <a href="/#validation" class=NAV_LINK>"Live Form & Validation"</a>
-                            <a href="/#mcp" class=NAV_LINK>"MCP Agent"</a>
-                            <a href="/#ecosystem" class=NAV_LINK>"Accounts & Firms"</a>
+                        <nav class="hidden md:flex items-center gap-6" aria-label="Primary Navigation">
+                            <a href="/#features" class=NAV_LINK>"Features"</a>
+                            <a href="/#account" class=NAV_LINK>"Account"</a>
+                            <a href="/#agent" class=NAV_LINK>"AI Agent"</a>
                             <a href="/#pricing" class=NAV_LINK>"Pricing"</a>
+                            <a href="/#faq" class=NAV_LINK>"FAQ"</a>
                         </nav>
                     </div>
                     <div class="flex items-center gap-2">
@@ -82,8 +82,8 @@ fn MarketingLayout(children: Children) -> impl IntoView {
             <footer class="bg-gc-bg-elevated w-full border-t border-gc-border">
                 <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 px-6 md:px-10 py-10 max-w-[1400px] mx-auto">
                     <div>
-                        <p class="text-sm font-bold tracking-tight text-gc-text mb-1">"Buwiz eBIRForms"</p>
-                        <p class="text-xs tracking-tight text-gc-text-muted">"© 2026 Buwiz by Goldcoders. Philippine tax, books, invoice, and pay."</p>
+                        <p class="text-sm font-bold tracking-tight text-gc-text mb-1">"Buwiz Forms"</p>
+                        <p class="text-xs tracking-tight text-gc-text-muted">"© 2026 Buwiz by Goldcoders. Philippine tax filing, made modern."</p>
                     </div>
                     <div class="flex flex-wrap gap-5">
                         <a href="/#pricing" class=FOOTER_LINK>"Pricing"</a>
