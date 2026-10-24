@@ -549,7 +549,7 @@ pub(crate) async fn list_agent_connections(
 ) -> AuthStackResult<Vec<AgentConnectionView>> {
     initialize_schema_async().await?;
     let sql = format!(
-        "SELECT c.connection_id::text AS connection_id, c.client_id, ac.client_name, c.permissions, \
+        "SELECT c.connection_id::text AS connection_id, c.client_id, ac.client_name, c.may_queue, c.permissions, \
                 to_char(c.created_at AT TIME ZONE 'UTC', {TIMESTAMP}) AS created_at, \
                 to_char(c.last_used_at AT TIME ZONE 'UTC', {TIMESTAMP}) AS last_used_at, \
                 COALESCE((SELECT jsonb_agg(jsonb_build_object( \
@@ -578,6 +578,7 @@ pub(crate) async fn list_agent_connections(
                 permissions: permissions.ids(),
                 preset: permissions.preset().map(|preset| preset.as_str().to_owned()),
                 profiles: profile_refs(row.get("profiles")),
+                may_queue: row_bool(row, "may_queue").unwrap_or(false),
                 created_at: required_string(row, "created_at")?,
                 last_used_at: row_string(row, "last_used_at"),
             })
@@ -621,4 +622,207 @@ pub(crate) async fn revoke_agent_connection(
         return Err(AuthStackError::not_found("agent connection not found"));
     }
     end_connection(connection_id).await
+}
+
+/// The owner turns queue on or off for one of their agent connections.
+pub(crate) async fn set_agent_may_queue(
+    user_id: &str,
+    connection_id: &str,
+    may_queue: bool,
+) -> AuthStackResult<()> {
+    initialize_schema_async().await?;
+    let rows = execute_sql(
+        "UPDATE buwiz_server.agent_connections SET may_queue = ?3 \
+         WHERE connection_id = ?1::uuid AND user_id = ?2::uuid AND revoked_at IS NULL \
+         RETURNING connection_id::text AS connection_id",
+        vec![json!(connection_id), json!(user_id), json!(may_queue)],
+    )
+    .await?;
+    if rows.is_empty() {
+        return Err(AuthStackError::not_found("agent connection not found"));
+    }
+    Ok(())
+}
+
+/// Whether this live connection may leave filings for the owner's computer.
+pub(crate) async fn agent_may_queue(connection_id: &str) -> AuthStackResult<bool> {
+    initialize_schema_async().await?;
+    let rows = execute_sql(
+        "SELECT may_queue FROM buwiz_server.agent_connections \
+         WHERE connection_id = ?1::uuid AND revoked_at IS NULL",
+        vec![json!(connection_id)],
+    )
+    .await?;
+    Ok(rows
+        .first()
+        .and_then(|row| row_bool(row, "may_queue"))
+        .unwrap_or(false))
+}
+
+pub(crate) struct NewDeviceFiling {
+    pub user_id: String,
+    pub connection_id: String,
+    pub profile_id: String,
+    pub tin: String,
+    pub form_code: String,
+    pub tax_year: i32,
+    pub period: i32,
+    pub fields: Value,
+}
+
+/// Insert or reuse a queued device filing. A retry for the same period
+/// replaces the fields and returns the existing id.
+pub(crate) async fn enqueue_device_filing(filing: &NewDeviceFiling) -> AuthStackResult<String> {
+    initialize_schema_async().await?;
+    let existing = execute_sql(
+        "SELECT id::text AS id FROM buwiz_server.device_filings \
+         WHERE agent_connection_id = ?1::uuid AND profile_id = ?2::uuid \
+           AND form_code = ?3 AND tax_year = ?4::bigint AND period = ?5::bigint AND status = 'queued' \
+         ORDER BY created_at DESC LIMIT 1",
+        vec![
+            json!(filing.connection_id),
+            json!(filing.profile_id),
+            json!(filing.form_code),
+            json!(filing.tax_year),
+            json!(filing.period),
+        ],
+    )
+    .await?;
+    if let Some(id) = existing.first().and_then(|row| row_string(row, "id")) {
+        execute_sql(
+            "UPDATE buwiz_server.device_filings \
+             SET tin = ?2, fields = ?3::jsonb, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1::uuid AND status = 'queued'",
+            vec![json!(id), json!(filing.tin), json!(filing.fields)],
+        )
+        .await?;
+        return Ok(id);
+    }
+    let rows = execute_sql(
+        "INSERT INTO buwiz_server.device_filings \
+            (user_id, agent_connection_id, profile_id, tin, form_code, tax_year, period, fields) \
+         VALUES (?1::uuid, ?2::uuid, ?3::uuid, ?4, ?5, ?6::bigint, ?7::bigint, ?8::jsonb) \
+         RETURNING id::text AS id",
+        vec![
+            json!(filing.user_id),
+            json!(filing.connection_id),
+            json!(filing.profile_id),
+            json!(filing.tin),
+            json!(filing.form_code),
+            json!(filing.tax_year),
+            json!(filing.period),
+            json!(filing.fields),
+        ],
+    )
+    .await?;
+    rows.first()
+        .and_then(|row| row_string(row, "id"))
+        .ok_or_else(|| AuthStackError::store("device filing was not stored"))
+}
+
+pub(crate) async fn list_queued_device_filings(user_id: &str) -> AuthStackResult<Vec<Value>> {
+    initialize_schema_async().await?;
+    let rows = execute_sql(
+        "SELECT id::text AS id, tin, form_code, tax_year, period, fields \
+         FROM buwiz_server.device_filings \
+         WHERE user_id = ?1::uuid AND status = 'queued' \
+         ORDER BY created_at ASC LIMIT 20",
+        vec![json!(user_id)],
+    )
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            json!({
+                "id": row_string(&row, "id").unwrap_or_default(),
+                "tin": row_string(&row, "tin").unwrap_or_default(),
+                "form_code": row_string(&row, "form_code").unwrap_or_default(),
+                "tax_year": row_number(&row, "tax_year"),
+                "period": row_number(&row, "period"),
+                "fields": json_cell(&row, "fields"),
+            })
+        })
+        .collect())
+}
+
+pub(crate) async fn device_filing_for_agent(
+    connection_id: &str,
+    filing_id: &str,
+) -> AuthStackResult<Option<Value>> {
+    initialize_schema_async().await?;
+    let rows = execute_sql(
+        "SELECT id::text AS id, form_code, tax_year, period, status, detail, report \
+         FROM buwiz_server.device_filings \
+         WHERE id = ?1::uuid AND agent_connection_id = ?2::uuid",
+        vec![json!(filing_id), json!(connection_id)],
+    )
+    .await?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    Ok(Some(json!({
+        "id": row_string(row, "id").unwrap_or_default(),
+        "form_code": row_string(row, "form_code").unwrap_or_default(),
+        "tax_year": row_number(row, "tax_year"),
+        "period": row_number(row, "period"),
+        "status": row_string(row, "status").unwrap_or_default(),
+        "message": row_string(row, "detail").unwrap_or_default(),
+        "field_errors": json_cell(row, "report").get("field_errors").cloned().unwrap_or(json!([])),
+    })))
+}
+
+pub(crate) async fn report_device_filing(
+    user_id: &str,
+    filing_id: &str,
+    status: &str,
+    detail: &str,
+    report: &Value,
+) -> AuthStackResult<()> {
+    initialize_schema_async().await?;
+    let rows = execute_sql(
+        "UPDATE buwiz_server.device_filings \
+         SET status = ?3, detail = ?4, report = ?5::jsonb, updated_at = CURRENT_TIMESTAMP \
+         WHERE id = ?1::uuid AND user_id = ?2::uuid AND status = 'queued' \
+         RETURNING id::text AS id",
+        vec![
+            json!(filing_id),
+            json!(user_id),
+            json!(status),
+            json!(detail),
+            json!(report),
+        ],
+    )
+    .await?;
+    if rows.is_empty() {
+        return Err(AuthStackError::not_found("queued device filing not found"));
+    }
+    Ok(())
+}
+
+pub(crate) async fn profile_tin_last4(profile_id: &str) -> AuthStackResult<Option<String>> {
+    initialize_schema_async().await?;
+    let rows = execute_sql(
+        "SELECT tin_last4 FROM buwiz_server.tax_profiles WHERE profile_id = ?1::uuid",
+        vec![json!(profile_id)],
+    )
+    .await?;
+    Ok(rows.first().and_then(|row| row_string(row, "tin_last4")))
+}
+
+fn row_number(row: &Value, key: &str) -> i64 {
+    row_i64(row, key)
+        .or_else(|| {
+            row.get(key)
+                .and_then(Value::as_str)
+                .and_then(|text| text.parse().ok())
+        })
+        .unwrap_or(0)
+}
+
+fn json_cell(row: &Value, key: &str) -> Value {
+    match row.get(key) {
+        Some(Value::String(raw)) => serde_json::from_str(raw).unwrap_or(Value::Null),
+        Some(value) => value.clone(),
+        None => Value::Null,
+    }
 }

@@ -94,6 +94,10 @@ async fn apply_or_verify_app_schema(
             "0013_claim_assessments",
             include_str!("../../migrations/postgres/0013_claim_assessments.sql"),
         ),
+        (
+            "0014_device_filings",
+            include_str!("../../migrations/postgres/0014_device_filings.sql"),
+        ),
     ];
     let (mut client, connection) =
         tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;

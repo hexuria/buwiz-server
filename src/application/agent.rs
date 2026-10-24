@@ -2,7 +2,7 @@
 //! the MCP endpoint runs on every call.
 
 use crate::contracts::AgentConnectionListResponse;
-use crate::domain::{agent_effective_permissions, is_agent_token, PassPermission, PassPermissions};
+use crate::domain::{PassPermission, PassPermissions, agent_effective_permissions, is_agent_token};
 use crate::error::{AuthStackError, AuthStackResult};
 use crate::store::AgentActor;
 
@@ -16,6 +16,113 @@ pub async fn list_agent_connections(
     Ok(AgentConnectionListResponse {
         connections: crate::store::list_agent_connections(&user_id).await?,
     })
+}
+
+/// The owner allows or stops one agent leaving filings for their computer.
+/// Turning this on does not send anything to BIR.
+pub async fn set_agent_may_queue(
+    connection_id: String,
+    may_queue: bool,
+    auth: RequestAuth,
+) -> AuthStackResult<AgentConnectionListResponse> {
+    let user_id = caller(auth).await?;
+    crate::store::set_agent_may_queue(&user_id, &connection_id, may_queue).await?;
+    Ok(AgentConnectionListResponse {
+        connections: crate::store::list_agent_connections(&user_id).await?,
+    })
+}
+
+/// Filings an agent left for this account's computer. The caller's app
+/// sends them. This server does not.
+pub async fn list_device_filings(auth: RequestAuth) -> AuthStackResult<serde_json::Value> {
+    let user_id = caller(auth).await?;
+    let filings = crate::store::list_queued_device_filings(&user_id).await?;
+    Ok(serde_json::json!({ "filings": filings }))
+}
+
+/// The owner's app reports what happened to a filing it picked up.
+pub async fn report_device_filing(
+    filing_id: String,
+    report: crate::contracts::DeviceFilingReportRequest,
+    auth: RequestAuth,
+) -> AuthStackResult<serde_json::Value> {
+    let user_id = caller(auth).await?;
+    let status = match report.status.trim() {
+        "picked" | "invalid" | "failed" => report.status.trim(),
+        _ => {
+            return Err(AuthStackError::validation(
+                "status must be picked, invalid, or failed",
+            ));
+        }
+    };
+    let detail: String = report.error_summary.chars().take(500).collect();
+    let body = serde_json::json!({
+        "error_summary": detail,
+        "field_errors": report.field_errors,
+    });
+    crate::store::report_device_filing(&user_id, &filing_id, status, &detail, &body).await?;
+    Ok(serde_json::json!({ "id": filing_id, "status": status }))
+}
+
+const QUEUE_REFUSED: &str = "The account owner has not allowed this agent to queue filings. \
+They turn that on under Connected agents. Nothing was queued, and this server does not contact BIR.";
+
+/// Leave a filing for the owner's computer. Refuses unless the owner turned
+/// queue on for this connection. Does not contact BIR.
+pub(crate) async fn agent_queue_on_device(
+    agent: &AgentActor,
+    profile_id: &str,
+    tin: &str,
+    form_code: &str,
+    tax_year: i32,
+    period: i32,
+    fields: &serde_json::Value,
+) -> AuthStackResult<serde_json::Value> {
+    if !agent.profile_ids.iter().any(|id| id == profile_id) {
+        return Err(AuthStackError::Forbidden);
+    }
+    if !crate::store::agent_may_queue(&agent.connection_id).await? {
+        return Err(AuthStackError::validation(QUEUE_REFUSED));
+    }
+    let last4 = crate::store::profile_tin_last4(profile_id)
+        .await?
+        .unwrap_or_default();
+    let digits: String = tin.chars().filter(|ch| ch.is_ascii_digit()).collect();
+    if digits.len() < 9
+        || digits.len() > 14
+        || !digits.ends_with(last4.as_str())
+        || last4.len() != 4
+    {
+        return Err(AuthStackError::validation(
+            "tin does not match this profile",
+        ));
+    }
+    let id = crate::store::enqueue_device_filing(&crate::store::NewDeviceFiling {
+        user_id: agent.user_id.clone(),
+        connection_id: agent.connection_id.clone(),
+        profile_id: profile_id.to_owned(),
+        tin: digits,
+        form_code: form_code.to_owned(),
+        tax_year,
+        period,
+        fields: fields.clone(),
+    })
+    .await?;
+    Ok(serde_json::json!({
+        "id": id,
+        "status": "queued",
+        "message": "Queued for the account owner's computer. This server does not contact BIR. \
+    Read device_filing_status for the result. The owner's app runs the form's Validate before upload.",
+    }))
+}
+
+pub(crate) async fn agent_device_filing_status(
+    agent: &AgentActor,
+    filing_id: &str,
+) -> AuthStackResult<serde_json::Value> {
+    crate::store::device_filing_for_agent(&agent.connection_id, filing_id)
+        .await?
+        .ok_or_else(|| AuthStackError::not_found("device filing not found"))
 }
 
 /// Ends one of the caller's agent connections. Its tokens stop working on

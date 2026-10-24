@@ -27,7 +27,7 @@ use crate::app::{
     StartPasskeyRegistration,
     StartPasswordReset, StartTotpEnrollment, TestDashboardHttpSource,
     PatchTaxProfile,
-    ListPasses, OfferPass, AskForPass, PassStep, ChangePass, ListAgentConnections, RevokeAgentConnection, InviteOwner, WithdrawOwnerInvite, PreviewOwnerInvite, AcceptOwnerInvite, ListFirmPublishers, ChangeFirmPublisher, ListMyOwnershipClaims, StartOwnershipClaim, UploadOwnershipClaimPart, WithdrawOwnershipClaim, ListOwnershipClaimQueue, DecideOwnershipClaim,
+    ListPasses, OfferPass, AskForPass, PassStep, ChangePass, ListAgentConnections, RevokeAgentConnection, SetAgentMayQueue, InviteOwner, WithdrawOwnerInvite, PreviewOwnerInvite, AcceptOwnerInvite, ListFirmPublishers, ChangeFirmPublisher, ListMyOwnershipClaims, StartOwnershipClaim, UploadOwnershipClaimPart, WithdrawOwnershipClaim, ListOwnershipClaimQueue, DecideOwnershipClaim,
     TransferWorkspaceOwnership,
     UpdateAccountProfile, UpdateDashboardNote, UpdateWorkspaceName, UpsertCurrentOrganizationRole,
     UpsertDashboardQuery, UpsertDashboardResource, UpsertDashboardSource, UpsertWorkspaceRole,
@@ -344,6 +344,7 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
             .with_server_fn::<ChangePass>()
             .with_server_fn::<ListAgentConnections>()
             .with_server_fn::<RevokeAgentConnection>()
+            .with_server_fn::<SetAgentMayQueue>()
             .with_server_fn::<InviteOwner>()
             .with_server_fn::<WithdrawOwnerInvite>()
             .with_server_fn::<PreviewOwnerInvite>()

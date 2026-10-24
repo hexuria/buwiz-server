@@ -4,8 +4,9 @@
 //! Every request carries an agent access token from the OAuth flow in
 //! `desktop_oauth::agent`. A missing or dead token gets 401 with a
 //! `WWW-Authenticate` header pointing at the RFC 9728 metadata, which is how
-//! MCP clients find out where to sign in. Tools are read-only and check the
-//! agent's live permissions on every call.
+//! MCP clients find out where to sign in. Read tools check the agent's live
+//! permissions on every call. `queue_on_device` only leaves a filing for the
+//! owner's computer; this server never contacts BIR.
 
 mod protocol;
 
@@ -19,8 +20,8 @@ use crate::error::{AuthStackError, AuthStackResult};
 use crate::store::AgentActor;
 
 use protocol::{
-    Routed, TOOL_GET_DRAFT, TOOL_GET_PROFILE, TOOL_LIST_DRAFTS, TOOL_LIST_FILINGS,
-    TOOL_LIST_PROFILES, TOOL_LIST_YEARS,
+    Routed, TOOL_DEVICE_FILING_STATUS, TOOL_GET_DRAFT, TOOL_GET_PROFILE, TOOL_LIST_DRAFTS,
+    TOOL_LIST_FILINGS, TOOL_LIST_PROFILES, TOOL_LIST_YEARS, TOOL_QUEUE_ON_DEVICE,
 };
 
 type McpBody = UnsyncBoxBody<Bytes, std::io::Error>;
@@ -123,6 +124,13 @@ async fn run_tool(agent: &AgentActor, name: &str, arguments: &Value) -> AuthStac
     if name == TOOL_LIST_PROFILES {
         return list_profiles(agent).await;
     }
+    if name == TOOL_QUEUE_ON_DEVICE {
+        return queue_on_device(agent, arguments).await;
+    }
+    if name == TOOL_DEVICE_FILING_STATUS {
+        let id = text_arg(arguments, "id")?;
+        return app::agent_device_filing_status(agent, id).await;
+    }
     let profile_id = text_arg(arguments, "profile_id")?;
     match name {
         TOOL_GET_PROFILE => get_profile(agent, profile_id).await,
@@ -158,6 +166,42 @@ fn text_arg<'a>(arguments: &'a Value, name: &str) -> AuthStackResult<&'a str> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| AuthStackError::validation(format!("{name} is required")))
+}
+
+/// `queue_on_device`: store a filing for the owner's computer.
+async fn queue_on_device(agent: &AgentActor, arguments: &Value) -> AuthStackResult<Value> {
+    let profile_id = text_arg(arguments, "profile_id")?;
+    let form_code = text_arg(arguments, "form_code")?;
+    if form_code.len() > 16 || !form_code.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+        return Err(AuthStackError::validation(
+            "form_code must be a short form code such as 2551Q",
+        ));
+    }
+    let tax_year = arguments
+        .get("tax_year")
+        .and_then(Value::as_i64)
+        .and_then(|year| i32::try_from(year).ok())
+        .filter(|year| (1990..=2100).contains(year))
+        .ok_or_else(|| AuthStackError::validation("tax_year must be a whole number such as 2026"))?;
+    let period = arguments
+        .get("period")
+        .and_then(Value::as_i64)
+        .and_then(|period| i32::try_from(period).ok())
+        .filter(|period| (1..=12).contains(period))
+        .ok_or_else(|| AuthStackError::validation("period must be a quarter 1-4 or a month 1-12"))?;
+    let tin = text_arg(arguments, "tin")?;
+    let fields = arguments
+        .get("fields")
+        .filter(|value| value.is_object())
+        .cloned()
+        .ok_or_else(|| AuthStackError::validation("fields must be an object of box keys"))?;
+    if fields.as_object().is_some_and(|map| map.len() > 400) {
+        return Err(AuthStackError::validation("fields has too many boxes"));
+    }
+    crate::application::agent_queue_on_device(
+        agent, profile_id, tin, form_code, tax_year, period, &fields,
+    )
+    .await
 }
 
 /// The optional `tax_year` argument: absent, null, or a whole number.
