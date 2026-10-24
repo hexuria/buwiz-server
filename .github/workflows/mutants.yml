@@ -1,11 +1,20 @@
 name: Mutants
 
-# Slow, so it does not run on every push. It runs when commits land on main
-# (mutating only the lines that push changed) or on demand for any branch
-# (Actions -> Mutants -> Run workflow), mutating that branch's diff from main.
+# Runs on every pull request that touches Rust source, mutating the PR's diff
+# from its base, so a missed mutant is fixed before merge rather than turning
+# main red after it. It also runs when commits land on main (mutating only the
+# lines that push changed) and on demand for any branch (Actions -> Mutants ->
+# Run workflow), mutating that branch's diff from main.
 # A missed mutant fails the job: add a test, or record a proven-equivalent
 # mutant in .cargo/mutants.toml `exclude_re` with a comment saying why.
 on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/mutants.toml"
+      - ".github/workflows/mutants.yml"
   push:
     branches: [main]
   workflow_dispatch:
@@ -16,10 +25,10 @@ on:
         default: ""
 
 # Each push to main mutates only its own diff, so a later push must not
-# cancel an earlier one; a newer manual run on a branch does replace the
-# older one.
+# cancel an earlier one; a newer push to a PR, or a newer manual run on a
+# branch, does replace the older one.
 concurrency:
-  group: mutants-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || 'dispatch' }}
+  group: mutants-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || github.event_name }}
   cancel-in-progress: true
 
 # Every mutant rebuilds only this crate, so incremental builds and no debug
@@ -73,9 +82,12 @@ jobs:
         env:
           BEFORE: ${{ github.event.before }}
           BASE: ${{ inputs.base }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           if [ -n "$BASE" ]; then
             git diff "$BASE" HEAD -- src > pr.diff
+          elif [ -n "$PR_BASE" ]; then
+            git diff "$PR_BASE"...HEAD -- src > pr.diff
           elif [ "$GITHUB_EVENT_NAME" = push ] && [ -n "$BEFORE" ] && git cat-file -e "$BEFORE" 2>/dev/null; then
             git diff "$BEFORE" HEAD -- src > pr.diff
           else

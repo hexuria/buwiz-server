@@ -428,6 +428,73 @@ mod tests {
         assert_eq!(draft_summary(&summary)["reviewed"], false);
     }
 
+    /// An agent connected to nothing: every tool stops before the database.
+    fn unconnected() -> AgentActor {
+        AgentActor {
+            connection_id: "c1".into(),
+            user_id: "u1".into(),
+            client_id: "client".into(),
+            client_name: "Test agent".into(),
+            permissions: PassPermissions::empty(),
+            profile_ids: Vec::new(),
+            resource: String::new(),
+            expires_at: 0,
+        }
+    }
+
+    fn failure(result: AuthStackResult<Value>) -> String {
+        result.expect_err("tool should fail").to_string()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn each_tool_name_reaches_its_own_handler() {
+        let agent = unconnected();
+        let queue = failure(run_tool(&agent, TOOL_QUEUE_ON_DEVICE, &json!({"profile_id": "p"})).await);
+        assert!(queue.contains("form_code is required"), "{queue}");
+        let status = failure(run_tool(&agent, TOOL_DEVICE_FILING_STATUS, &json!({})).await);
+        assert!(status.contains("id is required") && !status.contains("profile_id"), "{status}");
+        let profile = failure(run_tool(&agent, TOOL_GET_PROFILE, &json!({})).await);
+        assert!(profile.contains("profile_id is required"), "{profile}");
+        let unknown = failure(run_tool(&agent, "no_such_tool", &json!({"profile_id": "p"})).await);
+        assert!(unknown.contains("unknown tool"), "{unknown}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn queue_arguments_are_checked_before_anything_is_stored() {
+        let agent = unconnected();
+        let base = json!({
+            "profile_id": "p", "form_code": "1601C", "tax_year": 2026, "period": 10,
+            "tin": "123456789", "fields": {},
+        });
+        let with = |key: &str, value: Value| {
+            let mut args = base.clone();
+            args[key] = value;
+            args
+        };
+        let cases = [
+            (with("form_code", json!("A".repeat(17))), "form_code must be"),
+            (with("form_code", json!("2551-Q")), "form_code must be"),
+            (with("tax_year", json!(1989)), "tax_year must be"),
+            (with("period", json!(13)), "period must be"),
+            (with("fields", json!([])), "fields must be an object"),
+        ];
+        for (args, expected) in cases {
+            let message = failure(queue_on_device(&agent, &args).await);
+            assert!(message.contains(expected), "{args}: {message}");
+        }
+        let boxes = |n: usize| Value::Object((0..n).map(|i| (format!("b{i}"), json!(1))).collect());
+        let message = failure(queue_on_device(&agent, &with("fields", boxes(401))).await);
+        assert!(message.contains("too many boxes"), "{message}");
+
+        // Valid arguments get as far as the profile check.
+        for args in [base.clone(), with("form_code", json!("A".repeat(16))), with("fields", boxes(400))] {
+            assert!(
+                matches!(queue_on_device(&agent, &args).await, Err(AuthStackError::Forbidden)),
+                "{args}"
+            );
+        }
+    }
+
     #[test]
     fn only_the_mcp_path_is_claimed() {
         assert!(is_mcp_request("/mcp"));

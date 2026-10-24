@@ -98,3 +98,41 @@ fn line(c: &AgentConnectionView) -> String {
         c.created_at.get(..10).unwrap_or(&c.created_at),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contracts::AgentProfileRef;
+
+    #[test]
+    fn a_connection_reads_as_one_line() {
+        let mut c = AgentConnectionView {
+            connection_id: "c1".into(),
+            client_id: "agent_x".into(),
+            client_name: "Claude Code".into(),
+            permissions: vec!["profile.view".into(), "drafts.view".into()],
+            preset: Some("safe".into()),
+            profiles: vec![AgentProfileRef {
+                profile_id: "p1".into(),
+                profile_name: "Juan Dela Cruz".into(),
+                tin_last4: "6788".into(),
+            }],
+            may_queue: true,
+            created_at: "2026-10-01T08:00:00.000Z".into(),
+            last_used_at: Some("2026-10-20T09:30:00.000Z".into()),
+        };
+        assert_eq!(
+            line(&c),
+            "Claude Code (names itself) · Safe · queue on · Juan Dela Cruz ····6788 \
+             · allowed 2026-10-01 · last used 2026-10-20"
+        );
+        c.preset = None;
+        c.may_queue = false;
+        c.last_used_at = None;
+        assert_eq!(
+            line(&c),
+            "Claude Code (names itself) · custom (2 permissions) · queue off · Juan Dela Cruz ····6788 \
+             · allowed 2026-10-01 · not used yet"
+        );
+    }
+}
