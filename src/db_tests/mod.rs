@@ -17,6 +17,7 @@
 
 mod agent;
 mod claims;
+mod desktop_oauth;
 mod invites;
 mod records;
 

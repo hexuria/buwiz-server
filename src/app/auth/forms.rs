@@ -85,8 +85,15 @@ pub fn EmailPasswordAuthForm(register_default: bool) -> impl IntoView {
         }
     });
     Effect::new(move |_| {
-        if register_value.get().is_some_and(|result| result.is_ok()) {
-            registration_complete.set(true);
+        if let Some(Ok(response)) = register_value.get() {
+            if let Some(target) = crate::app::helpers::registration_browser_target(
+                response.authenticated,
+                &response.redirect_url,
+            ) {
+                redirect_browser(target);
+            } else {
+                registration_complete.set(true);
+            }
         }
     });
     Effect::new(move |_| {

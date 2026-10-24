@@ -30,5 +30,5 @@ ALTER TABLE buwiz_server.ownership_claims
     );
 
 INSERT INTO buwiz_server.schema_migrations (version)
-VALUES ('0012_claim_assessments')
+VALUES ('0013_claim_assessments')
 ON CONFLICT (version) DO NOTHING;

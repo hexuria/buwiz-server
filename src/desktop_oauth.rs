@@ -32,17 +32,21 @@ pub fn is_desktop_oauth_request(path: &str) -> bool {
             | "/oauth/register"
             | "/oauth/authorize"
             | "/oauth/token"
+            | "/oauth/introspect"
             | "/oauth/device/code"
             | "/auth/device/start"
             | "/auth/device/poll"
             | "/login/device"
+            | "/device"
     )
 }
 
 pub async fn serve(req: RestRequest) -> AuthStackResult<RestResponse> {
     let method = req.method().clone();
-    let uri = req.uri().clone();
-    let path = uri.path().to_string();
+    // Consume the incoming stream before any Postgres wait. `handle` calls
+    // this before trusted-context and session lookups for the same reason.
+    let prepared = prepare_request(req).await?;
+    let path = prepared.uri.path().to_string();
     match (method, path.as_str()) {
         (Method::GET, "/.well-known/oauth-authorization-server") => {
             json_response(StatusCode::OK, &authorization_server_metadata().await)
@@ -51,31 +55,73 @@ pub async fn serve(req: RestRequest) -> AuthStackResult<RestResponse> {
             Method::GET,
             "/.well-known/oauth-protected-resource" | "/.well-known/oauth-protected-resource/mcp",
         ) => agent::protected_resource_metadata().await,
-        (Method::POST, "/oauth/register") => agent::register(req).await,
+        (Method::POST, "/oauth/register") => agent::register(&prepared.body).await,
         (Method::GET, "/oauth/authorize") => {
-            let client_id = query_map(uri.query().unwrap_or_default())
+            let client_id = query_map(prepared.uri.query().unwrap_or_default())
                 .remove("client_id")
                 .unwrap_or_default();
             if agent::is_agent_client(&client_id) {
-                agent::authorize_get(&req, &uri).await
+                agent::authorize_get(&prepared.headers, &prepared.uri).await
             } else {
-                authorize_get(&req, &uri).await
+                authorize_get(&prepared.headers, &prepared.uri).await
             }
         }
-        (Method::POST, "/oauth/authorize") => authorize_post(req).await,
-        (Method::POST, "/oauth/token") => token(req).await,
+        (Method::POST, "/oauth/authorize") => authorize_post(&prepared).await,
+        (Method::POST, "/oauth/token") => token(&prepared).await,
+        (Method::POST, "/oauth/introspect") => agent::introspect(&prepared.body).await,
         (Method::POST, "/oauth/device/code") | (Method::POST, "/auth/device/start") => {
-            device_code(req).await
+            device_code(&prepared).await
         }
-        (Method::POST, "/auth/device/poll") => device_poll(req).await,
-        (Method::GET, "/login/device") => device_get(&req, &uri).await,
-        (Method::POST, "/login/device") => device_post(req).await,
+        (Method::POST, "/auth/device/poll") => device_poll(&prepared).await,
+        (Method::GET, "/login/device" | "/device") => {
+            device_get(&prepared.headers, &prepared.uri).await
+        }
+        (Method::POST, "/login/device" | "/device") => device_post(&prepared).await,
         (Method::OPTIONS, _) => empty(StatusCode::NO_CONTENT),
         _ => json_response(
             StatusCode::METHOD_NOT_ALLOWED,
             &serde_json::json!({"error": "invalid_request", "error_description": "method is not allowed"}),
         ),
     }
+}
+
+/// Headers plus a body that has already been taken off the WASI stream.
+struct PreparedRequest {
+    uri: http::Uri,
+    headers: http::HeaderMap,
+    body: Bytes,
+}
+
+/// First await for a desktop OAuth request. Header payloads drop the unused
+/// stream without reading it; a real body is read here, before session or
+/// database awaits.
+async fn prepare_request(req: RestRequest) -> AuthStackResult<PreparedRequest> {
+    let uri = req.uri().clone();
+    let (parts, incoming) = req.into_parts();
+    let body = if let Some(body) = crate::server_fn_http::payload_from_headers(&parts.headers)
+        .map_err(|status| match status {
+            http::StatusCode::PAYLOAD_TOO_LARGE => {
+                AuthStackError::validation("request body is too large")
+            }
+            _ => AuthStackError::validation("invalid request body header"),
+        })? {
+        crate::server_fn_http::discard_incoming_body(incoming);
+        body
+    } else {
+        crate::server_fn_http::collect_wasi_request_body(incoming, 64 * 1024)
+            .await
+            .map_err(|status| match status {
+                http::StatusCode::PAYLOAD_TOO_LARGE => {
+                    AuthStackError::validation("request body is too large")
+                }
+                _ => AuthStackError::transport("failed to read request body"),
+            })?
+    };
+    Ok(PreparedRequest {
+        uri,
+        headers: parts.headers,
+        body,
+    })
 }
 
 async fn authorization_server_metadata() -> serde_json::Value {
@@ -85,6 +131,8 @@ async fn authorization_server_metadata() -> serde_json::Value {
         "authorization_endpoint": format!("{issuer}/oauth/authorize"),
         "token_endpoint": format!("{issuer}/oauth/token"),
         "registration_endpoint": format!("{issuer}/oauth/register"),
+        "introspection_endpoint": format!("{issuer}/oauth/introspect"),
+        "introspection_endpoint_auth_methods_supported": ["none"],
         "device_authorization_endpoint": format!("{issuer}/oauth/device/code"),
         "buwiz_device_start_endpoint": format!("{issuer}/auth/device/start"),
         "buwiz_device_poll_endpoint": format!("{issuer}/auth/device/poll"),
@@ -103,7 +151,10 @@ async fn authorization_server_metadata() -> serde_json::Value {
     })
 }
 
-async fn authorize_get(req: &RestRequest, uri: &http::Uri) -> AuthStackResult<RestResponse> {
+async fn authorize_get(
+    headers: &http::HeaderMap,
+    uri: &http::Uri,
+) -> AuthStackResult<RestResponse> {
     let params = query_map(uri.query().unwrap_or_default());
     let client_id = params.get("client_id").cloned().unwrap_or_default();
     let redirect_uri = params.get("redirect_uri").cloned().unwrap_or_default();
@@ -128,7 +179,7 @@ async fn authorize_get(req: &RestRequest, uri: &http::Uri) -> AuthStackResult<Re
             &oauth_page("Cannot continue", &html_escape(&message), ""),
         );
     }
-    let Some(session) = session_from_request(req).await? else {
+    let Some(session) = session_from_headers(headers).await? else {
         let next = format!(
             "/oauth/authorize?{}",
             uri.query().unwrap_or_default()
@@ -170,18 +221,17 @@ async fn authorize_get(req: &RestRequest, uri: &http::Uri) -> AuthStackResult<Re
     )
 }
 
-async fn authorize_post(req: RestRequest) -> AuthStackResult<RestResponse> {
+async fn authorize_post(req: &PreparedRequest) -> AuthStackResult<RestResponse> {
     // Agents post their Allow screen here too; both forms carry client_id.
-    let headers = req.headers().clone();
-    let body = read_body(req).await?;
-    let client_id = form_urlencoded::parse(&body)
+    // The body was taken in `prepare_request`, before this session lookup.
+    let client_id = form_urlencoded::parse(&req.body)
         .find(|(key, _)| key == "client_id")
         .map(|(_, value)| value.into_owned())
         .unwrap_or_default();
     if agent::is_agent_client(&client_id) {
-        return agent::authorize_post(&headers, body).await;
+        return agent::authorize_post(&req.headers, req.body.to_vec()).await;
     }
-    desktop_authorize_post(&headers, &body).await
+    desktop_authorize_post(&req.headers, &req.body).await
 }
 
 async fn desktop_authorize_post(
@@ -237,8 +287,8 @@ async fn desktop_authorize_post(
     redirect(&location)
 }
 
-async fn token(req: RestRequest) -> AuthStackResult<RestResponse> {
-    let form = parse_form_or_json(req).await?;
+async fn token(req: &PreparedRequest) -> AuthStackResult<RestResponse> {
+    let form = parse_form_or_json(req)?;
     let grant = form.get("grant_type").cloned().unwrap_or_default();
     match grant.as_str() {
         "authorization_code" => authorization_code_grant(&form).await,
@@ -382,8 +432,8 @@ async fn device_grant(
     token_from_session(&session_id, &user_id, DesktopGrant::DeviceCode).await
 }
 
-async fn device_code(req: RestRequest) -> AuthStackResult<RestResponse> {
-    let form = parse_form_or_json(req).await?;
+async fn device_code(req: &PreparedRequest) -> AuthStackResult<RestResponse> {
+    let form = parse_form_or_json(req)?;
     let client_id = form
         .get("client_id")
         .cloned()
@@ -425,8 +475,8 @@ async fn device_code(req: RestRequest) -> AuthStackResult<RestResponse> {
     )
 }
 
-async fn device_poll(req: RestRequest) -> AuthStackResult<RestResponse> {
-    let form = parse_form_or_json(req).await?;
+async fn device_poll(req: &PreparedRequest) -> AuthStackResult<RestResponse> {
+    let form = parse_form_or_json(req)?;
     let mut form = form;
     if !form.contains_key("grant_type") {
         form.insert(
@@ -440,13 +490,44 @@ async fn device_poll(req: RestRequest) -> AuthStackResult<RestResponse> {
     device_grant(&form).await
 }
 
-async fn device_get(req: &RestRequest, uri: &http::Uri) -> AuthStackResult<RestResponse> {
-    let Some(session) = session_from_request(req).await? else {
-        let next = format!("/login/device?{}", uri.query().unwrap_or_default());
-        return redirect(&format!(
-            "/login?next={}",
-            urlencoding_encode(&next)
-        ));
+/// Sign-in and signup URLs that return to this device approval page.
+pub(crate) fn device_account_links(next_path: &str) -> (String, String) {
+    let next = urlencoding_encode(next_path);
+    (
+        format!("/login?next={next}"),
+        format!("/signup?next={next}"),
+    )
+}
+
+async fn device_get(
+    headers: &http::HeaderMap,
+    uri: &http::Uri,
+) -> AuthStackResult<RestResponse> {
+    let Some(session) = session_from_headers(headers).await? else {
+        // `/login/device` is rejected by the sign-in page's `next` allowlist
+        // (`next` must not send the browser back to `/login`). `/device` is
+        // the same approval screen and is a safe post-login path. Signup uses
+        // that same `next`, so a new account lands back here signed in.
+        let query = uri.query().unwrap_or_default();
+        let next = if query.is_empty() {
+            "/device".to_owned()
+        } else {
+            format!("/device?{query}")
+        };
+        let (sign_in, create) = device_account_links(&next);
+        let body = format!(
+            r#"<p>Sign in or create a Buwiz account to authorize this computer.</p>
+<p><a href="{sign_in}">Sign in</a></p>
+<p><a href="{create}">Create account</a></p>"#
+        );
+        return html(
+            StatusCode::OK,
+            &oauth_page(
+                "Authorize a device",
+                "Create an account or sign in, then come back to this page to approve the Buwiz desktop app.",
+                &body,
+            ),
+        );
     };
     let params = query_map(uri.query().unwrap_or_default());
     let user_code = params.get("user_code").cloned().unwrap_or_default();
@@ -476,8 +557,12 @@ async fn device_get(req: &RestRequest, uri: &http::Uri) -> AuthStackResult<RestR
     )
 }
 
-async fn device_post(req: RestRequest) -> AuthStackResult<RestResponse> {
-    let session = session_from_request(&req)
+async fn device_post(req: &PreparedRequest) -> AuthStackResult<RestResponse> {
+    // Parse the approval form before the session lookup. The stream is
+    // already consumed; this order keeps a native POST from waiting on
+    // Postgres while the body is still outstanding.
+    let form = parse_form(req)?;
+    let session = session_from_headers(&req.headers)
         .await?
         .ok_or(AuthStackError::AuthRequired)?;
     let session_id = session
@@ -485,7 +570,6 @@ async fn device_post(req: RestRequest) -> AuthStackResult<RestResponse> {
         .clone()
         .ok_or(AuthStackError::AuthRequired)?;
     let user_id = session.user_id.ok_or(AuthStackError::AuthRequired)?;
-    let form = parse_form(req).await?;
     crate::application::validate_csrf_token_for_session(
         Some(session_id.clone()),
         form.get("csrf").cloned(),
@@ -570,12 +654,6 @@ async fn extra_redirects() -> Vec<String> {
         .collect()
 }
 
-async fn session_from_request(
-    req: &RestRequest,
-) -> AuthStackResult<Option<crate::contracts::SessionView>> {
-    session_from_headers(req.headers()).await
-}
-
 async fn session_from_headers(
     headers: &http::HeaderMap,
 ) -> AuthStackResult<Option<crate::contracts::SessionView>> {
@@ -604,25 +682,21 @@ fn cookie_session_id(headers: &http::HeaderMap) -> Option<String> {
         })
 }
 
-async fn parse_form(req: RestRequest) -> AuthStackResult<std::collections::HashMap<String, String>> {
-    let body = read_body(req).await?;
-    Ok(form_urlencoded::parse(&body)
-        .into_owned()
-        .collect())
+fn parse_form(req: &PreparedRequest) -> AuthStackResult<std::collections::HashMap<String, String>> {
+    Ok(form_urlencoded::parse(&req.body).into_owned().collect())
 }
 
-async fn parse_form_or_json(
-    req: RestRequest,
+fn parse_form_or_json(
+    req: &PreparedRequest,
 ) -> AuthStackResult<std::collections::HashMap<String, String>> {
     let content_type = req
-        .headers()
+        .headers
         .get(http::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_ascii_lowercase();
     if content_type.contains("application/json") {
-        let body = read_body(req).await?;
-        let value: serde_json::Value = serde_json::from_slice(&body)
+        let value: serde_json::Value = serde_json::from_slice(&req.body)
             .map_err(|error| AuthStackError::validation(format!("invalid JSON: {error}")))?;
         let mut map = std::collections::HashMap::new();
         if let Some(object) = value.as_object() {
@@ -636,31 +710,7 @@ async fn parse_form_or_json(
         }
         return Ok(map);
     }
-    parse_form(req).await
-}
-
-async fn read_body(req: RestRequest) -> AuthStackResult<Vec<u8>> {
-    let (parts, incoming) = req.into_parts();
-    let body = if let Some(body) = crate::server_fn_http::payload_from_headers(&parts.headers)
-        .map_err(|status| match status {
-            http::StatusCode::PAYLOAD_TOO_LARGE => {
-                AuthStackError::validation("request body is too large")
-            }
-            _ => AuthStackError::validation("invalid request body header"),
-        })? {
-        crate::server_fn_http::discard_incoming_body(incoming);
-        body
-    } else {
-        crate::server_fn_http::collect_wasi_request_body(incoming, 64 * 1024)
-            .await
-            .map_err(|status| match status {
-                http::StatusCode::PAYLOAD_TOO_LARGE => {
-                    AuthStackError::validation("request body is too large")
-                }
-                _ => AuthStackError::transport("failed to read request body"),
-            })?
-    };
-    Ok(body.to_vec())
+    parse_form(req)
 }
 
 fn query_map(query: &str) -> std::collections::HashMap<String, String> {
@@ -718,6 +768,14 @@ fn urlencoding_encode(value: &str) -> String {
     form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
+/// The approval form is a normal browser POST. `prepare_request` drains
+/// that body before any session lookup, so Spin never reads it after a
+/// wait. The page must not intercept the submit: `FormData` omits the
+/// clicked button, so `decision=allow` never arrived and the server
+/// answered `access_denied`, and `fetch` cannot follow the authorization
+/// redirect onto another origin.
+const FORM_SUBMIT_SCRIPT: &str = "";
+
 fn oauth_page(title: &str, copy: &str, body: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
@@ -732,10 +790,11 @@ button {{ background:#fff; color:#111; border:0; cursor:pointer; }}
 input {{ width:100%; box-sizing:border-box; margin:.35rem 0 1rem; background:#1a1a1a; color:#fff; border:1px solid #333; }}
 label {{ display:block; font-size:.85rem; }}
 </style></head>
-<body><main><p>Buwiz</p><h1>{title}</h1><p>{copy}</p>{body}</main></body></html>"#,
+<body><main><p>Buwiz</p><h1>{title}</h1><p>{copy}</p>{body}</main>{script}</body></html>"#,
         title = html_escape(title),
         copy = html_escape(copy),
         body = body,
+        script = FORM_SUBMIT_SCRIPT,
     )
 }
 
@@ -827,6 +886,51 @@ mod tests {
     }
 
     #[test]
+    fn approval_page_is_a_native_form_post() {
+        let html = oauth_page(
+            "Authorize a device",
+            "Enter the code.",
+            "<form method=\"post\" action=\"/login/device\"><button type=\"submit\" name=\"decision\" value=\"allow\">Allow</button></form>",
+        );
+        assert!(html.contains("action=\"/login/device\""));
+        assert!(html.contains("name=\"decision\""));
+        assert!(!html.contains("preventDefault"));
+        assert!(!html.contains("x-buwiz-request-body"));
+    }
+
+    #[test]
+    fn device_approval_fields_come_from_the_body_bytes() {
+        let req = PreparedRequest {
+            uri: "/login/device".parse().unwrap(),
+            headers: http::HeaderMap::new(),
+            body: Bytes::from("csrf=tok&user_code=ABCD-EFGH"),
+        };
+        let form = parse_form(&req).unwrap();
+        assert_eq!(
+            form.get("user_code").map(String::as_str),
+            Some("ABCD-EFGH")
+        );
+        assert_eq!(form.get("csrf").map(String::as_str), Some("tok"));
+    }
+
+    #[test]
+    fn device_guest_page_offers_sign_in_and_signup() {
+        let (sign_in, create) = device_account_links("/device?user_code=ABCD-EFGH");
+        assert_eq!(
+            sign_in,
+            "/login?next=%2Fdevice%3Fuser_code%3DABCD-EFGH"
+        );
+        assert_eq!(
+            create,
+            "/signup?next=%2Fdevice%3Fuser_code%3DABCD-EFGH"
+        );
+        assert_eq!(
+            crate::app::helpers::post_login_path("/device?user_code=ABCD-EFGH"),
+            Some("/device?user_code=ABCD-EFGH")
+        );
+    }
+
+    #[test]
     fn desktop_paths_are_recognized() {
         assert!(is_desktop_oauth_request(
             "/.well-known/oauth-authorization-server"
@@ -834,6 +938,7 @@ mod tests {
         assert!(is_desktop_oauth_request("/oauth/device/code"));
         assert!(is_desktop_oauth_request("/auth/device/start"));
         assert!(is_desktop_oauth_request("/auth/device/poll"));
+        assert!(is_desktop_oauth_request("/device"));
         assert!(!is_desktop_oauth_request("/api/auth/password/login"));
     }
 }

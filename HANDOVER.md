@@ -36,7 +36,7 @@ Plan item A3 ("tokens carry a scope that is never checked") is settled by design
 4. Done: HTTP for tax years, drafts and filings ([docs/sync-api.md](docs/sync-api.md), `src/domain/records.rs`, migration `0010`), and MCP read tools for them (README, "MCP endpoint"). Check desktop draft sync against the deployed runtime first: real request bodies may fail on today's Spin.
 5. Done: pass expiry recorded in history (`PassExpired`, migration `0011`) and a change-pass screen. Done: offers to a workspace show on its home (`/dashboard`). Done: agents for firm members. An agent may reach a profile through its user's workspace pass, with workspaces read from active memberships (no browser session).
 
-- Desktop client: buwiz-forms does not call this server yet. The contract is in [docs/integrations.md](docs/integrations.md).
+- Desktop client: buwiz-forms Settings → Account calls the device flow. The contract is in [docs/integrations.md](docs/integrations.md). Hostnames are in [docs/domains.md](docs/domains.md).
 - Local end-to-end runs need a Spin host that matches the vendored SDK (README, "Troubleshooting").
 
 ## Verify

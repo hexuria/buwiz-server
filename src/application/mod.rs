@@ -3,8 +3,8 @@
 //! Domain modules re-exported so existing `crate::application::*` call sites keep working.
 
 mod account;
-mod agent;
 mod admin;
+mod agent;
 mod auth;
 mod authorization;
 mod common;
@@ -22,8 +22,8 @@ mod vault;
 // pub(crate) re-exports include pub(crate) helpers so sibling modules and the
 // rest of the crate can use crate::application::name after the split.
 pub(crate) use account::*;
-pub(crate) use agent::*;
 pub(crate) use admin::*;
+pub(crate) use agent::*;
 pub(crate) use auth::*;
 pub(crate) use authorization::*;
 pub(crate) use common::*;
@@ -124,6 +124,14 @@ mod tests {
             session_cookie_header_value("session_1", None, false),
             "wasi_auth_dev_session=session_1; Path=/; HttpOnly; SameSite=Lax"
         );
+    }
+
+    #[test]
+    fn session_cookie_stays_host_only() {
+        for secure in [true, false] {
+            let cookie = session_cookie_header_value("session_1", Some(3600), secure);
+            assert!(!cookie.to_ascii_lowercase().contains("domain="), "{cookie}");
+        }
     }
 
     #[test]

@@ -86,7 +86,7 @@ The CLI handles two local setups by itself:
 2. **Tax profiles** → add a profile (TIN, branch, RDO).
 3. Share it with a firm: create a workspace (Organizations), then **Give access** on Tax profiles (passes, below).
 4. Connect an AI agent: `claude mcp add --transport http buwiz http://localhost:3008/mcp`, then `/mcp` in Claude Code and **Allow** (AI agents, below).
-5. The desktop app signs in with the device flow (Desktop auth, below).
+5. The desktop app signs in with the device flow (Desktop auth, below). buwiz-forms implements it under Settings → Account. Production API: `https://api.buwiz.com`. Browser login: `https://account.buwiz.com`. See [docs/domains.md](docs/domains.md).
 
 Password minimum length is **15** (wasi-auth default in this stack).
 
