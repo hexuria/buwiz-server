@@ -435,3 +435,56 @@ html[data-theme="light"] {
 @media (prefers-reduced-motion: reduce) {
   .animate-rise { animation: none; }
 }
+
+/* OpenGrok demo (home page): the agent window, its desktop, chat cards and caret. */
+.og-win {
+  border-radius: 1.25rem;
+  overflow: hidden;
+  background: var(--gc-bg-card);
+  color: var(--gc-text);
+  border: 1px solid var(--gc-border-strong);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--gc-text) 6%, transparent) inset,
+    0 32px 80px rgb(0 0 0 / 0.28);
+}
+html[data-theme="light"] .og-win {
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.8) inset,
+    0 24px 60px rgb(15 23 42 / 0.12);
+}
+.lx-desk {
+  background:
+    radial-gradient(900px 420px at 18% 0%, #3d5a80 0%, transparent 55%),
+    radial-gradient(700px 380px at 100% 100%, #1b4332 0%, transparent 50%),
+    linear-gradient(165deg, #1a1a2e 0%, #16213e 42%, #0f3460 100%);
+}
+.lx-dock-item {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(255 255 255 / 0.08);
+}
+@keyframes lx-blink {
+  50% { opacity: 0; }
+}
+.gc-card-in { animation: gc-card-in 0.3s ease-out both; }
+@keyframes gc-card-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.gc-caret {
+  display: inline-block;
+  width: 1px;
+  height: 15px;
+  margin-left: 1px;
+  background: var(--gc-text);
+  vertical-align: -2px;
+  animation: lx-blink 1s steps(1) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .gc-card-in,
+  .gc-caret { animation: none; }
+}

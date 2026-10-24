@@ -3,6 +3,8 @@
 //! Styling uses the `gc-*` palette (see `input.css`), which follows the same
 //! `html[data-theme]` the app writes, so the site and app share one setting.
 
+#[cfg(feature = "hydrate")]
+mod demo;
 mod downloads;
 mod privacy;
 mod showcase;

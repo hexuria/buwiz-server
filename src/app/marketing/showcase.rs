@@ -1,4 +1,4 @@
-use super::downloads::{DownloadButtons, RELEASES_URL};
+use super::downloads::DownloadButton;
 use super::{themed_screenshot, AccountActions};
 use leptos::prelude::*;
 
@@ -147,6 +147,17 @@ const FAQS: [FaqItem; 5] = [
     },
 ];
 
+#[cfg(feature = "hydrate")]
+fn agent_demo() -> AnyView {
+    view! { <super::demo::OpenGrokFilm /> }.into_any()
+}
+
+/// Holds the demo's height on the server build; the page renders client-side.
+#[cfg(not(feature = "hydrate"))]
+fn agent_demo() -> AnyView {
+    view! { <div class="h-[700px]"></div> }.into_any()
+}
+
 /// The whole page body is one island: the hero tabs, feature picker, and FAQ
 /// are client state and it needs no server data.
 #[island]
@@ -170,14 +181,8 @@ pub fn Showcase() -> impl IntoView {
                         "Buwiz Forms is a fast, free alternative to eBIRForms for Windows, macOS, and Linux. Fill all 43 BIR forms with the official rules checking as you type."
                     </p>
                     <div id="download" class="flex flex-wrap items-center justify-center gap-3 animate-rise animate-rise-d3">
-                        <DownloadButtons />
+                        <DownloadButton />
                     </div>
-                    <p class="mt-4 text-[11px] text-gc-text-faint animate-rise animate-rise-d3">
-                        "Always the latest release — Windows Setup.exe · universal macOS DMG · Linux .deb. "
-                        <a href=RELEASES_URL target="_blank" rel="noopener noreferrer" class="underline underline-offset-2 hover:text-gc-text-muted transition-colors">
-                            "All packages & release notes"
-                        </a>
-                    </p>
                 </div>
 
                 <div class="max-w-5xl mx-auto mt-12 md:mt-16 animate-rise animate-rise-d3">
@@ -360,34 +365,33 @@ pub fn Showcase() -> impl IntoView {
             </section>
 
             <section id="agent" class=SECTION>
-                <div class=format!("{CARD} p-7 md:p-10 grid grid-cols-1 lg:grid-cols-2 gap-8 items-center")>
-                    <div>
-                        <span class="inline-block text-[11px] font-bold uppercase tracking-[0.18em] text-gc-accent mb-4">"AI AGENT"</span>
-                        <h2 class=SECTION_TITLE>"Let an AI agent prepare the draft."</h2>
-                        <p class=SECTION_LEAD>
-                            "Buwiz ships with bir-mcp, an MCP server your AI agent can use to open, fill, and check any of the 43 forms. You review the result in the app and file it yourself."
-                        </p>
-                    </div>
-                    <div class="grid grid-cols-1 gap-3">
-                        {[
-                            ("edit_note", "Drafts only", "There is no submit, queue, or payment tool. Filing always takes your click."),
-                            ("key", "Runs on your sign-in", "The agent works only after you approve it with your Buwiz account."),
-                            ("link_off", "Revoke anytime", "Disconnect an agent from your account settings and its access ends."),
-                        ]
-                            .into_iter()
-                            .map(|(icon, title, body)| view! {
-                                <div class="flex items-start gap-3.5 p-4 rounded-lg bg-gc-bg border border-gc-border">
-                                    <div class="w-9 h-9 rounded-lg bg-gc-accent-soft text-gc-accent flex items-center justify-center shrink-0">
-                                        <span class="material-symbols-outlined text-[18px]">{icon}</span>
-                                    </div>
-                                    <div>
-                                        <div class="text-sm font-bold text-gc-text mb-0.5">{title}</div>
-                                        <p class="text-xs text-gc-text-muted leading-relaxed">{body}</p>
-                                    </div>
+                <div class="mb-8 max-w-[68ch]">
+                    <span class="inline-block text-[11px] font-bold uppercase tracking-[0.18em] text-gc-accent mb-4">"WORKS WITH OPENGROK"</span>
+                    <h2 class=SECTION_TITLE>"Your OpenGrok coworker prepares the return. You file it."</h2>
+                    <p class=SECTION_LEAD>
+                        "Add the Buwiz Forms plugin to an OpenGrok coworker and sign in once. It reads your tax profile, tracks your deadlines, and fills any of the 43 forms from your spreadsheets. When the draft passes BIR's rules, it hands it back to you to review and submit."
+                    </p>
+                </div>
+                {agent_demo()}
+                <div class="mt-8 grid grid-cols-1 md:grid-cols-3 gap-3">
+                    {[
+                        ("edit_note", "Drafts only", "There is no submit, queue, or payment tool. Filing always takes your click."),
+                        ("key", "You choose what it may do", "Approve the agent on your Buwiz account: which profiles, read-only or drafting."),
+                        ("link_off", "End it anytime", "Remove the agent under Tax profiles, Connected agents, and its access stops."),
+                    ]
+                        .into_iter()
+                        .map(|(icon, title, body)| view! {
+                            <div class="flex items-start gap-3.5 p-4 rounded-lg bg-gc-bg-elevated border border-gc-border">
+                                <div class="w-9 h-9 rounded-lg bg-gc-accent-soft text-gc-accent flex items-center justify-center shrink-0">
+                                    <span class="material-symbols-outlined text-[18px]">{icon}</span>
                                 </div>
-                            })
-                            .collect_view()}
-                    </div>
+                                <div>
+                                    <div class="text-sm font-bold text-gc-text mb-0.5">{title}</div>
+                                    <p class="text-xs text-gc-text-muted leading-relaxed">{body}</p>
+                                </div>
+                            </div>
+                        })
+                        .collect_view()}
                 </div>
             </section>
 
@@ -433,7 +437,7 @@ pub fn Showcase() -> impl IntoView {
                             </div>
                         </div>
                         <div class="flex flex-wrap gap-3">
-                            <DownloadButtons />
+                            <DownloadButton />
                         </div>
                     </div>
 
