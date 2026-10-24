@@ -39,7 +39,7 @@ struct F {
 fn script(s: &mut Script, f: F) {
     let (r, c) = (f.r, f.chat);
     s.then(move || r.act(0, "When the reviewed form looks right, just say “submit”.")).wait(300);
-    r.say(s, "Submit it.", move || c.push(B::L(Line::Me("Submit it."))));
+    r.say(s, "Submit the Makati branch's.", move || c.push(B::L(Line::Me("Submit the Makati branch's."))));
     s.wait(300)
         .then(move || r.act(1, "It checks the form against every BIR rule again before anything leaves."));
     tool(s, r, c, B::L, "buwiz", "validate_form 1601-C · 0 errors", 1100);
@@ -75,10 +75,10 @@ fn message(f: F, id: u32, b: B) -> AnyView {
         B::Permission => approve_card(
             r,
             "shield_person",
-            "Allow Tax Co-worker to publish to BIR?",
+            "Allow Buwiz to publish to BIR?",
             view! {
                 {check_row(true, "Publish to BIR")}
-                <div class="gs-d mt-1 text-[11.5px]">"Only for 1601-C · October 2026, DELA CRUZ BAKESHOP. Each submission still asks you."</div>
+                <div class="gs-d mt-1 text-[11.5px]">"Only for 1601-C · October 2026, branch 00001. Each submission still asks you."</div>
             },
             "Allow once",
             f.allow_btn,
@@ -93,8 +93,9 @@ fn message(f: F, id: u32, b: B) -> AnyView {
             rows(&[
                 ("Form", "1601-C"),
                 ("Period", "October 2026"),
-                ("Taxpayer", "DELA CRUZ BAKESHOP"),
-                ("TIN", "123-456-788-00000"),
+                ("Taxpayer", "JUAN DELA CRUZ"),
+                ("Branch", "00001 · Dela Cruz Bakeshop, Makati"),
+                ("TIN", "123-456-788-00001"),
                 ("Tax due", "₱5,598.60"),
             ]),
             "Submit",

@@ -497,6 +497,11 @@ html[data-theme="dark"] .gs-win {
 .gs-f { color: var(--gs-faint); }
 .gs-user { background: var(--gs-user); color: #fff; }
 .gs-btn { background: var(--gs-text); color: var(--gs-chat); }
+
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
+}
 @keyframes lx-blink {
   50% { opacity: 0; }
 }

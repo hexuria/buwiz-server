@@ -51,7 +51,7 @@ fn script(s: &mut Script, f: F) {
     s.wait(300);
     tool(s, r, c, B::L, "plugins", "install_plugin buwiz", 1400);
     s.then(move || {
-        r.plugins.set(vec!["Buwiz"]);
+        r.connect(&["Buwiz"]);
         c.push(B::Installed);
     })
     .wait(1600)
@@ -113,10 +113,10 @@ fn message(f: F, id: u32, b: B) -> AnyView {
         B::Allow => approve_card(
             r,
             "shield_person",
-            "Allow Tax Co-worker on your Buwiz account?",
+            "Allow the Buwiz agent on your account?",
             view! {
                 <div class="gs-d mb-1 text-[11px]">"Profiles"</div>
-                <div class="mb-2">"DELA CRUZ BAKESHOP, JUAN DELA CRUZ, DCB FOODS CORP."</div>
+                <div class="mb-2">"JUAN DELA CRUZ · 123-456-788 · all 4 branches"</div>
                 <div class="gs-d mb-1 text-[11px]">"What it may do"</div>
                 <div class="grid grid-cols-1 sm:grid-cols-2 sm:gap-x-3">
                     {check_row(true, "See taxpayer details")}

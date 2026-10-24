@@ -24,7 +24,7 @@ const HOST: &str = "linkbiz.landbank.demo";
 
 /// Label, value, as the co-worker fills them in.
 const FIELDS: &[(&str, &str)] = &[
-    ("TIN", "123-456-788-00000"),
+    ("TIN", "123-456-788-00001"),
     ("RDO", "047 · East Makati"),
     ("Form", "1601-C"),
     ("ATC", "WW010"),
@@ -79,7 +79,7 @@ fn script(s: &mut Script, f: F) {
     tool(s, r, c, B::L, "routine", "create_routine on BIR confirmation", 900);
     s.then(move || {
         f.note.set("Waiting for the confirmation");
-        r.routines.update(|v| v.push(Routine { name: "Pay BIR", when: "When the confirmation arrives", note: f.note }));
+        r.add_routine(Routine { name: "Pay BIR", when: "When the confirmation arrives", note: f.note });
         c.push(B::Routine);
     })
     .wait(1400)
@@ -92,7 +92,7 @@ fn script(s: &mut Script, f: F) {
     tool(s, r, c, B::L, "browser", "open linkbiz.landbank.demo", 600);
     s.then(move || {
         f.page.set(Page::Billers);
-        r.screen.expand();
+        r.open_screen();
     })
     .wait(900)
     .typing("BIR", 160, move |t| f.search.set(t))
@@ -131,7 +131,7 @@ fn script(s: &mut Script, f: F) {
     s.wait(300)
         .then(move || {
             f.page.set(Page::Paying);
-            r.screen.expand();
+            r.open_screen();
         })
         .wait(1600)
         .then(move || {

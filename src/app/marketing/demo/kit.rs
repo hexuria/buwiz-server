@@ -15,6 +15,15 @@ pub const LIT_PLUGINS: u8 = 1;
 pub const LIT_PLUS: u8 = 2;
 pub const LIT_FILM: u8 = 10;
 
+/// The details pane's tabs.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Tab {
+    Details,
+    Library,
+    Computer,
+    Connect,
+}
+
 /// A routine in the pane.
 #[derive(Clone, Copy)]
 pub struct Routine {
@@ -52,6 +61,7 @@ pub struct Rig {
     pub touch_for: RwSignal<(&'static str, &'static str)>,
     pub plugins: RwSignal<Vec<&'static str>>,
     pub routines: RwSignal<Vec<Routine>>,
+    pub tab: RwSignal<Tab>,
 }
 
 impl Rig {
@@ -77,6 +87,7 @@ impl Rig {
             touch_for: RwSignal::new(("", "")),
             plugins: RwSignal::new(Vec::new()),
             routines: RwSignal::new(Vec::new()),
+            tab: RwSignal::new(Tab::Details),
         }
     }
 
@@ -88,8 +99,27 @@ impl Rig {
         self.touch.set(Touch::Off);
         self.plugins.set(plugins.to_vec());
         self.routines.set(routines);
+        self.tab.set(Tab::Details);
         self.screen.reset();
         self.cur.reset();
+    }
+
+    /// The plugins are now `plugins`; the pane shows them under Connect.
+    pub fn connect(self, plugins: &[&'static str]) {
+        self.plugins.set(plugins.to_vec());
+        self.tab.set(Tab::Connect);
+    }
+
+    /// Adds a routine; the pane shows it under Details.
+    pub fn add_routine(self, routine: Routine) {
+        self.routines.update(|v| v.push(routine));
+        self.tab.set(Tab::Details);
+    }
+
+    /// Grows the Computer screen out of the Computer tab's thumbnail.
+    pub fn open_screen(self) {
+        self.tab.set(Tab::Computer);
+        self.screen.expand();
     }
 
     pub fn act(self, n: usize, caption: &'static str) {
@@ -421,8 +451,8 @@ pub fn touch_sheet(rig: Rig) -> impl IntoView {
         <Show when=move || rig.touch.get() != Touch::Off>
             <div class="absolute inset-0 z-[35] grid place-items-center bg-black/35">
                 <div class="gc-card-in w-[min(290px,86%)] rounded-2xl bg-[#f5f5f7] p-5 text-center text-[#16161c] shadow-2xl">
-                    {super::shell::avatar("mx-auto mb-2 h-11 w-11", "text-[24px]")}
-                    <div class="text-[13px] font-bold">"Tax Co-worker wants to use a saved password."</div>
+                    {super::shell::avatar("mx-auto mb-2 h-12 w-12")}
+                    <div class="text-[13px] font-bold">"Buwiz wants to use a saved password."</div>
                     <div class="mt-1 text-[11px] text-[#5e6278]">{move || { let (a, s) = rig.touch_for.get(); format!("Touch ID to fill {a} for {s}.") }}</div>
                     <div class="mx-auto my-3 h-14 w-14">
                         <svg viewBox="0 0 64 64" fill="none" stroke-width="2.6" stroke-linecap="round" class=move || if rig.touch.get() == Touch::Ok { "h-14 w-14 stroke-[#059669] transition-colors" } else { "h-14 w-14 stroke-[#e5484d] transition-colors" }>

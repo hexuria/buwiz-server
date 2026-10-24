@@ -1,7 +1,7 @@
 //! The desktop app window the home-page demos share, drawn after Buwiz's AI Co-worker app:
-//! a sidebar (the co-worker's tile, Chats, Mini Apps and Plugins), the chat (a floating name
-//! chip, the thread, the composer pill) and the details pane (avatar, model, tabs, the Computer
-//! thumbnail, connected plugins and Routines).
+//! a sidebar (the co-worker's tile, Chats, your avatar and Plugins), the chat (the co-worker's
+//! name chip, the thread, the composer pill) and the details pane (avatar, model, and tabs:
+//! Routines under Details, the Computer thumbnail under Computer, plugins under Connect).
 //!
 //! The Computer screen can grow out of the pane to fill the window and shrink back; it shows
 //! whatever the co-worker has open (a browser, a spreadsheet, a PDF).
@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use leptos::{ev, html, prelude::*};
 
-use super::kit::Rig;
+use super::kit::{Rig, Tab};
 use super::player::DemoPointer;
 
 /// The Computer screen is laid out at this size, then scaled into the pane's thumbnail.
@@ -151,16 +151,20 @@ impl AgentScreen {
     }
 }
 
-/// The co-worker's avatar: a rounded tile in its color.
-pub fn avatar(size: &'static str, icon_size: &'static str) -> impl IntoView {
+/// Grok Bot's star mark at rest (grok-shell's baked rest pose): the body, then its two eyes
+/// cut out of it.
+const MASCOT: &str = "M127 59L131 63L136 67L142 69L148 68L154 65L160 62L165 59L172 58L178 60L183 64L186 69L187 76L186 82L184 88L182 94L181 100L184 106L188 111L193 114L199 118L204 121L210 124L214 129L217 134L218 140L217 147L214 152L210 157L205 162L200 165L195 168L188 169L182 169L179 173L180 179L181 186L180 192L177 198L173 203L169 207L164 212L159 215L153 215L146 213L141 211L136 206L132 201L128 196L124 192L119 188L113 186L107 187L101 190L95 193L90 196L83 197L77 195L72 191L69 186L68 179L69 173L71 167L73 161L74 155L71 149L67 144L62 141L56 137L51 134L45 131L41 126L38 121L37 115L38 108L41 103L45 98L50 93L55 90L61 87L67 86L73 86L76 82L75 76L74 69L75 63L78 57L82 52L86 48L91 43L96 40L102 40L109 42L114 44L119 49L123 54ZM127 114L130 117L132 121L134 125L136 129L138 134L139 138L140 142L137 146L132 146L128 145L125 141L123 137L121 133L119 129L117 125L115 120L115 116L118 113L122 112ZM160 105L163 108L165 112L167 116L169 120L171 125L173 129L173 133L170 137L165 137L161 136L158 132L156 128L154 124L152 120L150 116L148 111L148 107L151 104L156 103Z";
+
+/// The co-worker's avatar: its Grok Bot mark in its green.
+pub fn avatar(size: &'static str) -> impl IntoView {
     view! {
-        <span class=format!("grid shrink-0 place-items-center rounded-[28%] bg-[#14C370] text-white {size}")>
-            <span class=format!("material-symbols-outlined {icon_size}")>"receipt_long"</span>
-        </span>
+        <svg viewBox="30 30 196 196" aria-hidden="true" class=format!("block shrink-0 {size}")>
+            <path fill="#14C370" fill-rule="evenodd" stroke="#14C370" stroke-width="3" stroke-linejoin="round" d=MASCOT />
+        </svg>
     }
 }
 
-fn thumb(desktop: Desktop, r: NodeRef<html::Div>) -> impl IntoView {
+fn thumb(desktop: Desktop, r: NodeRef<html::Div>, tab: RwSignal<Tab>) -> impl IntoView {
     let k = RwSignal::new(0.);
     let measure = move || {
         if let Some(el) = r.get_untracked() {
@@ -171,7 +175,9 @@ fn thumb(desktop: Desktop, r: NodeRef<html::Div>) -> impl IntoView {
         }
     };
     Effect::new(move |_| {
+        tab.track();
         if r.get().is_some() {
+            measure();
             request_animation_frame(measure);
         }
     });
@@ -187,6 +193,13 @@ fn thumb(desktop: Desktop, r: NodeRef<html::Div>) -> impl IntoView {
 }
 
 const PANE_LABEL: &str = "gs-f mb-1.5 mt-4 w-full text-[11px] font-semibold";
+
+fn plugin_blurb(plugin: &str) -> &'static str {
+    match plugin {
+        "Gmail" => "Reads BIR's confirmation emails",
+        _ => "Profiles, forms and filing",
+    }
+}
 
 /// The app window. `children` is the chat thread; `desktop` is the Computer screen; `overlay`
 /// sits over everything but the Touch ID sheet and the pointer.
@@ -219,8 +232,8 @@ pub fn ShellWindow(
                     </span>
                 </div>
                 <div class="gs-hover mx-auto mt-4 flex w-[96px] flex-col items-center gap-1 rounded-xl py-2.5">
-                    {avatar("h-11 w-11", "text-[24px]")}
-                    <span class="text-[11px] font-medium">"Tax Co-worker"</span>
+                    {avatar("h-12 w-12")}
+                    <span class="text-[11px] font-medium">"Buwiz"</span>
                 </div>
                 <div class="gs-f mb-1.5 mt-4 px-1 text-[11px] font-semibold">"Chats"</div>
                 {chats.iter().enumerate().map(|(i, title)| view! {
@@ -230,10 +243,7 @@ pub fn ShellWindow(
                     </div>
                 }).collect_view()}
                 <div class="mt-auto flex items-center gap-1.5">
-                    <span class="gs-hover grid h-7 w-7 place-items-center rounded-full text-[10px] font-semibold">"UI"</span>
-                    <span class="gs-hover flex h-7 items-center gap-1 whitespace-nowrap rounded-full px-2.5 text-[11.5px] font-medium">
-                        "Mini Apps"<span class="material-symbols-outlined gs-d text-[14px]">"apps"</span>
-                    </span>
+                    <span class="grid aspect-square h-7 w-7 shrink-0 place-items-center rounded-full bg-[#1884FC] text-[10.5px] font-semibold text-white">"JD"</span>
                     <div node_ref=rig.plugins_btn class=move || if lit_plugins() {
                         "gs-hover flex h-7 items-center gap-1 whitespace-nowrap rounded-full px-2.5 text-[11.5px] font-medium ring-2 ring-[#14C370]/70"
                     } else {
@@ -246,9 +256,10 @@ pub fn ShellWindow(
 
             <div class="relative flex min-w-0 flex-1 flex-col">
                 <div class="gs-fade pointer-events-none absolute inset-x-0 top-0 z-[4] h-14"></div>
-                <div class="gs-bubble gs-line absolute left-1/2 top-2.5 z-[5] flex -translate-x-1/2 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] font-semibold shadow-sm">
-                    {avatar("h-[18px] w-[18px]", "text-[12px]")}
-                    "Tax Co-worker"
+                <div class="gs-card absolute left-1/2 top-2.5 z-[5] flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-full py-1 pl-1.5 pr-3 text-[12.5px] font-semibold shadow-[0_2px_10px_rgba(0,0,0,.12)]">
+                    {avatar("h-6 w-6")}
+                    "Buwiz"
+                    <span class="material-symbols-outlined gs-d -ml-0.5 text-[16px]">"expand_more"</span>
                 </div>
                 <div node_ref=rig.scroller class="min-h-0 flex-1 overflow-y-auto">
                     <div class="flex flex-col gap-2.5 px-4 pb-4 pt-14 text-[13.5px] md:px-8">{children()}</div>
@@ -264,7 +275,7 @@ pub fn ShellWindow(
                         </div>
                         <div node_ref=rig.composer class="min-w-0 flex-1 truncate text-[13.5px]">
                             {move || match draft.get() {
-                                "" => view! { <span class="gs-f">"Message Tax Co-worker"</span> }.into_any(),
+                                "" => view! { <span class="gs-f">"Message Buwiz"</span> }.into_any(),
                                 t => view! { <span>{t}<span class="gc-caret"></span></span> }.into_any(),
                             }}
                         </div>
@@ -280,42 +291,72 @@ pub fn ShellWindow(
             </div>
 
             <aside class="gs-pane gs-line relative hidden w-[264px] shrink-0 flex-col items-center overflow-hidden border-l px-4 pt-6 md:flex">
-                {avatar("h-[60px] w-[60px]", "text-[32px]")}
-                <div class="mt-2 text-[14px] font-semibold">"Tax Co-worker"</div>
-                <div class="gs-f text-[11px]">"Add a label"</div>
+                {avatar("h-16 w-16")}
+                <div class="mt-2 text-[14px] font-semibold">"Buwiz"</div>
+                <div class="gs-f text-[11px]">"Your personal tax agent"</div>
                 <span class="gs-hover gs-d mt-2 flex items-center gap-0.5 rounded-full px-2.5 py-1 text-[11px]">
                     "Auto"<span class="material-symbols-outlined text-[14px]">"expand_more"</span>
                 </span>
-                <div class="mt-3 flex items-center gap-0.5 text-[11.5px]">
-                    <span class="gs-hover rounded-full px-2.5 py-1 font-medium">"Details"</span>
-                    <span class="gs-d px-2 py-1">"Library"</span>
-                    <span class="gs-d px-2 py-1">"Computer"</span>
-                    <span class="gs-d px-2 py-1">"Connect"</span>
+                <div class="mt-3 flex items-center text-[11px]">
+                    {[(Tab::Details, "Details"), (Tab::Library, "Library"), (Tab::Computer, "Computer"), (Tab::Connect, "Connect")]
+                        .into_iter()
+                        .map(|(t, label)| view! {
+                            <span class=move || if rig.tab.get() == t {
+                                "gs-hover whitespace-nowrap rounded-full px-2 py-1 font-medium transition-colors"
+                            } else {
+                                "gs-d whitespace-nowrap rounded-full px-2 py-1 transition-colors"
+                            }>{label}</span>
+                        })
+                        .collect_view()}
                 </div>
-                <div class=PANE_LABEL>"Computer"</div>
-                {thumb(desktop.clone(), rig.screen.thumb)}
-                <div class=PANE_LABEL>"Plugins"</div>
-                <div class="flex w-full flex-wrap gap-1.5">
+                <div class=move || if rig.tab.get() == Tab::Computer { "w-full" } else { "hidden" }>
+                    <div class=PANE_LABEL>"Computer"</div>
+                    {thumb(desktop.clone(), rig.screen.thumb, rig.tab)}
+                </div>
+                <div class=move || if rig.tab.get() == Tab::Library { "w-full" } else { "hidden" }>
+                    <div class=PANE_LABEL>"Library"</div>
+                    <div class="gs-hover gs-d w-full rounded-xl px-3 py-2.5 text-[11.5px] leading-snug">
+                        "Files Buwiz makes show up here."
+                    </div>
+                </div>
+                <div class=move || if rig.tab.get() == Tab::Connect { "w-full" } else { "hidden" }>
+                    <div class=PANE_LABEL>"Connected apps"</div>
                     {move || {
                         let on = rig.plugins.get();
                         if on.is_empty() {
-                            view! { <span class="gs-f text-[11.5px]">"None yet"</span> }.into_any()
+                            view! {
+                                <div class="gs-hover gs-d w-full rounded-xl px-3 py-2.5 text-[11.5px] leading-snug">
+                                    "No apps connected yet. Ask Buwiz to install one."
+                                </div>
+                            }.into_any()
                         } else {
-                            on.into_iter().map(|p| view! {
-                                <span class="gs-card gc-card-in flex items-center gap-1 rounded-full py-0.5 pl-1 pr-2 text-[11.5px] font-medium">
-                                    {super::kit::plugin_mark(p)}{p}
-                                </span>
-                            }).collect_view().into_any()
+                            view! {
+                                <div class="gs-card w-full overflow-hidden rounded-xl">
+                                    {on.into_iter().enumerate().map(|(i, p)| view! {
+                                        <div class=if i == 0 { "gc-card-in flex items-center gap-2 px-3 py-2.5" } else { "gs-line gc-card-in flex items-center gap-2 border-t px-3 py-2.5" }>
+                                            {super::kit::plugin_mark(p)}
+                                            <span class="flex min-w-0 flex-1 flex-col leading-tight">
+                                                <span class="text-[12px] font-semibold">{p}</span>
+                                                <span class="gs-f text-[10.5px]">{plugin_blurb(p)}</span>
+                                            </span>
+                                            <span class="relative h-[18px] w-[30px] shrink-0 rounded-full bg-[#14C370]">
+                                                <span class="absolute right-[2px] top-[2px] h-[14px] w-[14px] rounded-full bg-white shadow"></span>
+                                            </span>
+                                        </div>
+                                    }).collect_view()}
+                                </div>
+                            }.into_any()
                         }
                     }}
                 </div>
+                <div class=move || if rig.tab.get() == Tab::Details { "w-full" } else { "hidden" }>
                 <div class=PANE_LABEL>"Routines"</div>
                 {move || {
                     let list = rig.routines.get();
                     if list.is_empty() {
                         view! {
                             <div class="gs-hover gs-d w-full rounded-xl px-3 py-2.5 text-[11.5px] leading-snug">
-                                "No routines yet. Ask Tax Co-worker in chat to run something on a schedule."
+                                "No routines yet. Ask Buwiz in chat to run something on a schedule."
                             </div>
                         }.into_any()
                     } else {
@@ -331,6 +372,7 @@ pub fn ShellWindow(
                         }).collect_view().into_any()
                     }
                 }}
+                </div>
             </aside>
 
             <div class=move || if zoom.get() == Zoom::Open {
@@ -389,6 +431,18 @@ pub fn viewer(
                 <span class="ml-auto flex items-center gap-2">{actions}</span>
             </div>
             <div class="relative min-h-0 flex-1 overflow-hidden">{body}</div>
+        </div>
+    }
+}
+
+/// A document Buwiz printed (`/assets/demo/`, written by bir-print's `filled_document`), shown
+/// the way the print preview lays it out: 612pt pages at 70%.
+pub fn doc_frame(src: &'static str) -> impl IntoView {
+    view! {
+        <div class="absolute inset-0 overflow-hidden bg-[#525659]">
+            <div class="absolute left-1/2 top-4 w-[816px] origin-top -translate-x-1/2 scale-[0.7] bg-white shadow-xl" style="height:calc((100% - 16px) / 0.7)">
+                <iframe src=src title="Buwiz print preview" tabindex="-1" class="pointer-events-none block h-full w-full border-0 bg-white"></iframe>
+            </div>
         </div>
     }
 }

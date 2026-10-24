@@ -156,13 +156,13 @@ const DEMOS: [(&str, &str, &str); 6] = [
     ),
     (
         "TAX PROFILES",
-        "Your profiles, years, forms and deadlines, as live cards.",
-        "Ask in plain words and get tables and cards back: every tax profile, the one you pick, the tax year, the forms you file and what falls due next. Keep any of them as a Mini App.",
+        "One TIN, every branch, as live cards.",
+        "A salary, two bakeshops and an apartment: a mixed-income earner keeps them all under one TIN. Ask in plain words and get your branches, the tax year, which branch files which form and what falls due next. Keep any of them as a Mini App.",
     ),
     (
         "PREPARE",
-        "Send the accountant's spreadsheet. Get a finished form.",
-        "Attach the workbook your accountant sent. The co-worker reads it, fills the right BIR form, checks it against every official rule and opens it as BIR prints it, for you to review.",
+        "One spreadsheet for every branch. A finished form for each.",
+        "Attach the payroll workbook your accountant sent for all your branches. The co-worker reads it, fills one 1601-C per branch, checks each against every official rule and opens them as BIR prints them, for you to review.",
     ),
     (
         "SUBMIT",
@@ -200,75 +200,143 @@ fn agent_demo(_n: usize) -> AnyView {
     view! { <div class="h-[720px]"></div> }.into_any()
 }
 
+/// The hero's picture: one month of a mixed-income earner's taxes, from the accountant's
+/// payroll to a paid return, under the deadline that starts it.
+fn hero_journey() -> impl IntoView {
+    const STEP: &str = "relative flex flex-col rounded-xl border border-gc-border bg-gc-bg-card p-4 text-left";
+    const NUM: &str = "grid h-6 w-6 shrink-0 place-items-center rounded-full bg-gc-accent-soft text-[11px] font-bold text-gc-accent";
+    const ROW: &str = "flex items-center justify-between gap-2 border-t border-gc-border py-1.5 text-[12px]";
+    view! {
+        <div class="relative">
+            <div class="pointer-events-none absolute -inset-x-6 -inset-y-8 -z-10 rounded-[40px] bg-[radial-gradient(ellipse_at_center,var(--color-gc-accent-soft),transparent_70%)] opacity-80"></div>
+            <div class="rounded-2xl border border-gc-border bg-gc-bg-elevated p-3 shadow-2xl sm:p-4">
+                <div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-[#f59e0b]/30 bg-[#f59e0b]/10 px-3.5 py-2.5 text-left">
+                    <span class="material-symbols-outlined text-[20px] text-[#d97706]">"event_upcoming"</span>
+                    <div class="min-w-0 flex-1">
+                        <div class="text-[13px] font-bold text-gc-text">"1601-C for October is due Nov 10"</div>
+                        <div class="text-[11.5px] text-gc-text-muted">"JUAN DELA CRUZ · TIN 123-456-788 · 3 branches with staff"</div>
+                    </div>
+                    <span class="rounded-full bg-[#f59e0b]/15 px-2.5 py-0.5 text-[11px] font-semibold text-[#d97706]">"17 days left"</span>
+                </div>
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div class=STEP>
+                        <div class="mb-2 flex items-center gap-2"><span class=NUM>"1"</span><span class="text-[13px] font-bold text-gc-text">"Prepare"</span></div>
+                        <p class="mb-2 text-[12px] leading-snug text-gc-text-muted">"Send the accountant's payroll. One return per branch, filled for you."</p>
+                        <div class="mt-auto">
+                            <div class=ROW><span class="font-mono text-gc-text-muted">"00001 Makati"</span><span class="tabular-nums text-gc-text">"₱5,598.60"</span></div>
+                            <div class=ROW><span class="font-mono text-gc-text-muted">"00002 QC"</span><span class="tabular-nums text-gc-text">"₱830.10"</span></div>
+                            <div class=ROW><span class="font-mono text-gc-text-muted">"00003 Pasig"</span><span class="tabular-nums text-gc-text">"₱0.00"</span></div>
+                        </div>
+                    </div>
+                    <div class=STEP>
+                        <div class="mb-2 flex items-center gap-2"><span class=NUM>"2"</span><span class="text-[13px] font-bold text-gc-text">"Check"</span></div>
+                        <p class="mb-2 text-[12px] leading-snug text-gc-text-muted">"Every field runs through BIR's own eBIRForms rules before anything is filed."</p>
+                        <div class="mt-auto rounded-lg bg-gc-accent-soft px-3 py-2.5 text-gc-accent">
+                            <div class="flex items-center gap-1.5 text-[13px] font-bold">
+                                <span class="material-symbols-outlined text-[18px]">"verified"</span>"0 errors"
+                            </div>
+                            <div class="mt-0.5 text-[11px] opacity-80">"2,007 validations · 623 calculations"</div>
+                        </div>
+                    </div>
+                    <div class=STEP>
+                        <div class="mb-2 flex items-center gap-2"><span class=NUM>"3"</span><span class="text-[13px] font-bold text-gc-text">"File"</span></div>
+                        <p class="mb-2 text-[12px] leading-snug text-gc-text-muted">"Approve it once. Buwiz files it and keeps BIR's confirmation with the return."</p>
+                        <div class="mt-auto rounded-lg border border-gc-border bg-gc-bg-elevated px-3 py-2 text-[11px]">
+                            <div class="flex items-center gap-1.5 font-semibold text-gc-text">
+                                <span class="material-symbols-outlined text-[15px] text-gc-accent">"mark_email_read"</span>"Received by BIR"
+                            </div>
+                            <div class="mt-1 truncate font-mono text-gc-text-muted">"123456788001-1601Cv2018-102026.xml"</div>
+                            <div class="text-gc-text-faint">"3 November 2026 · 10:43 AM"</div>
+                        </div>
+                    </div>
+                    <div class=STEP>
+                        <div class="mb-2 flex items-center gap-2"><span class=NUM>"4"</span><span class="text-[13px] font-bold text-gc-text">"Pay"</span></div>
+                        <p class="mb-2 text-[12px] leading-snug text-gc-text-muted">"Pay online with the form, period and amount already filled in. You confirm."</p>
+                        <div class="mt-auto rounded-lg bg-gc-text px-3 py-2.5 text-gc-bg">
+                            <div class="text-[11px] opacity-70">"Paid to BIR · LandBank"</div>
+                            <div class="text-[18px] font-black tabular-nums tracking-tight">"₱5,598.60"</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+/// Keeps the gallery's dots and chips on the slide the rail has scrolled to, and scrolls it to
+/// a slide when one is picked.
+#[cfg(feature = "hydrate")]
+mod rail {
+    use leptos::{html, prelude::*};
+
+    fn step() -> f64 {
+        document()
+            .get_element_by_id("feat-card-0")
+            .map(|e| f64::from(e.client_width()) + 2. + 12.)
+            .filter(|w| *w > 14.)
+            .unwrap_or(1.)
+    }
+
+    pub fn current(rail: NodeRef<html::Div>, count: usize) -> Option<usize> {
+        let el = rail.get_untracked()?;
+        Some(((el.scroll_left() as f64 / step()).round().max(0.) as usize).min(count - 1))
+    }
+
+    pub fn go(rail: NodeRef<html::Div>, i: usize) {
+        if let Some(el) = rail.get_untracked() {
+            el.set_scroll_left((i as f64 * step()).round() as i32);
+        }
+    }
+}
+
+#[cfg(not(feature = "hydrate"))]
+mod rail {
+    use leptos::{html, prelude::*};
+
+    pub fn current(_rail: NodeRef<html::Div>, _count: usize) -> Option<usize> {
+        None
+    }
+
+    pub fn go(_rail: NodeRef<html::Div>, _i: usize) {}
+}
+
 /// The whole page body is one island: the hero tabs, feature picker, and FAQ
 /// are client state and it needs no server data.
 #[island]
 pub fn Showcase() -> impl IntoView {
     let features = features();
-    let (hero_tab, set_hero_tab) = signal(0usize);
     let (active, set_active) = signal(features[0].clone());
+    let slide = RwSignal::new(0usize);
+    let rail = NodeRef::<leptos::html::Div>::new();
+    let count = features.len();
     let (open_faq, set_open_faq) = signal(Some("account"));
 
     view! {
         <div class="pb-24">
             <section id="hero" class="pt-14 md:pt-20 pb-16 px-4 sm:px-6 md:px-10 max-w-[1400px] mx-auto">
                 <div class="text-center max-w-3xl mx-auto">
-                    <span class="inline-block text-[11px] font-bold uppercase tracking-[0.18em] text-gc-accent mb-5 animate-rise">
-                        "THE MODERN ALTERNATIVE TO EBIRFORMS"
+                    <span class="inline-flex items-center gap-1.5 rounded-full border border-gc-accent/30 bg-gc-accent-soft px-3 py-1 text-[11px] font-bold uppercase tracking-[0.16em] text-gc-accent mb-6 animate-rise">
+                        <span class="material-symbols-outlined text-[15px] leading-none">"volunteer_activism"</span>
+                        "Ease of Paying Taxes"
                     </span>
                     <h1 class="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-black tracking-tighter text-gc-text leading-[1.02] mb-6 animate-rise animate-rise-d1">
-                        "Philippine tax filing. Finally modern."
+                        "Filing and paying taxes, "<span class="text-gc-accent">"finally easy."</span>
                     </h1>
-                    <p class="text-base md:text-lg text-gc-text-muted leading-relaxed max-w-[58ch] mx-auto mb-9 animate-rise animate-rise-d2">
-                        "Buwiz Forms is a fast, free alternative to eBIRForms for Windows, macOS, and Linux. Fill all 43 BIR forms with the official rules checking as you type."
+                    <p class="text-base md:text-lg text-gc-text-muted leading-relaxed max-w-[60ch] mx-auto mb-9 animate-rise animate-rise-d2">
+                        "Buwiz turns the records you already keep into finished BIR returns, checks each one against the official rules, reminds you before every deadline, then helps you file and pay online. One TIN, every branch under it, all 43 forms."
                     </p>
                     <div id="download" class="flex flex-wrap items-center justify-center gap-3 animate-rise animate-rise-d3">
                         <DownloadButton />
+                        <a href="#agent" class="h-11 px-5 rounded-lg border border-gc-border-strong bg-gc-bg-elevated text-gc-text font-semibold text-sm inline-flex items-center justify-center gap-2 hover:bg-gc-bg-hover transition-colors whitespace-nowrap">
+                            <span class="material-symbols-outlined text-[18px] leading-none">"play_circle"</span>
+                            "Watch it file and pay"
+                        </a>
                     </div>
+                    <p class="mt-4 text-xs text-gc-text-faint animate-rise animate-rise-d3">"Free for one TIN · Windows, macOS and Linux"</p>
                 </div>
 
                 <div class="max-w-5xl mx-auto mt-12 md:mt-16 animate-rise animate-rise-d3">
-                    <div class="rounded-xl border border-gc-border bg-gc-bg-elevated shadow-2xl overflow-hidden">
-                        <div class="px-4 py-2.5 bg-gc-bg-card border-b border-gc-border flex flex-wrap items-center justify-between gap-3">
-                            <div class="flex items-center gap-2">
-                                <span class="text-xs font-semibold text-gc-text">"Buwiz Forms"</span>
-                                <span class="text-[11px] text-gc-text-faint tabular-nums">"123-456-788-00000"</span>
-                            </div>
-                            <div class="inline-flex items-center gap-1 p-0.5 rounded-lg bg-gc-bg-hover border border-gc-border max-w-full overflow-x-auto" role="tablist" aria-label="App preview">
-                                {[(0usize, "Live Print Preview"), (1usize, "Templates"), (2usize, "Home & Deadlines")]
-                                    .into_iter()
-                                    .map(|(idx, label)| {
-                                        let selected = move || hero_tab.get() == idx;
-                                        view! {
-                                            <button
-                                                type="button"
-                                                role="tab"
-                                                aria-selected=move || selected().to_string()
-                                                on:click=move |_| set_hero_tab.set(idx)
-                                                class=move || format!(
-                                                    "px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap {}",
-                                                    if selected() { "bg-gc-bg-elevated text-gc-text shadow-xs" } else { "text-gc-text-muted hover:text-gc-text" }
-                                                )
-                                            >
-                                                {label}
-                                            </button>
-                                        }
-                                    })
-                                    .collect_view()}
-                            </div>
-                        </div>
-                        <div class="relative aspect-[1440/1129] w-full bg-gc-bg overflow-hidden">
-                            {themed_screenshot(
-                                move |dark| match hero_tab.get() {
-                                    0 => if dark { "/assets/images/shell_side_by_side_dark.webp" } else { "/assets/images/shell_side_by_side_light.webp" },
-                                    1 => if dark { "/assets/images/shell_templates_dark.webp" } else { "/assets/images/shell_templates_light.webp" },
-                                    _ => if dark { "/assets/images/shell_home_dark.webp" } else { "/assets/images/shell_home_light.webp" },
-                                },
-                                || "Buwiz Forms desktop app showing a BIR form editor beside its live print preview",
-                                true,
-                            )}
-                        </div>
-                    </div>
+                    {hero_journey()}
                 </div>
 
                 <div class="mt-10 md:mt-12 flex flex-wrap items-center justify-center gap-x-7 gap-y-3">
@@ -276,8 +344,8 @@ pub fn Showcase() -> impl IntoView {
                         ("devices", "Windows · macOS · Linux"),
                         ("description", "All 43 BIR forms"),
                         ("cloud_off", "Works offline after sign-in"),
-                        ("smart_toy", "AI drafts, you file"),
-                        ("money_off", "Free for one TIN"),
+                        ("account_tree", "Every branch under one TIN"),
+                        ("approval", "You approve every filing and payment"),
                     ]
                         .into_iter()
                         .map(|(icon, label)| view! {
@@ -291,21 +359,120 @@ pub fn Showcase() -> impl IntoView {
             </section>
 
             <section id="features" class=SECTION>
-                <div class="mb-12 max-w-[65ch]">
+                <div class="mb-8 max-w-[65ch] lg:mb-12">
+                    <span class="mb-4 inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-gc-accent">
+                        <span class="material-symbols-outlined text-[15px] leading-none">"photo_library"</span>
+                        {format!("Tour the app · {count} screens")}
+                    </span>
                     <h2 class=SECTION_TITLE>"Everything you file, in one calm window."</h2>
                     <p class=SECTION_LEAD>
                         "Built around how business owners, bookkeepers, and CPAs actually file: pick the taxpayer, open the form, fill only what changed."
                     </p>
                 </div>
 
-                <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+                <div class="lg:hidden">
+                    <div class="no-scrollbar -mx-4 flex gap-2 overflow-x-auto px-4 pb-1 sm:-mx-6 sm:px-6 md:-mx-10 md:px-10" role="tablist" aria-label="App screens">
+                        {features.iter().enumerate().map(|(i, feature)| {
+                            let on = move || slide.get() == i;
+                            view! {
+                                <button
+                                    type="button"
+                                    role="tab"
+                                    aria-selected=move || on().to_string()
+                                    on:click=move |_| { slide.set(i); rail::go(rail, i); }
+                                    class=move || format!(
+                                        "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer {}",
+                                        if on() { "border-gc-accent bg-gc-accent-soft text-gc-accent" } else { "border-gc-border bg-gc-bg-card text-gc-text-muted" }
+                                    )
+                                >
+                                    <span class="material-symbols-outlined text-[16px] leading-none">{feature.icon}</span>
+                                    {feature.title}
+                                </button>
+                            }
+                        }).collect_view()}
+                    </div>
+
+                    <div
+                        node_ref=rail
+                        on:scroll=move |_| if let Some(i) = rail::current(rail, count) { if slide.get_untracked() != i { slide.set(i) } }
+                        class="no-scrollbar -mx-4 mt-4 flex snap-x snap-mandatory gap-3 overflow-x-auto scroll-smooth px-[8%] pb-2 sm:-mx-6 sm:px-[15%] md:-mx-10 md:px-[20%]"
+                    >
+                        {features.iter().enumerate().map(|(i, feature)| {
+                            let (title, pair) = (feature.title, (feature.dark_src, feature.light_src));
+                            view! {
+                                <article
+                                    id=format!("feat-card-{i}")
+                                    class=move || format!(
+                                        "w-[84%] shrink-0 snap-center overflow-hidden rounded-2xl border bg-gc-bg-elevated shadow-lg transition-[opacity,transform] duration-300 sm:w-[70%] md:w-[60%] {}",
+                                        if slide.get() == i { "border-gc-accent/50 opacity-100" } else { "border-gc-border opacity-60 scale-[0.97]" }
+                                    )
+                                >
+                                    <div class="relative aspect-[1440/1129] w-full overflow-hidden border-b border-gc-border bg-gc-bg">
+                                        {themed_screenshot(move |dark| if dark { pair.0 } else { pair.1 }, move || title, false)}
+                                        <span class="absolute left-2.5 top-2.5 rounded-full bg-black/65 px-2 py-0.5 text-[10.5px] font-semibold tabular-nums text-white">
+                                            {format!("{} / {count}", i + 1)}
+                                        </span>
+                                    </div>
+                                    <div class="p-4">
+                                        <div class="mb-1.5 flex items-center gap-2">
+                                            <span class="material-symbols-outlined text-[18px] text-gc-accent">{feature.icon}</span>
+                                            <h3 class="min-w-0 flex-1 truncate text-sm font-bold tracking-tight text-gc-text">{feature.title}</h3>
+                                            <span class="shrink-0 rounded-full bg-gc-accent-soft px-2 py-0.5 text-[10px] font-semibold text-gc-accent">{feature.badge}</span>
+                                        </div>
+                                        <p class="text-xs leading-relaxed text-gc-text-muted">{feature.description}</p>
+                                        <p class="mt-2 text-xs leading-relaxed text-gc-text-faint">{feature.detail}</p>
+                                    </div>
+                                </article>
+                            }
+                        }).collect_view()}
+                    </div>
+
+                    <div class="mt-3 flex items-center justify-between gap-3">
+                        <div class="flex items-center gap-1.5">
+                            {(0..count).map(|i| view! {
+                                <button
+                                    type="button"
+                                    aria-label=format!("Screen {}", i + 1)
+                                    on:click=move |_| { slide.set(i); rail::go(rail, i); }
+                                    class=move || if slide.get() == i {
+                                        "h-2 w-6 rounded-full bg-gc-accent transition-all cursor-pointer"
+                                    } else {
+                                        "h-2 w-2 rounded-full bg-gc-border-strong transition-all cursor-pointer"
+                                    }
+                                ></button>
+                            }).collect_view()}
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span class="mr-1 hidden text-xs text-gc-text-faint sm:inline">"Swipe to browse"</span>
+                            <button
+                                type="button"
+                                aria-label="Previous screen"
+                                on:click=move |_| { let i = slide.get_untracked().saturating_sub(1); slide.set(i); rail::go(rail, i); }
+                                class="grid h-9 w-9 place-items-center rounded-full border border-gc-border bg-gc-bg-elevated text-gc-text disabled:opacity-40 cursor-pointer"
+                                disabled=move || slide.get() == 0
+                            >
+                                <span class="material-symbols-outlined text-[20px]">"chevron_left"</span>
+                            </button>
+                            <button
+                                type="button"
+                                aria-label="Next screen"
+                                on:click=move |_| { let i = (slide.get_untracked() + 1).min(count - 1); slide.set(i); rail::go(rail, i); }
+                                class="grid h-9 w-9 place-items-center rounded-full bg-gc-accent text-white disabled:opacity-40 cursor-pointer"
+                                disabled=move || slide.get() == count - 1
+                            >
+                                <span class="material-symbols-outlined text-[20px]">"chevron_right"</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="hidden lg:grid lg:grid-cols-12 gap-8 items-start">
                     <div class="lg:col-span-5 flex flex-col gap-2.5">
                         {features
                             .into_iter()
                             .map(|feature| {
                                 let id = feature.id;
                                 let pick = feature.clone();
-                                let shot = feature.clone();
                                 let is_selected = move || active.read().id == id;
                                 view! {
                                     <div
@@ -338,17 +505,6 @@ pub fn Showcase() -> impl IntoView {
                                                 </div>
                                                 <p class="text-xs text-gc-text-muted leading-relaxed">{feature.description}</p>
                                             </div>
-                                        </div>
-
-                                        <div class=move || if is_selected() { "block lg:hidden mt-4 pt-3 border-t border-gc-border" } else { "hidden" }>
-                                            <div class="rounded-lg overflow-hidden border border-gc-border bg-gc-bg aspect-[1440/1129]">
-                                                {
-                                                    let title = shot.title;
-                                                    let pair = (shot.dark_src, shot.light_src);
-                                                    themed_screenshot(move |dark| if dark { pair.0 } else { pair.1 }, move || title, false)
-                                                }
-                                            </div>
-                                            <p class="text-xs text-gc-text-muted leading-relaxed mt-3">{shot.detail}</p>
                                         </div>
                                     </div>
                                 }
