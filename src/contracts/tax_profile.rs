@@ -370,6 +370,39 @@ pub struct OwnershipClaimView {
     pub updated_at: String,
     #[serde(default)]
     pub decided_at: Option<String>,
+    /// What the AI review aid recommended (`claimable`, `needs_review`,
+    /// `not_claimable`); staff only, kept after the claim closes.
+    #[serde(default)]
+    pub ai_recommendation: Option<String>,
+    /// The AI review aid's findings; staff only, while the claim is open.
+    #[serde(default)]
+    pub ai_assessment: Option<ClaimAssessmentView>,
+}
+
+/// The AI review aid for one claim. It recommends; staff decide.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClaimAssessmentView {
+    #[serde(default)]
+    pub recommendation: Option<String>,
+    #[serde(default)]
+    pub findings: Vec<ClaimFindingView>,
+    #[serde(default)]
+    pub reader_model: Option<String>,
+    #[serde(default)]
+    pub classifier_model: Option<String>,
+    /// Calls that failed or were skipped.
+    #[serde(default)]
+    pub problems: Vec<String>,
+    #[serde(default)]
+    pub assessed_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClaimFindingView {
+    pub check: String,
+    /// `matches`, `differs` or `unchecked`.
+    pub outcome: String,
+    pub detail: String,
 }
 
 /// One part of a Form 2303 upload: base64 of at most 4 KiB, sent in

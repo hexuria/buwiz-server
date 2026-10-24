@@ -558,6 +558,10 @@ async fn dispatch(req: RestRequest) -> AuthStackResult<RestResponse> {
                         .await,
                     )
                 }
+                (Method::POST, ClaimRoute::Reassess { claim_id }) => json_result(
+                    crate::application::reassess_ownership_claim(claim_id.to_owned(), request_auth)
+                        .await,
+                ),
                 _ => auth_error_response(&AuthStackError::not_found("unknown claim route")),
             }
         }
@@ -1160,6 +1164,8 @@ enum ClaimRoute<'a> {
     ReviewFile { claim_id: &'a str },
     /// `POST /api/admin/ownership-claims/{claim}/approve|reject`
     Decide { claim_id: &'a str, approve: bool },
+    /// `POST /api/admin/ownership-claims/{claim}/reassess`
+    Reassess { claim_id: &'a str },
 }
 
 fn claim_route(path: &str) -> Option<ClaimRoute<'_>> {
@@ -1192,6 +1198,7 @@ fn claim_route(path: &str) -> Option<ClaimRoute<'_>> {
             claim_id,
             approve: false,
         }),
+        [claim_id, "reassess"] if !claim_id.is_empty() => Some(ClaimRoute::Reassess { claim_id }),
         _ => None,
     }
 }
@@ -1464,6 +1471,10 @@ mod tests {
         assert_eq!(
             claim_route("/api/admin/ownership-claims/c1/reject"),
             Some(ClaimRoute::Decide { claim_id: "c1", approve: false })
+        );
+        assert_eq!(
+            claim_route("/api/admin/ownership-claims/c1/reassess"),
+            Some(ClaimRoute::Reassess { claim_id: "c1" })
         );
         for junk in [
             "/api/tax-profiles/ownership-claimsx",

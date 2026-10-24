@@ -9,7 +9,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{json, Value};
 
-use crate::contracts::OwnershipClaimView;
+use crate::contracts::{ClaimAssessmentView, OwnershipClaimView};
 use crate::domain::ownership_claim::ClaimCaseStatus;
 use crate::domain::provenance::{ScreenedUpload, UploadKind};
 use crate::error::{AuthStackError, AuthStackResult};
@@ -28,6 +28,7 @@ pub(crate) struct StoredClaim {
     pub profile_id: String,
     pub claimant_user_id: String,
     pub status: ClaimCaseStatus,
+    pub ai_refusals: u64,
 }
 
 pub(crate) async fn claim_file_key() -> AuthStackResult<[u8; 32]> {
@@ -151,7 +152,7 @@ pub(crate) async fn load_ownership_claim(claim_id: &str) -> AuthStackResult<Opti
     };
     let rows = execute_sql(
         "SELECT claim_id::text AS claim_id, profile_id::text AS profile_id, \
-                claimant_user_id::text AS claimant_user_id, status \
+                claimant_user_id::text AS claimant_user_id, status, ai_refusals \
          FROM buwiz_server.ownership_claims WHERE claim_id::text = ?1",
         vec![json!(claim_id)],
     )
@@ -165,6 +166,7 @@ pub(crate) async fn load_ownership_claim(claim_id: &str) -> AuthStackResult<Opti
         claimant_user_id: required_string(row, "claimant_user_id")?,
         status: ClaimCaseStatus::parse(&required_string(row, "status")?)
             .ok_or_else(|| AuthStackError::store("unknown ownership claim status"))?,
+        ai_refusals: row_i64(row, "ai_refusals").and_then(|n| u64::try_from(n).ok()).unwrap_or(0),
     }))
 }
 
@@ -182,7 +184,9 @@ pub(crate) async fn store_ownership_claim_file(
         AtomicSqlStatement::guard(
         "UPDATE buwiz_server.ownership_claims SET \
             status = 'pending', file_kind = ?2, file_size = ?3, file_sha256 = ?4, \
-            file_nonce = ?5, file_ciphertext = ?6, has_c2pa = ?7, updated_at = CURRENT_TIMESTAMP \
+            file_nonce = ?5, file_ciphertext = ?6, has_c2pa = ?7, \
+            ai_assessment = NULL, ai_recommendation = NULL, ai_assessed_at = NULL, \
+            updated_at = CURRENT_TIMESTAMP \
          WHERE claim_id = ?1::uuid AND status IN ('awaiting_file', 'pending') \
          RETURNING claim_id::text AS claim_id",
         vec![
@@ -214,6 +218,25 @@ pub(crate) async fn note_ownership_claim_ai_refusal(claim_id: &str) -> AuthStack
     Ok(())
 }
 
+/// Stores the AI review aid for an open claim's current file. A claim that
+/// closed meanwhile keeps nothing.
+pub(crate) async fn store_ownership_claim_assessment(
+    claim_id: &str,
+    recommendation: Option<&str>,
+    assessment: &Value,
+) -> AuthStackResult<()> {
+    initialize_schema_async().await?;
+    execute_sql(
+        "UPDATE buwiz_server.ownership_claims SET \
+            ai_assessment = ?2::jsonb, ai_recommendation = ?3, ai_assessed_at = CURRENT_TIMESTAMP \
+         WHERE claim_id = ?1::uuid AND status = 'pending' \
+         RETURNING claim_id::text AS claim_id",
+        vec![json!(claim_id), json!(assessment.to_string()), json!(recommendation)],
+    )
+    .await?;
+    Ok(())
+}
+
 /// Closes an open claim and deletes its file, in whatever transaction the
 /// caller runs it. Aborts that transaction when the claim is not open.
 pub(crate) fn close_ownership_claim_statements(
@@ -224,7 +247,7 @@ pub(crate) fn close_ownership_claim_statements(
 ) -> Vec<AtomicSqlStatement> {
     vec![delete_parts_statement(claim_id), AtomicSqlStatement::guard(
         "UPDATE buwiz_server.ownership_claims SET \
-            status = ?2, file_nonce = NULL, file_ciphertext = NULL, \
+            status = ?2, file_nonce = NULL, file_ciphertext = NULL, ai_assessment = NULL, \
             reviewer_user_id = ?3::uuid, decision_note = ?4, \
             decided_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP \
          WHERE claim_id = ?1::uuid AND status IN ('awaiting_file', 'pending') \
@@ -378,6 +401,8 @@ fn claim_columns() -> String {
          to_char(c.created_at AT TIME ZONE 'UTC', {TIMESTAMP}) AS created_at, \
          to_char(c.updated_at AT TIME ZONE 'UTC', {TIMESTAMP}) AS updated_at, \
          to_char(c.decided_at AT TIME ZONE 'UTC', {TIMESTAMP}) AS decided_at, \
+         c.ai_recommendation, c.ai_assessment::text AS ai_assessment, \
+         to_char(c.ai_assessed_at AT TIME ZONE 'UTC', {TIMESTAMP}) AS ai_assessed_at, \
          COALESCE(p.display_name, p.registered_name) AS profile_name, p.tin_last4, \
          u.primary_email AS claimant_email, \
          (SELECT count(*) FROM buwiz_server.ownership_claim_parts pt \
@@ -453,7 +478,16 @@ fn claim_view(row: &Value, for_staff: bool) -> AuthStackResult<OwnershipClaimVie
         created_at: row_string(row, "created_at").unwrap_or_default(),
         updated_at: row_string(row, "updated_at").unwrap_or_default(),
         decided_at: row_string(row, "decided_at"),
+        ai_recommendation: if for_staff { row_string(row, "ai_recommendation") } else { None },
+        ai_assessment: if for_staff { assessment_view(row) } else { None },
     })
+}
+
+fn assessment_view(row: &Value) -> Option<ClaimAssessmentView> {
+    let raw = row_string(row, "ai_assessment")?;
+    let mut view: ClaimAssessmentView = serde_json::from_str(&raw).ok()?;
+    view.assessed_at = row_string(row, "ai_assessed_at");
+    Some(view)
 }
 
 #[cfg(test)]
@@ -497,6 +531,9 @@ mod tests {
             "profile_name": "Someone Else's Name",
             "tin_last4": "1234",
             "claimant_email": "claimant@example.test",
+            "ai_recommendation": "needs_review",
+            "ai_assessment": r#"{"recommendation":"needs_review","findings":[{"check":"tin","outcome":"unchecked","detail":"TIN not readable"}]}"#,
+            "ai_assessed_at": "2026-10-24T01:00:00.000Z",
         })
     }
 
@@ -506,12 +543,18 @@ mod tests {
             let view = claim_view(&claim_row(status), false).unwrap();
             assert_eq!(view.profile_name, "", "{status}");
             assert_eq!(view.claimant_email, None);
+            assert_eq!(view.ai_recommendation, None, "claimants never see the AI aid");
+            assert_eq!(view.ai_assessment, None);
             assert_eq!(view.tin_last4, "1234");
         }
         let approved = claim_view(&claim_row("approved"), false).unwrap();
         assert_eq!(approved.profile_name, "Someone Else's Name");
         let staff = claim_view(&claim_row("pending"), true).unwrap();
         assert_eq!(staff.profile_name, "Someone Else's Name");
+        assert_eq!(staff.ai_recommendation.as_deref(), Some("needs_review"));
+        let assessment = staff.ai_assessment.unwrap();
+        assert_eq!(assessment.findings[0].check, "tin");
+        assert_eq!(assessment.assessed_at.as_deref(), Some("2026-10-24T01:00:00.000Z"));
         assert_eq!(staff.claimant_email.as_deref(), Some("claimant@example.test"));
     }
 
@@ -522,7 +565,8 @@ mod tests {
             "AS claim_id", "AS profile_id", "c.status", "c.file_kind", "c.file_size",
             "c.file_sha256", "c.has_c2pa", "c.ai_refusals", "c.decision_note", "AS created_at",
             "AS updated_at", "AS decided_at", "AS profile_name", "p.tin_last4",
-            "AS claimant_email", "AS parts_received",
+            "AS claimant_email", "AS parts_received", "c.ai_recommendation", "AS ai_assessment",
+            "AS ai_assessed_at",
         ] {
             assert!(columns.contains(alias), "{alias}");
         }

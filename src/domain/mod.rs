@@ -6,6 +6,7 @@
 #![allow(unused_imports)]
 
 pub mod agent;
+pub mod claim_assessment;
 pub mod desktop_session;
 pub mod invite;
 pub mod oauth_client;
