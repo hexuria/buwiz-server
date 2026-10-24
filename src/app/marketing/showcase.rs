@@ -132,13 +132,13 @@ const FAQS: [FaqItem; 5] = [
     },
     FaqItem {
         id: "agent",
-        question: "Can an AI agent file a return for me?",
-        answer: "No. bir-mcp, the agent server built into Buwiz, can open, fill, and check drafts, but it has no submit, queue, or payment tool. It only runs after you sign it in with your Buwiz account, and filing always takes your own click in the app.",
+        question: "Can an AI Co-worker file and pay for me?",
+        answer: "Yes, with your approval. Your co-worker can prepare a return, submit it and pay it online, but it only acts on the profiles and actions you allowed on your Buwiz account, and it stops to ask you before every submission and every payment.",
     },
     FaqItem {
         id: "pricing",
         question: "What is free, and when do I pay?",
-        answer: "Buwiz is free for one tax profile (one 9-digit TIN), including all 43 forms, print preview, templates, Guided Mode, and AI agent drafting. A paid plan is needed only when you file for several TINs or businesses.",
+        answer: "Buwiz is free for one tax profile (one 9-digit TIN), including all 43 forms, print preview, templates, Guided Mode, and the AI Co-worker. A paid plan is needed only when you file for several TINs or businesses.",
     },
     FaqItem {
         id: "claims",
@@ -147,15 +147,57 @@ const FAQS: [FaqItem; 5] = [
     },
 ];
 
+/// The six AI Co-worker demos, in filing order: (eyebrow, title, lead).
+const DEMOS: [(&str, &str, &str); 6] = [
+    (
+        "CONNECT",
+        "Install Buwiz from the chat. Log in with Touch ID.",
+        "Ask your co-worker to install the Buwiz plugin, then say “Log in with Buwiz”. A login card appears in the chat and your saved password fills it with Touch ID. You choose what the co-worker may do on your account.",
+    ),
+    (
+        "TAX PROFILES",
+        "Your profiles, years, forms and deadlines, as live cards.",
+        "Ask in plain words and get tables and cards back: every tax profile, the one you pick, the tax year, the forms you file and what falls due next. Keep any of them as a Mini App.",
+    ),
+    (
+        "PREPARE",
+        "Send the accountant's spreadsheet. Get a finished form.",
+        "Attach the workbook your accountant sent. The co-worker reads it, fills the right BIR form, checks it against every official rule and opens it as BIR prints it, for you to review.",
+    ),
+    (
+        "SUBMIT",
+        "Say “submit”. Approve it. It is queued.",
+        "The co-worker checks the form again, asks for permission to publish if you never gave it, and shows you exactly what will be filed. Nothing leaves until you approve.",
+    ),
+    (
+        "CONFIRMATION",
+        "A routine watches your inbox for BIR's confirmation.",
+        "Install Gmail and ask for a routine. Every minute it looks for BIR's confirmation email; when it arrives, the confirmation comes back as a PDF to print or keep.",
+    ),
+    (
+        "PAY",
+        "Paid online through LandBank, with your OK.",
+        "A second routine waits for the confirmation, then opens the bank's payment site on the co-worker's computer and fills in BIR, the form, the period, the ATC and the amount. You log in with Touch ID and approve the amount.",
+    ),
+];
+
 #[cfg(feature = "hydrate")]
-fn agent_demo() -> AnyView {
-    view! { <super::demo::OpenGrokFilm /> }.into_any()
+fn agent_demo(n: usize) -> AnyView {
+    use super::demo::*;
+    match n {
+        0 => view! { <ConnectFilm /> }.into_any(),
+        1 => view! { <ProfilesFilm /> }.into_any(),
+        2 => view! { <PrepareFilm /> }.into_any(),
+        3 => view! { <SubmitFilm /> }.into_any(),
+        4 => view! { <ConfirmFilm /> }.into_any(),
+        _ => view! { <PayFilm /> }.into_any(),
+    }
 }
 
-/// Holds the demo's height on the server build; the page renders client-side.
+/// Holds a demo's height on the server build; the page renders client-side.
 #[cfg(not(feature = "hydrate"))]
-fn agent_demo() -> AnyView {
-    view! { <div class="h-[700px]"></div> }.into_any()
+fn agent_demo(_n: usize) -> AnyView {
+    view! { <div class="h-[720px]"></div> }.into_any()
 }
 
 /// The whole page body is one island: the hero tabs, feature picker, and FAQ
@@ -365,19 +407,32 @@ pub fn Showcase() -> impl IntoView {
             </section>
 
             <section id="agent" class=SECTION>
-                <div class="mb-8 max-w-[68ch]">
-                    <span class="inline-block text-[11px] font-bold uppercase tracking-[0.18em] text-gc-accent mb-4">"WORKS WITH OPENGROK"</span>
-                    <h2 class=SECTION_TITLE>"Your OpenGrok coworker prepares the return. You file it."</h2>
+                <div class="mb-12 max-w-[68ch]">
+                    <span class="inline-block text-[11px] font-bold uppercase tracking-[0.18em] text-gc-accent mb-4">"AI CO-WORKER"</span>
+                    <h2 class=SECTION_TITLE>"AI Native Tax Filing"</h2>
                     <p class=SECTION_LEAD>
-                        "Add the Buwiz Forms plugin to an OpenGrok coworker and sign in once. It reads your tax profile, tracks your deadlines, and fills any of the 43 forms from your spreadsheets. When the draft passes BIR's rules, it hands it back to you to review and submit."
+                        "Give the paperwork to an AI Co-worker. It installs Buwiz from the chat, reads your tax profiles, turns your accountant's spreadsheet into a finished BIR form, files it when you approve, watches for BIR's confirmation and pays online. You stay in charge: every step that files or pays waits for your OK."
                     </p>
                 </div>
-                {agent_demo()}
-                <div class="mt-8 grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div class="flex flex-col gap-20">
+                    {DEMOS.iter().enumerate().map(|(i, &(eyebrow, title, lead))| view! {
+                        <div>
+                            <div class="mb-6 max-w-[68ch]">
+                                <span class="inline-block text-[11px] font-bold uppercase tracking-[0.18em] text-gc-accent mb-3">
+                                    {format!("{:02} · {eyebrow}", i + 1)}
+                                </span>
+                                <h3 class="text-2xl md:text-3xl font-black tracking-tight text-gc-text mb-2">{title}</h3>
+                                <p class=SECTION_LEAD>{lead}</p>
+                            </div>
+                            {agent_demo(i)}
+                        </div>
+                    }).collect_view()}
+                </div>
+                <div class="mt-12 grid grid-cols-1 md:grid-cols-3 gap-3">
                     {[
-                        ("edit_note", "Drafts only", "There is no submit, queue, or payment tool. Filing always takes your click."),
-                        ("key", "You choose what it may do", "Approve the agent on your Buwiz account: which profiles, read-only or drafting."),
-                        ("link_off", "End it anytime", "Remove the agent under Tax profiles, Connected agents, and its access stops."),
+                        ("approval", "Asks before it acts", "Filing and paying always wait for your approval, every time."),
+                        ("key", "You choose what it may do", "Approve the co-worker on your Buwiz account: which profiles, and which actions."),
+                        ("link_off", "End it anytime", "Remove the co-worker under Tax profiles, Connected agents, and its access stops."),
                     ]
                         .into_iter()
                         .map(|(icon, title, body)| view! {
@@ -423,7 +478,7 @@ pub fn Showcase() -> impl IntoView {
                                     "All 43 BIR forms with official rule checks",
                                     "Live BIR-format print preview",
                                     "Templates & Guided Mode",
-                                    "AI agent drafting with bir-mcp",
+                                    "AI Co-worker: prepare, file and pay with your approval",
                                     "Encrypted on your computer, works offline after sign-in",
                                 ]
                                     .into_iter()

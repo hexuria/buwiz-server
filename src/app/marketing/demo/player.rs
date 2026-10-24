@@ -222,39 +222,26 @@ impl Script {
         self.wait(GLIDE)
     }
 
-    /// Glides the cursor back to where it rests.
-    pub fn move_home(&mut self, cur: DemoCursor) -> &mut Self {
-        self.then(move || cur.glide(Goal::Home, GLIDE));
-        self.wait(GLIDE)
-    }
-
     /// Shows the press ring. Doesn't move the script's time.
     pub fn press(&mut self, cur: DemoCursor) -> &mut Self {
         self.then(move || cur.press())
     }
 }
 
-/// What the cursor points at: the first of its elements that is on screen. Two elements let a
-/// step aim at whichever copy of a button the current layout shows.
+/// What the cursor points at, while it is on screen.
 #[derive(Clone, Copy)]
-pub struct Aim(NodeRef<html::Div>, Option<NodeRef<html::Div>>);
+pub struct Aim(NodeRef<html::Div>);
 
 impl Aim {
-    pub fn either(a: NodeRef<html::Div>, b: NodeRef<html::Div>) -> Self {
-        Self(a, Some(b))
-    }
-
     fn rect(self) -> Option<web_sys::DomRect> {
-        [Some(self.0), self.1].into_iter().flatten().find_map(|r| {
-            let rect = r.get_untracked()?.get_bounding_client_rect();
-            (rect.width() > 0. && rect.height() > 0.).then_some(rect)
-        })
+        let rect = self.0.get_untracked()?.get_bounding_client_rect();
+        (rect.width() > 0. && rect.height() > 0.).then_some(rect)
     }
 }
 
 impl From<NodeRef<html::Div>> for Aim {
     fn from(r: NodeRef<html::Div>) -> Self {
-        Self(r, None)
+        Self(r)
     }
 }
 
@@ -307,11 +294,6 @@ impl DemoCursor {
         self.rest.set_value(None);
         self.pos.set(None);
         self.down.set(false);
-    }
-
-    /// Where the pointer is, in px from the stage's corner. None while it rests at home.
-    pub fn at(self) -> Signal<Option<(f64, f64)>> {
-        self.pos.into()
     }
 
     pub fn press(self) {

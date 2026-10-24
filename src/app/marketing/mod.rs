@@ -30,7 +30,7 @@ pub fn MarketingHomePage() -> impl IntoView {
         <Title text="Buwiz Forms | The Modern Alternative to eBIRForms" />
         <Meta
             name="description"
-            content="Buwiz Forms is a fast, free alternative to eBIRForms for Windows, macOS, and Linux: all 43 BIR forms with official rule checks, live print preview, templates, Guided Mode, and AI agent drafting."
+            content="Buwiz Forms is a fast, free alternative to eBIRForms for Windows, macOS, and Linux: all 43 BIR forms with official rule checks, live print preview, templates, Guided Mode, and an AI Co-worker that prepares, files and pays with your approval."
         />
         <MarketingLayout>
             <Showcase />
@@ -67,7 +67,7 @@ fn MarketingLayout(children: Children) -> impl IntoView {
                         <nav class="hidden md:flex items-center gap-6" aria-label="Primary Navigation">
                             <a href="/#features" class=NAV_LINK>"Features"</a>
                             <a href="/#account" class=NAV_LINK>"Account"</a>
-                            <a href="/#agent" class=NAV_LINK>"AI Agent"</a>
+                            <a href="/#agent" class=NAV_LINK>"AI Co-worker"</a>
                             <a href="/#pricing" class=NAV_LINK>"Pricing"</a>
                             <a href="/#faq" class=NAV_LINK>"FAQ"</a>
                         </nav>
