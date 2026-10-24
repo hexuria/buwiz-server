@@ -35,7 +35,7 @@ use crate::app::{
     ListSigningKeys, ListTaxProfiles, ListWorkspaceAudit, ListWorkspaceInvitations,
     ListWorkspaceMembers, ListWorkspacePermissions, ListWorkspaceRoles, LoginEmailPassword,
     LogoutCurrentSession, MigrateWorkspaceLegacyData, PatchTaxProfile, PublishPolicyVersion,
-    ReclaimTaxProfile, ListPasses, OfferPass, AskForPass, PassStep, ChangePass, ListAgentConnections, RevokeAgentConnection, InviteOwner, WithdrawOwnerInvite, PreviewOwnerInvite, AcceptOwnerInvite, ListFirmPublishers, ChangeFirmPublisher, ListMyOwnershipClaims, StartOwnershipClaim, UploadOwnershipClaimPart, WithdrawOwnershipClaim, ListOwnershipClaimQueue, DecideOwnershipClaim,
+    ReclaimTaxProfile, ListPasses, OfferPass, AskForPass, PassStep, ChangePass, ListAgentConnections, RevokeAgentConnection, SetAgentMayQueue, InviteOwner, WithdrawOwnerInvite, PreviewOwnerInvite, AcceptOwnerInvite, ListFirmPublishers, ChangeFirmPublisher, ListMyOwnershipClaims, StartOwnershipClaim, UploadOwnershipClaimPart, WithdrawOwnershipClaim, ListOwnershipClaimQueue, DecideOwnershipClaim,
     RegisterEmailPassword, RemoveWorkspaceMember, RequireAuthenticatedRoute,
     RequireAuthorizedRoute, ResendEmailVerification, ResendWorkspaceInvitation,
     ResolveWorkspaceVaultTarget, RevealDashboardSecret, RevokeAccountSession,
@@ -230,6 +230,7 @@ async fn dispatch(
         ChangePass,
         ListAgentConnections,
         RevokeAgentConnection,
+        SetAgentMayQueue,
         InviteOwner,
         WithdrawOwnerInvite,
         PreviewOwnerInvite,
@@ -330,8 +331,36 @@ where
     if let Some(status) = extras.status {
         parts.status = status;
     }
+    parts.status = server_fn_status(parts.status, &bytes);
     parts.headers.extend(extras.headers);
     once_bytes_response(parts.status, parts.headers, bytes)
+}
+
+/// A server-function error body is `Kind|message`. If that body comes back
+/// with a success status, the browser tries to read it as the result and
+/// shows "error deserializing server function results".
+pub(crate) fn server_fn_status(status: http::StatusCode, body: &[u8]) -> http::StatusCode {
+    if (400..600).contains(&status.as_u16()) {
+        return status;
+    }
+    let Ok(text) = std::str::from_utf8(body) else {
+        return status;
+    };
+    const MARKERS: [&str; 8] = [
+        "ServerError|",
+        "Args|",
+        "MissingArg|",
+        "Deserialization|",
+        "Serialization|",
+        "Registration|",
+        "Response|",
+        "MiddlewareError|",
+    ];
+    if MARKERS.iter().any(|marker| text.starts_with(marker)) {
+        http::StatusCode::INTERNAL_SERVER_ERROR
+    } else {
+        status
+    }
 }
 
 const REQUEST_BODY_HEADER: &str = "x-buwiz-request-body";
@@ -479,4 +508,23 @@ pub(crate) fn once_bytes_response(
         ErrorCode::InternalError(None)
     })?;
     wasip3::http_compat::http_into_wasi_response(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::server_fn_status;
+
+    #[test]
+    fn an_error_body_on_a_success_status_is_an_error() {
+        let ok = http::StatusCode::OK;
+        assert_eq!(
+            server_fn_status(ok, br#"ServerError|tin is already held"#),
+            http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(server_fn_status(ok, br#"{"profile_id":"p"}"#), ok);
+        assert_eq!(
+            server_fn_status(http::StatusCode::BAD_REQUEST, br#"Args|tin"#),
+            http::StatusCode::BAD_REQUEST
+        );
+    }
 }

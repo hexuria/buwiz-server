@@ -21,9 +21,23 @@ pub struct AgentConnectionView {
     #[serde(default)]
     pub preset: Option<String>,
     pub profiles: Vec<AgentProfileRef>,
+    /// The owner allowed this agent to leave filings for the owner's computer.
+    /// The server still never contacts BIR.
+    #[serde(default)]
+    pub may_queue: bool,
     pub created_at: String,
     #[serde(default)]
     pub last_used_at: Option<String>,
+}
+
+/// What the owner's app reports after it picks up a device filing.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeviceFilingReportRequest {
+    pub status: String,
+    #[serde(default)]
+    pub error_summary: String,
+    #[serde(default)]
+    pub field_errors: Vec<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

@@ -22,11 +22,14 @@ pub const TOOL_LIST_YEARS: &str = "list_tax_years";
 pub const TOOL_LIST_DRAFTS: &str = "list_form_drafts";
 pub const TOOL_GET_DRAFT: &str = "get_form_draft";
 pub const TOOL_LIST_FILINGS: &str = "list_filings";
+pub const TOOL_QUEUE_ON_DEVICE: &str = "queue_on_device";
+pub const TOOL_DEVICE_FILING_STATUS: &str = "device_filing_status";
 
-pub const INSTRUCTIONS: &str = "Read-only access to the Buwiz tax profiles this user allowed you on. \
-Start with list_tax_profiles to see them and what you may do on each. Then read a profile's \
-tax years (which forms it files), its form drafts, and its filing history. You cannot change \
-data, publish to BIR, or share profiles. The full TIN is never given out; only its last 4 digits.";
+pub const INSTRUCTIONS: &str = "Read the Buwiz tax profiles this user allowed you on. \
+Start with list_tax_profiles. Then read a profile's tax years, form drafts, and filing history. \
+queue_on_device is the only write: it leaves a filing for the owner's computer. This server never \
+contacts BIR. The owner's app validates the form and uploads it only with a standing OK. \
+The full TIN is never given out by the read tools; only its last 4 digits.";
 
 /// What one JSON-RPC message asks for.
 #[derive(Clone, Debug, PartialEq)]
@@ -234,6 +237,45 @@ the taxpayer's installed app, never through this server.",
             "inputSchema": profile_input(json!({}), &[]),
             "annotations": read_only(),
         }),
+        json!({
+            "name": TOOL_QUEUE_ON_DEVICE,
+            "title": "Queue on the owner's computer",
+            "description": "Leave a filing for the account owner's computer to send. This server never \
+contacts BIR. The owner's app runs that form's Validate before upload and sends only when the owner \
+has granted a standing OK for this taxpayer and form. The owner must turn Queue on for this agent \
+under Connected agents, or the call is refused and nothing is stored.",
+            "inputSchema": profile_input(json!({
+                "form_code": { "type": "string", "description": "BIR form code, such as 2551Q." },
+                "tax_year": { "type": "integer", "minimum": 1990, "maximum": 2100 },
+                "period": { "type": "integer", "minimum": 1, "maximum": 12,
+                            "description": "Quarter 1-4 or month 1-12, matching the form." },
+                "tin": { "type": "string", "description": "The taxpayer TIN. Its last 4 digits must match the profile." },
+                "fields": { "type": "object", "description": "Official box key to value, as bir-mcp would fill them.",
+                            "additionalProperties": { "type": ["string", "number", "boolean", "null"] } }
+            }), &["form_code", "tax_year", "period", "tin", "fields"]),
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false,
+            },
+        }),
+        json!({
+            "name": TOOL_DEVICE_FILING_STATUS,
+            "title": "Device filing status",
+            "description": "Read a filing you queued with queue_on_device. status is queued until the \
+owner's computer picks it up, then picked, invalid (with the form's field errors), or failed. \
+This server never contacts BIR.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "From queue_on_device." }
+                },
+                "required": ["id"],
+                "additionalProperties": false,
+            },
+            "annotations": read_only(),
+        }),
     ]
 }
 
@@ -345,12 +387,20 @@ mod tests {
             names,
             [
                 TOOL_LIST_PROFILES, TOOL_GET_PROFILE, TOOL_LIST_YEARS, TOOL_LIST_DRAFTS,
-                TOOL_GET_DRAFT, TOOL_LIST_FILINGS,
+                TOOL_GET_DRAFT, TOOL_LIST_FILINGS, TOOL_QUEUE_ON_DEVICE, TOOL_DEVICE_FILING_STATUS,
             ]
         );
         for tool in tools {
-            assert_eq!(tool["annotations"]["readOnlyHint"], true, "{}", tool["name"]);
-            assert_eq!(tool["annotations"]["destructiveHint"], false, "{}", tool["name"]);
+            let name = tool["name"].as_str().unwrap();
+            if name == TOOL_QUEUE_ON_DEVICE {
+                assert_eq!(tool["annotations"]["readOnlyHint"], false, "{name}");
+                let description = tool["description"].as_str().unwrap();
+                assert!(description.contains("never"), "{description}");
+                assert!(description.to_ascii_lowercase().contains("bir"), "{description}");
+            } else {
+                assert_eq!(tool["annotations"]["readOnlyHint"], true, "{name}");
+            }
+            assert_eq!(tool["annotations"]["destructiveHint"], false, "{name}");
             assert_eq!(tool["inputSchema"]["type"], "object");
             assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{}", tool["name"]);
             // Every required argument is described.
@@ -375,6 +425,11 @@ mod tests {
             assert_eq!(required(name), ["profile_id"], "{name}");
         }
         assert_eq!(required(TOOL_GET_DRAFT), ["profile_id", "draft_id"]);
+        assert_eq!(
+            required(TOOL_QUEUE_ON_DEVICE),
+            ["profile_id", "form_code", "tax_year", "period", "tin", "fields"]
+        );
+        assert_eq!(required(TOOL_DEVICE_FILING_STATUS), ["id"]);
         let drafts = tools().into_iter().find(|tool| tool["name"] == TOOL_LIST_DRAFTS).unwrap();
         assert_eq!(drafts["inputSchema"]["properties"]["tax_year"]["type"], "integer");
     }

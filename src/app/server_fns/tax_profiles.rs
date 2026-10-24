@@ -120,7 +120,13 @@ pub async fn patch_tax_profile(
     }
     #[cfg(not(feature = "ssr"))]
     {
-        let _ = (profile_id, display_name, registered_name, rdo_code, updated_at);
+        let _ = (
+            profile_id,
+            display_name,
+            registered_name,
+            rdo_code,
+            updated_at,
+        );
         unreachable!()
     }
 }
@@ -230,7 +236,13 @@ pub async fn offer_pass(
     }
     #[cfg(not(feature = "ssr"))]
     {
-        let _ = (profile_id, organization_slug, permissions, allow_publish, ends_on);
+        let _ = (
+            profile_id,
+            organization_slug,
+            permissions,
+            allow_publish,
+            ends_on,
+        );
         unreachable!()
     }
 }
@@ -322,7 +334,9 @@ pub async fn pass_step(
                 .await
             }
             "end" => crate::application::end_pass(profile_id, pass_id, auth).await,
-            _ => Err(crate::error::AuthStackError::validation("unknown pass step")),
+            _ => Err(crate::error::AuthStackError::validation(
+                "unknown pass step",
+            )),
         }
         .map_err(server_fn_error)
     }
@@ -343,6 +357,26 @@ pub async fn list_agent_connections() -> Result<AgentConnectionListResponse, Ser
     }
     #[cfg(not(feature = "ssr"))]
     {
+        unreachable!()
+    }
+}
+
+/// The owner allows this agent to leave filings for their computer.
+/// The server still never contacts BIR.
+#[server(prefix = "/api/ui")]
+pub async fn set_agent_may_queue(
+    connection_id: String,
+    may_queue: bool,
+) -> Result<AgentConnectionListResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::set_agent_may_queue(connection_id, may_queue, server_fn_request_auth())
+            .await
+            .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (connection_id, may_queue);
         unreachable!()
     }
 }
@@ -522,7 +556,10 @@ pub async fn start_ownership_claim(
     #[cfg(feature = "ssr")]
     {
         crate::application::start_ownership_claim(
-            OwnershipClaimStartRequest { tin_root, branch_code },
+            OwnershipClaimStartRequest {
+                tin_root,
+                branch_code,
+            },
             server_fn_request_auth(),
         )
         .await

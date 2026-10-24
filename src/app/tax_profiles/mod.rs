@@ -15,14 +15,14 @@ pub use invites::{FirmPanel, OwnerInviteAccept, OwnerInvitePage};
 pub use passes::{PassesPanel, WorkspaceWaitingNotice};
 
 use crate::app::{
-    ClaimTaxProfile, CreateTaxProfile, ListTaxProfiles, ReclaimTaxProfile,
-    browser_load, get_current_session, list_organizations, list_tax_profiles,
+    ClaimTaxProfile, CreateTaxProfile, ListTaxProfiles, ReclaimTaxProfile, browser_load,
+    get_current_session, list_organizations, list_tax_profiles, server_error_text,
 };
 use crate::contracts::{OrganizationListResponse, TaxProfileListResponse};
 use crate::ui::classes::{
     BANNER_ERROR, BANNER_SUCCESS, BTN_PRIMARY, BTN_SECONDARY, FIELD, FIELD_GROUP, INPUT,
-    ORG_KICKER, ORG_PAGE, ORG_TOOLBAR, ORG_TOOLBAR_COPY, ORG_TOOLBAR_SUB, ORG_TOOLBAR_TITLE,
-    PANEL, RESULT_LINE, SECTION_LABEL,
+    ORG_KICKER, ORG_PAGE, ORG_TOOLBAR, ORG_TOOLBAR_COPY, ORG_TOOLBAR_SUB, ORG_TOOLBAR_TITLE, PANEL,
+    RESULT_LINE, SECTION_LABEL,
 };
 use crate::ui::page_shell;
 use leptos::attr::custom::custom_attribute;
@@ -78,8 +78,10 @@ pub fn TaxProfilesHome() -> impl IntoView {
         "Create a cloud tax profile for a TIN and branch. The human must confirm. Email must already be verified.",
     );
     let webmcp_tin_param = custom_attribute("toolparamdescription", "Nine-digit TIN root");
-    let webmcp_branch_param =
-        custom_attribute("toolparamdescription", "Five-digit branch code, head office 00000");
+    let webmcp_branch_param = custom_attribute(
+        "toolparamdescription",
+        "Five-digit branch code, head office 00000",
+    );
     let webmcp_name_param = custom_attribute("toolparamdescription", "Registered or legal name");
     let webmcp_rdo_param = custom_attribute("toolparamdescription", "BIR RDO code");
 
@@ -104,9 +106,9 @@ pub fn TaxProfilesHome() -> impl IntoView {
                 || reclaim_value.get().and_then(|r| r.err()).is_some()>
                 <p class=BANNER_ERROR>
                     {move || {
-                        create_value.get().and_then(|r| r.err()).map(|e| e.to_string())
-                            .or_else(|| claim_value.get().and_then(|r| r.err()).map(|e| e.to_string()))
-                            .or_else(|| reclaim_value.get().and_then(|r| r.err()).map(|e| e.to_string()))
+                        create_value.get().and_then(|r| r.err()).map(server_error_text)
+                            .or_else(|| claim_value.get().and_then(|r| r.err()).map(server_error_text))
+                            .or_else(|| reclaim_value.get().and_then(|r| r.err()).map(server_error_text))
                             .unwrap_or_default()
                     }}
                 </p>
@@ -318,7 +320,10 @@ mod tests {
 
     #[test]
     fn access_lines_say_who_controls_and_whether_publishing_works() {
-        assert_eq!(access_line("owner", &ids(&["profile.view"])), "You own this profile");
+        assert_eq!(
+            access_line("owner", &ids(&["profile.view"])),
+            "You own this profile"
+        );
         assert_eq!(access_line("holding_org", &[]), "Held by your workspace");
         assert_eq!(
             access_line("pass", &ids(&["profile.view", "drafts.save"])),
