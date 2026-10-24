@@ -14,12 +14,7 @@ pub struct SpinTransport {
 
 impl Transport for SpinTransport {
     fn send(&self, mut request: TransportRequest) -> BoxFuture<'_, Result<TransportResponse, Error>> {
-        // A gateway serves the System One body at `/v1/decisions`.
-        if self.route == ClassifierRoute::Decisions
-            && let Some(base) = request.url.strip_suffix("/v1/systemone")
-        {
-            request.url = format!("{base}/v1/decisions");
-        }
+        request.url = routed_url(self.route, request.url);
         Box::pin(async move {
             let timeout = request.timeout;
             let (status, headers, body) = send(
@@ -45,6 +40,14 @@ impl Transport for SpinTransport {
             #[cfg(not(all(feature = "postgres", runtime_spin)))]
             let _ = duration;
         })
+    }
+}
+
+/// A gateway serves the System One body at `/v1/decisions`.
+fn routed_url(route: ClassifierRoute, url: String) -> String {
+    match url.strip_suffix("/v1/systemone") {
+        Some(base) if route == ClassifierRoute::Decisions => format!("{base}/v1/decisions"),
+        _ => url,
     }
 }
 
@@ -108,5 +111,31 @@ pub async fn send(
     {
         let _ = (method, url, headers, body, timeout);
         Err(Failure::Connection("AI requests need the Spin runtime".to_owned()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_decisions_route_moves_system_one_calls() {
+        let url = "https://gw.test/v1/systemone".to_owned();
+        assert_eq!(routed_url(ClassifierRoute::Decisions, url.clone()), "https://gw.test/v1/decisions");
+        assert_eq!(routed_url(ClassifierRoute::SystemOne, url.clone()), url);
+        let other = "https://gw.test/v1/models".to_owned();
+        assert_eq!(routed_url(ClassifierRoute::Decisions, other.clone()), other);
+    }
+
+    #[test]
+    fn failures_read_plainly() {
+        assert_eq!(Failure::Timeout.to_string(), "timed out");
+        assert_eq!(Failure::Connection("refused".into()).to_string(), "refused");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn outside_spin_nothing_is_sent() {
+        let sent = send(http::Method::GET, "https://x.test", http::HeaderMap::new(), Bytes::new(), Duration::from_secs(1)).await;
+        assert_eq!(sent.err().map(|f| f.to_string()).as_deref(), Some("AI requests need the Spin runtime"));
     }
 }

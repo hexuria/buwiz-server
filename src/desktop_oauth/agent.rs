@@ -658,6 +658,53 @@ mod tests {
         assert_eq!(redirect_target("cursor://x/cb"), "the cursor: app");
     }
 
+    async fn introspected(body: &str) -> serde_json::Value {
+        use http_body_util::BodyExt;
+        let response = introspect(body.as_bytes()).await.expect("introspect");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.expect("body").to_bytes();
+        serde_json::from_slice(&bytes).expect("json")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn introspection_reads_the_first_token_field_only() {
+        use crate::db_tests::{connected_agent, database, profile, user};
+        if !database() {
+            return;
+        }
+        let owner = user().await;
+        let (profile_id, _) = profile(&owner, None).await;
+        let agent = connected_agent(&owner, &profile_id).await;
+        let access = format!("{AGENT_ACCESS_PREFIX}{}", crate::store::new_uuid_v4().unwrap());
+        let refresh = format!("{AGENT_REFRESH_PREFIX}{}", crate::store::new_uuid_v4().unwrap());
+        crate::store::insert_agent_tokens(
+            &agent.connection_id,
+            &crate::store::sha256_b64url(&access),
+            3_600,
+            &crate::store::sha256_b64url(&refresh),
+            3_600,
+        )
+        .await
+        .expect("tokens");
+
+        for body in [
+            format!("token={access}&token=bwa_unknown"),
+            format!("token_type_hint=access_token&token={access}"),
+        ] {
+            let seen = introspected(&body).await;
+            assert_eq!(seen["active"], true, "{body}");
+            assert_eq!(seen["client_id"], agent.client_id.as_str());
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            let exp = seen["exp"].as_i64().expect("exp");
+            assert!(exp > now && exp <= now + 3_700, "{exp} vs {now}");
+        }
+        let unknown = introspected("token=bwa_unknown&token=").await;
+        assert_eq!(unknown, serde_json::json!({"active": false}));
+    }
+
     #[test]
     fn agent_ids_and_tokens_are_recognized() {
         assert!(is_agent_client("agent_abc"));

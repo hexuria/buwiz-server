@@ -215,7 +215,7 @@ pub fn reading_from_opinion(opinion: &SecondOpinion) -> DocumentReading {
             as f32,
         ..DocumentReading::default()
     };
-    fold_second_opinion(&mut reading, &SecondOpinion { form_2303: 1.0, ..opinion.clone() });
+    fold_second_opinion(&mut reading, opinion);
     reading
 }
 
@@ -386,7 +386,11 @@ mod tests {
         assert!(solo.is_form_2303 && solo.tampering_signs.is_empty());
         assert_eq!(recommend(&solo, TinCheck::Unreadable), Recommendation::NeedsReview);
 
+        assert!((solo.document_confidence - 0.97).abs() < 1e-6);
+
         let not_a_cor = reading_from_opinion(&opinion(0.05, 0.0));
+        assert!(!not_a_cor.is_form_2303);
+        assert!((not_a_cor.document_confidence - 0.95).abs() < 1e-6, "{}", not_a_cor.document_confidence);
         assert_eq!(recommend(&not_a_cor, TinCheck::Unreadable), Recommendation::NotClaimable);
 
         let forged = reading_from_opinion(&opinion(0.9, 0.7));

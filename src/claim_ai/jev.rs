@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use typesafe_sdk::{Client, Compression, Image, Question, RetryPolicy, SystemOneOpts};
+use typesafe_sdk::{Client, Compression, Image, Question, RetryPolicy, SystemOneOpts, Transport};
 
 use super::config::{ClassifierConfig, ClassifierRoute};
 use crate::domain::claim_assessment::SecondOpinion;
@@ -44,6 +44,14 @@ pub async fn second_opinion(
     config: &ClassifierConfig,
     input: JevInput<'_>,
 ) -> Result<SecondOpinion, String> {
+    second_opinion_via(config, input, super::transport::SpinTransport { route: config.route }).await
+}
+
+async fn second_opinion_via(
+    config: &ClassifierConfig,
+    input: JevInput<'_>,
+    transport: impl Transport,
+) -> Result<SecondOpinion, String> {
     let client = Client::builder()
         .api_key(config.endpoint.api_key.clone())
         .base_url(config.endpoint.base_url.clone())
@@ -51,7 +59,7 @@ pub async fn second_opinion(
         .timeout(Duration::from_secs(30))
         .compression(Compression::None)
         .retry(RetryPolicy { max_retries: 1, ..RetryPolicy::default() })
-        .transport(super::transport::SpinTransport { route: config.route })
+        .transport(transport)
         .build()
         .map_err(|error| format!("Jev client: {error}"))?;
     let questions = [("form_2303", Question::noul(FORM_2303)), ("edited", Question::noul(EDITED))];
@@ -95,5 +103,73 @@ mod tests {
         assert!(matches!(pdf, Some(JevInput::Text("COR"))));
         let gateway = input_for(ClassifierRoute::Decisions, UploadKind::Jpeg, b"jpg", Some(" "));
         assert!(gateway.is_none(), "a gateway cannot take the photo and there is no text");
+    }
+
+    /// Answers every attempt with HTTP 500 and keeps what it was sent.
+    #[derive(Clone, Default)]
+    struct Failing(std::sync::Arc<std::sync::Mutex<Vec<typesafe_sdk::TransportRequest>>>);
+
+    impl Transport for Failing {
+        fn send(
+            &self,
+            request: typesafe_sdk::TransportRequest,
+        ) -> typesafe_sdk::transport::BoxFuture<'_, Result<typesafe_sdk::TransportResponse, typesafe_sdk::Error>>
+        {
+            self.0.lock().unwrap().push(request);
+            Box::pin(async {
+                Ok(typesafe_sdk::TransportResponse {
+                    status: 500,
+                    headers: http::HeaderMap::new(),
+                    body: bytes::Bytes::from_static(b"{}"),
+                })
+            })
+        }
+
+        fn sleep(&self, _: Duration) -> typesafe_sdk::transport::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+    }
+
+    fn classifier() -> ClassifierConfig {
+        ClassifierConfig {
+            route: ClassifierRoute::SystemOne,
+            endpoint: super::super::config::Endpoint {
+                base_url: "https://api.typesafe.test".into(),
+                api_key: "ts_test".into(),
+                model: "jev-latest".into(),
+            },
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_photo_goes_with_the_images_header_and_is_retried_once() {
+        let transport = Failing::default();
+        let photo = b"\x89PNG\r\n\x1a\nphoto-bytes";
+        let input = JevInput::Photo { kind: UploadKind::Png, bytes: photo };
+        let error = second_opinion_via(&classifier(), input, transport.clone()).await.unwrap_err();
+        assert!(error.starts_with("Jev:"), "{error}");
+        let sent = transport.0.lock().unwrap();
+        assert_eq!(sent.len(), 2, "one try and one retry");
+        let first = &sent[0];
+        assert_eq!(first.headers["typesafe-danger-zone-images"], "true");
+        let body = first.body.as_deref().unwrap_or_default();
+        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, photo);
+        let has = |needle: &[u8]| body.windows(needle.len()).any(|w| w == needle);
+        assert!(has(b"photo-bytes") || has(encoded.as_bytes()), "the photo is in the request");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn outside_spin_jev_is_unreachable() {
+        let error = second_opinion(&classifier(), JevInput::Text("COR")).await.unwrap_err();
+        assert!(error.starts_with("Jev:") && error.contains("Spin runtime"), "{error}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn text_goes_without_the_images_header() {
+        let transport = Failing::default();
+        let _ = second_opinion_via(&classifier(), JevInput::Text("COR"), transport.clone()).await;
+        let sent = transport.0.lock().unwrap();
+        assert!(!sent.is_empty());
+        assert!(sent[0].headers.get("typesafe-danger-zone-images").is_none());
     }
 }

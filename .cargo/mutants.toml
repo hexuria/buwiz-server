@@ -9,6 +9,15 @@
 #   the match arms that call the application are covered only end to end by
 #   `scripts/verify_*.sh`, which can't run locally until Spin stops hanging on
 #   zero-row queries (README, "Troubleshooting").
+# - The `/mcp` and desktop OAuth entry points (`mcp::serve`,
+#   `desktop_oauth::serve`). Their first step reads the WASI request body,
+#   which exists only under Spin. What they decide is tested where it lives:
+#   `bearer`, `audience_is_own_mcp`, `run_tool`, `introspect`, ...
+# - Deployment configuration and outbound HTTP, which only Spin provides:
+#   `claim_ai::load_config` reads the deployment's AI variables (the rules
+#   are `claim_ai::config::resolve`, tested), and `downloads::latest_assets`
+#   asks GitHub for the newest release (`assets_from_reply` reads the
+#   answer, tested).
 # - The count `reproject_all_tax_profiles` returns to the admin endpoint. Its
 #   skip rule is `needs_reprojection`, which is tested.
 #
@@ -22,6 +31,12 @@
 #   page's location (`invite_from_location`, `browser_origin`). The logic in
 #   them is pulled out and tested (`file_size_problem`,
 #   `parse_invite_location`).
+# - The marketing pages (`src/app/marketing/`): islands whose behaviour is
+#   all in the browser. The gallery rail is `cfg(feature = "hydrate")`, and
+#   the AI Co-worker films run on `requestAnimationFrame`, timers and
+#   measured DOM rects, started by an `Effect` that never runs on the server.
+#   The test build only renders their first frame, so no test can see a
+#   mutant in them.
 # - The test harness itself (`src/db_tests/`, `src/store/test_pg.rs`).
 #
 # Equivalent mutants:
@@ -30,10 +45,18 @@
 #   variant bits.
 #
 # Remove an entry once an HTTP or browser harness runs in CI.
-exclude_globs = ["src/bin/**", "src/db_tests/**", "src/store/test_pg.rs"]
+exclude_globs = [
+    "src/bin/**",
+    "src/db_tests/**",
+    "src/store/test_pg.rs",
+    "src/app/marketing/**",
+]
 exclude_re = [
     "src/rest\\.rs:.* in dispatch$",
     "src/server_fn_http\\.rs:.*replace dispatch ->",
+    "src/(mcp/mod|desktop_oauth)\\.rs:.*( in serve$|replace serve ->)",
+    "src/claim_ai/mod\\.rs:.*replace load_config ->",
+    "src/downloads\\.rs:.*replace latest_assets ->",
     "in reproject_all_tax_profiles$",
     "src/app/tax_profiles/claims\\.rs:.*replace (send_claim|chosen_file|read_file) ->",
     "src/app/tax_profiles/invites\\.rs:.*replace (invite_from_location|browser_origin) ->",

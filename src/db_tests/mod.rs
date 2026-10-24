@@ -257,6 +257,40 @@ pub(crate) fn tin() -> String {
     format!("9{}", &digits[1..])
 }
 
+/// `owner` connects a test agent app to `profile_id`, with no permissions.
+/// Returns the agent as the MCP endpoint would see it.
+pub(crate) async fn connected_agent(owner: &User, profile_id: &str) -> crate::store::AgentActor {
+    let client_id = format!("test-client-{}", new_id());
+    crate::store::insert_agent_client(&client_id, "Test agent", &["http://127.0.0.1:9/cb".to_owned()])
+        .await
+        .expect("client");
+    let connection_id = new_id();
+    crate::store::create_agent_connection(
+        &connection_id,
+        &owner.user_id,
+        &client_id,
+        crate::domain::PassPermissions::empty(),
+        &[profile_id.to_owned()],
+        &new_id(),
+        "http://127.0.0.1:9/cb",
+        "challenge",
+        60,
+        "http://127.0.0.1:9/mcp",
+    )
+    .await
+    .expect("connection");
+    crate::store::AgentActor {
+        connection_id,
+        user_id: owner.user_id.clone(),
+        client_id,
+        client_name: "Test agent".to_owned(),
+        permissions: crate::domain::PassPermissions::empty(),
+        profile_ids: vec![profile_id.to_owned()],
+        resource: "http://127.0.0.1:9/mcp".to_owned(),
+        expires_at: 0,
+    }
+}
+
 /// A new tax profile created by `creator`: personal, or held by `firm` (a
 /// draft no taxpayer owns yet). Returns its id and TIN root.
 pub(crate) async fn profile(creator: &User, firm: Option<&str>) -> (String, String) {

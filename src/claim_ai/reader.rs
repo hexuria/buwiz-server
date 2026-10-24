@@ -199,13 +199,11 @@ pub fn parse(shape: ReaderShape, body: &[u8]) -> Result<ReaderOutput, String> {
 /// The JSON object in a text answer, tolerating a Markdown fence.
 fn json_in_text<'a>(texts: impl IntoIterator<Item = &'a str>) -> Result<Value, String> {
     let text: String = texts.into_iter().collect();
-    let start = text.find('{');
-    let end = text.rfind('}');
-    match (start, end) {
-        (Some(start), Some(end)) if start < end => serde_json::from_str(&text[start..=end])
-            .map_err(|_| "the reader's answer is not valid JSON".to_owned()),
-        _ => Err("the reader gave no answer".to_owned()),
-    }
+    let object = text
+        .find('{')
+        .and_then(|start| Some(&text[start..=start + text[start..].rfind('}')?]))
+        .ok_or_else(|| "the reader gave no answer".to_owned())?;
+    serde_json::from_str(object).map_err(|_| "the reader's answer is not valid JSON".to_owned())
 }
 
 #[cfg(test)]
@@ -308,5 +306,35 @@ mod tests {
         assert!(parse(ReaderShape::Gemini, b"not json").is_err());
         let wrong = json!({"choices": [{"message": {"content": "{\"tin\": 5}"}}]});
         assert!(parse(ReaderShape::OpenAi, wrong.to_string().as_bytes()).is_err());
+    }
+
+    #[test]
+    fn another_tool_is_not_the_answer() {
+        let reply = json!({"content": [
+            {"type": "tool_use", "name": "web_search", "input": {"query": "BIR"}},
+            {"type": "text", "name": TOOL, "text": answer().to_string()}
+        ]});
+        let output = parse(ReaderShape::Anthropic, reply.to_string().as_bytes()).expect("text answer");
+        assert_eq!(output.transcript, "CERTIFICATE OF REGISTRATION");
+    }
+
+    #[test]
+    fn the_answer_is_the_outermost_braces() {
+        assert_eq!(json_in_text(["Here: {\"a\": {\"b\": 1}} done"]).unwrap(), json!({"a": {"b": 1}}));
+        assert_eq!(json_in_text(["} nothing {"]).unwrap_err(), "the reader gave no answer");
+        assert_eq!(json_in_text(["no braces"]).unwrap_err(), "the reader gave no answer");
+        assert_eq!(json_in_text(["{ not json }"]).unwrap_err(), "the reader's answer is not valid JSON");
+    }
+
+    #[test]
+    fn every_shape_asks_for_the_same_fields() {
+        let schema = output_schema();
+        let required: Vec<&str> =
+            schema["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(required.len(), 9);
+        assert!(required.contains(&"tin") && required.contains(&"tampering_signs"));
+        assert_eq!(schema["additionalProperties"], false);
+        let call = build(&config(ReaderShape::OpenAi, "https://x"), UploadKind::Pdf, b"%PDF");
+        assert_eq!(call.body["response_format"]["json_schema"]["schema"], schema);
     }
 }
