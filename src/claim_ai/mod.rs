@@ -11,7 +11,7 @@
 pub mod config;
 pub mod jev;
 pub mod reader;
-mod transport;
+pub(crate) mod transport;
 
 use std::collections::HashMap;
 use std::time::Duration;

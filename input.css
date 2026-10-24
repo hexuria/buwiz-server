@@ -318,3 +318,208 @@ html.board-modal-open body {
   70% { box-shadow: 0 0 0 8px transparent; }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
+
+/*
+ * Public site palette (src/app/marketing), ported from goldcoders.dev/ebirforms
+ * and aligned with bir-shell. Dark is the default; light applies for
+ * data-theme="light", and for "system"/unset when the OS prefers light —
+ * the same rule as the `dark` variant above, so `dark:` image swaps agree.
+ */
+:root {
+  --gc-bg: #0e0e10;
+  --gc-bg-elevated: #161619;
+  --gc-bg-card: #161619;
+  --gc-bg-hover: #1f1f23;
+  --gc-bg-muted: #232328;
+  --gc-text: #f3f3f5;
+  --gc-text-muted: #a7a7b1;
+  --gc-text-faint: #8b8b95;
+  --gc-primary: #f3f3f5;
+  --gc-primary-fg: #111113;
+  --gc-accent: #10b981;
+  --gc-accent-hover: #34d399;
+  --gc-accent-soft: rgba(16, 185, 129, 0.14);
+  --gc-gold: #f3b44a;
+  --gc-border: #25252a;
+  --gc-border-hover: #38383f;
+  --gc-border-strong: #38383f;
+}
+
+html[data-theme="light"] {
+  --gc-bg: #f4f4f6;
+  --gc-bg-elevated: #ffffff;
+  --gc-bg-card: #ffffff;
+  --gc-bg-hover: #ebebee;
+  --gc-bg-muted: #e2e2e7;
+  --gc-text: #18181b;
+  --gc-text-muted: #54545d;
+  --gc-text-faint: #71717a;
+  --gc-primary: #18181b;
+  --gc-primary-fg: #ffffff;
+  --gc-accent: #059669;
+  --gc-accent-hover: #047857;
+  --gc-accent-soft: rgba(5, 150, 105, 0.1);
+  --gc-border: #e2e2e6;
+  --gc-border-hover: #cdcdd3;
+  --gc-border-strong: #cdcdd3;
+}
+
+@media (prefers-color-scheme: light) {
+  html[data-theme="system"],
+  html:not([data-theme]) {
+    --gc-bg: #f4f4f6;
+    --gc-bg-elevated: #ffffff;
+    --gc-bg-card: #ffffff;
+    --gc-bg-hover: #ebebee;
+    --gc-bg-muted: #e2e2e7;
+    --gc-text: #18181b;
+    --gc-text-muted: #54545d;
+    --gc-text-faint: #71717a;
+    --gc-primary: #18181b;
+    --gc-primary-fg: #ffffff;
+    --gc-accent: #059669;
+    --gc-accent-hover: #047857;
+    --gc-accent-soft: rgba(5, 150, 105, 0.1);
+    --gc-border: #e2e2e6;
+    --gc-border-hover: #cdcdd3;
+    --gc-border-strong: #cdcdd3;
+  }
+}
+
+@theme {
+  --color-gc-bg: var(--gc-bg);
+  --color-gc-bg-elevated: var(--gc-bg-elevated);
+  --color-gc-bg-card: var(--gc-bg-card);
+  --color-gc-bg-hover: var(--gc-bg-hover);
+  --color-gc-bg-muted: var(--gc-bg-muted);
+  --color-gc-text: var(--gc-text);
+  --color-gc-text-muted: var(--gc-text-muted);
+  --color-gc-text-faint: var(--gc-text-faint);
+  --color-gc-primary: var(--gc-primary);
+  --color-gc-primary-fg: var(--gc-primary-fg);
+  --color-gc-accent: var(--gc-accent);
+  --color-gc-accent-hover: var(--gc-accent-hover);
+  --color-gc-accent-soft: var(--gc-accent-soft);
+  --color-gc-gold: var(--gc-gold);
+  --color-gc-border: var(--gc-border);
+  --color-gc-border-hover: var(--gc-border-hover);
+  --color-gc-border-strong: var(--gc-border-strong);
+}
+
+@layer utilities {
+  .material-symbols-outlined {
+    font-family: "Material Symbols Outlined";
+    font-weight: normal;
+    font-style: normal;
+    line-height: 1;
+    letter-spacing: normal;
+    text-transform: none;
+    white-space: nowrap;
+    direction: ltr;
+    font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+    vertical-align: middle;
+    -webkit-font-feature-settings: "liga";
+    font-feature-settings: "liga";
+  }
+}
+
+@keyframes gc-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+.animate-rise { animation: gc-rise 0.55s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-rise-d1 { animation-delay: 0.06s; }
+.animate-rise-d2 { animation-delay: 0.14s; }
+.animate-rise-d3 { animation-delay: 0.22s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-rise { animation: none; }
+}
+
+/* AI Co-worker demos (home page): the desktop app window, after its own light and dark
+ * palettes (dark: sidebar #0e0e0e, chat #121212, pane #161616; light: #f5f5f5, #fff, #fcfcfc). */
+.gs-win {
+  --gs-side: #f5f5f5;
+  --gs-chat: #ffffff;
+  --gs-pane: #fcfcfc;
+  --gs-bubble: #1c1c1c0f;
+  --gs-card: #ffffff;
+  --gs-hover: #1c1c1c0f;
+  --gs-border: #1c1c1c1a;
+  --gs-text: #1c1c1c;
+  --gs-dim: #1c1c1c8f;
+  --gs-faint: #1c1c1c66;
+  --gs-user: #0d9655;
+  border: 1px solid var(--gs-border);
+  box-shadow: 0 24px 60px rgb(15 23 42 / 0.14);
+}
+html[data-theme="dark"] .gs-win {
+  --gs-side: #0e0e0e;
+  --gs-chat: #121212;
+  --gs-pane: #161616;
+  --gs-bubble: #1f1f1f;
+  --gs-card: #1a1a1a;
+  --gs-hover: #242424;
+  --gs-border: rgb(245 245 245 / 0.08);
+  --gs-text: #f5f5f5;
+  --gs-dim: rgb(245 245 245 / 0.56);
+  --gs-faint: rgb(245 245 245 / 0.36);
+  --gs-user: #0e9f5a;
+  box-shadow: 0 32px 80px rgb(0 0 0 / 0.5);
+}
+@media (prefers-color-scheme: dark) {
+  html[data-theme="system"] .gs-win,
+  html:not([data-theme]) .gs-win {
+    --gs-side: #0e0e0e;
+    --gs-chat: #121212;
+    --gs-pane: #161616;
+    --gs-bubble: #1f1f1f;
+    --gs-card: #1a1a1a;
+    --gs-hover: #242424;
+    --gs-border: rgb(245 245 245 / 0.08);
+    --gs-text: #f5f5f5;
+    --gs-dim: rgb(245 245 245 / 0.56);
+    --gs-faint: rgb(245 245 245 / 0.36);
+    --gs-user: #0e9f5a;
+    box-shadow: 0 32px 80px rgb(0 0 0 / 0.5);
+  }
+}
+.gs-side { background: var(--gs-side); }
+.gs-fade { background: linear-gradient(var(--gs-chat) 45%, transparent); }
+.gs-chat { background: var(--gs-chat); }
+.gs-pane { background: var(--gs-pane); }
+.gs-bubble { background: var(--gs-bubble); }
+.gs-card { background: var(--gs-card); border: 1px solid var(--gs-border); }
+.gs-hover { background: var(--gs-hover); }
+.gs-line { border-color: var(--gs-border); }
+.gs-t { color: var(--gs-text); }
+.gs-d { color: var(--gs-dim); }
+.gs-f { color: var(--gs-faint); }
+.gs-user { background: var(--gs-user); color: #fff; }
+.gs-btn { background: var(--gs-text); color: var(--gs-chat); }
+
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
+}
+@keyframes lx-blink {
+  50% { opacity: 0; }
+}
+.gc-card-in { animation: gc-card-in 0.3s ease-out both; }
+@keyframes gc-card-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.gc-caret {
+  display: inline-block;
+  width: 1px;
+  height: 15px;
+  margin-left: 1px;
+  background: var(--gc-text);
+  vertical-align: -2px;
+  animation: lx-blink 1s steps(1) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .gc-card-in,
+  .gc-caret { animation: none; }
+}

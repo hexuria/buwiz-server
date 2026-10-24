@@ -360,6 +360,7 @@ allowed_outbound_hosts = [
   "rediss://redis.internal.example.com:6379",
   "https://mail.example.com:443",
   "https://spicedb.example.com:443",
+  "https://api.github.com:443",
 ]
 [component.auth-ui.variables]
 database_backend = "{{ database_backend }}"
