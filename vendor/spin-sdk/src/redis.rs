@@ -36,7 +36,7 @@ pub mod wit {
         generate_all,
     });
 
-    pub use spin::redis::redis;
+    pub use fermyon::spin::redis;
 }
 
 use std::hash::{Hash, Hasher};
@@ -106,9 +106,11 @@ pub use wit::redis::{Error, Payload, RedisParameter, RedisResult};
 impl Connection {
     /// Open a connection to the Redis instance at `address`.
     pub async fn open(address: impl AsRef<str>) -> Result<Self, Error> {
-        wit::redis::Connection::open(address.as_ref().to_string())
-            .await
-            .map(Connection)
+        // Blocking `fermyon:spin/redis@2.0.0` imports. The `spin:redis@3.0.0`
+        // async imports add waitables that trap on current Wasmtime when
+        // called from the HTTP handler, after Postgres has already committed:
+        // `waitable cannot be used synchronously while added to a waitable set`.
+        wit::redis::Connection::open(address.as_ref()).map(Connection)
     }
 
     /// Publish a Redis message to the specified channel.
@@ -117,23 +119,19 @@ impl Connection {
         channel: impl AsRef<str>,
         payload: impl AsRef<[u8]>,
     ) -> Result<(), Error> {
-        self.0
-            .publish(channel.as_ref().to_string(), payload.as_ref().to_vec())
-            .await
+        self.0.publish(channel.as_ref(), payload.as_ref())
     }
 
     /// Get the value of a key.
     pub async fn get(&self, key: impl AsRef<str>) -> Result<Option<Payload>, Error> {
-        self.0.get(key.as_ref().to_string()).await
+        self.0.get(key.as_ref())
     }
 
     /// Set key to value.
     ///
     /// If key already holds a value, it is overwritten.
     pub async fn set(&self, key: impl AsRef<str>, value: impl AsRef<[u8]>) -> Result<(), Error> {
-        self.0
-            .set(key.as_ref().to_string(), value.as_ref().to_vec())
-            .await
+        self.0.set(key.as_ref(), value.as_ref())
     }
 
     /// Increments the number stored at key by one.
@@ -142,7 +140,7 @@ impl Connection {
     /// An `error::type-error` is returned if the key contains a value of the wrong type
     /// or contains a string that can not be represented as integer.
     pub async fn incr(&self, key: impl AsRef<str>) -> Result<i64, Error> {
-        self.0.incr(key.as_ref().to_string()).await
+        self.0.incr(key.as_ref())
     }
 
     /// Removes the specified keys.
@@ -152,13 +150,8 @@ impl Connection {
         &self,
         keys: impl IntoIterator<Item = Key>,
     ) -> Result<u32, Error> {
-        self.0
-            .del(
-                keys.into_iter()
-                    .map(|key| key.as_ref().to_string())
-                    .collect(),
-            )
-            .await
+        let keys: Vec<String> = keys.into_iter().map(|key| key.as_ref().to_string()).collect();
+        self.0.del(&keys)
     }
 
     /// Add the specified `values` to the set named `key`, returning the number of newly-added values.
@@ -167,17 +160,13 @@ impl Connection {
         key: impl AsRef<str>,
         values: impl IntoIterator<Item = Val>,
     ) -> Result<u32, Error> {
-        let values = values
-            .into_iter()
-            .map(|key| key.as_ref().to_string())
-            .collect();
-
-        self.0.sadd(key.as_ref().to_string(), values).await
+        let values: Vec<String> = values.into_iter().map(|value| value.as_ref().to_string()).collect();
+        self.0.sadd(key.as_ref(), &values)
     }
 
     /// Retrieve the contents of the set named `key`.
     pub async fn smembers(&self, key: impl AsRef<str>) -> Result<Vec<String>, Error> {
-        self.0.smembers(key.as_ref().to_string()).await
+        self.0.smembers(key.as_ref())
     }
 
     /// Remove the specified `values` from the set named `key`, returning the number of newly-removed values.
@@ -186,12 +175,8 @@ impl Connection {
         key: impl AsRef<str>,
         values: impl IntoIterator<Item = Val>,
     ) -> Result<u32, Error> {
-        let values = values
-            .into_iter()
-            .map(|key| key.as_ref().to_string())
-            .collect();
-
-        self.0.srem(key.as_ref().to_string(), values).await
+        let values: Vec<String> = values.into_iter().map(|value| value.as_ref().to_string()).collect();
+        self.0.srem(key.as_ref(), &values)
     }
 
     /// Execute an arbitrary Redis command and receive the result.
@@ -200,12 +185,8 @@ impl Connection {
         command: impl AsRef<str>,
         arguments: impl IntoIterator<Item = RedisParameter>,
     ) -> Result<Vec<RedisResult>, Error> {
-        self.0
-            .execute(
-                command.as_ref().to_string(),
-                arguments.into_iter().collect(),
-            )
-            .await
+        let arguments: Vec<RedisParameter> = arguments.into_iter().collect();
+        self.0.execute(command.as_ref(), &arguments)
     }
 }
 
