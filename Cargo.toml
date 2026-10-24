@@ -77,6 +77,11 @@ wasi-auth = { version = "=0.1.0-rc.5", default-features = false, features = ["ce
 # upstream release contains the same wasip3 graph.
 [patch.crates-io]
 spin-sdk = { path = "vendor/spin-sdk" }
+# 0.57.1 plus bytecodealliance/wit-bindgen#1638 (released in 0.59.0): leave the
+# waitable set before the synchronous inter-task `stream.cancel-read`, which
+# Wasmtime in Spin 4.2 traps on after every request. Drop once wasip3 moves past
+# wit-bindgen 0.59.
+wit-bindgen = { path = "vendor/wit-bindgen" }
 
 [patch."https://github.com/codeitlikemiley/spin-rust-sdk"]
 spin-sdk = { path = "vendor/spin-sdk" }
