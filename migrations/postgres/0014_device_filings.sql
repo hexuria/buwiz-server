@@ -30,5 +30,5 @@ CREATE INDEX IF NOT EXISTS device_filings_user_status_idx
     ON buwiz_server.device_filings (user_id, status, created_at);
 
 INSERT INTO buwiz_server.schema_migrations (version)
-VALUES ('0013_device_filings')
+VALUES ('0014_device_filings')
 ON CONFLICT (version) DO NOTHING;

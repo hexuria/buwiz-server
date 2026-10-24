@@ -655,3 +655,19 @@ pub async fn decide_ownership_claim(
         unreachable!()
     }
 }
+
+/// Staff: run the AI review aid again on a pending claim.
+#[server(prefix = "/api/ui")]
+pub async fn reassess_ownership_claim(claim_id: String) -> Result<OwnershipClaimListResponse, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        crate::application::reassess_ownership_claim(claim_id, server_fn_request_auth())
+            .await
+            .map_err(server_fn_error)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = claim_id;
+        unreachable!()
+    }
+}

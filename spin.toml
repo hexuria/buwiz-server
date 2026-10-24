@@ -106,6 +106,18 @@ redis_channel = { default = "buwiz-tax-profiles" }
 orus_fake_verifier = { default = "false" }
 webmcp_enabled = { default = "true" }
 desktop_oauth_redirect_uris = { default = "" }
+# AI review aid for ownership claims (`src/claim_ai/config.rs`). Empty = off.
+ai_gateway_base_url = { default = "" }
+ai_gateway_api_key = { default = "", secret = true }
+ai_reader_shape = { default = "" }
+ai_reader_base_url = { default = "" }
+ai_reader_api_key = { default = "", secret = true }
+ai_reader_model = { default = "" }
+ai_classifier = { default = "" }
+ai_classifier_route = { default = "" }
+ai_classifier_base_url = { default = "" }
+ai_classifier_api_key = { default = "", secret = true }
+ai_classifier_model = { default = "" }
 auth_api_base_url = { default = "" }
 auth_marketing_base_url = { default = "https://buwiz.com" }
 auth_cors_origins = { default = "" }
@@ -257,6 +269,17 @@ redis_channel = "{{ redis_channel }}"
 orus_fake_verifier = "{{ orus_fake_verifier }}"
 webmcp_enabled = "{{ webmcp_enabled }}"
 desktop_oauth_redirect_uris = "{{ desktop_oauth_redirect_uris }}"
+ai_gateway_base_url = "{{ ai_gateway_base_url }}"
+ai_gateway_api_key = "{{ ai_gateway_api_key }}"
+ai_reader_shape = "{{ ai_reader_shape }}"
+ai_reader_base_url = "{{ ai_reader_base_url }}"
+ai_reader_api_key = "{{ ai_reader_api_key }}"
+ai_reader_model = "{{ ai_reader_model }}"
+ai_classifier = "{{ ai_classifier }}"
+ai_classifier_route = "{{ ai_classifier_route }}"
+ai_classifier_base_url = "{{ ai_classifier_base_url }}"
+ai_classifier_api_key = "{{ ai_classifier_api_key }}"
+ai_classifier_model = "{{ ai_classifier_model }}"
 auth_api_base_url = "{{ auth_api_base_url }}"
 auth_marketing_base_url = "{{ auth_marketing_base_url }}"
 auth_cors_origins = "{{ auth_cors_origins }}"
@@ -387,6 +410,17 @@ redis_channel = "{{ redis_channel }}"
 orus_fake_verifier = "{{ orus_fake_verifier }}"
 webmcp_enabled = "{{ webmcp_enabled }}"
 desktop_oauth_redirect_uris = "{{ desktop_oauth_redirect_uris }}"
+ai_gateway_base_url = "{{ ai_gateway_base_url }}"
+ai_gateway_api_key = "{{ ai_gateway_api_key }}"
+ai_reader_shape = "{{ ai_reader_shape }}"
+ai_reader_base_url = "{{ ai_reader_base_url }}"
+ai_reader_api_key = "{{ ai_reader_api_key }}"
+ai_reader_model = "{{ ai_reader_model }}"
+ai_classifier = "{{ ai_classifier }}"
+ai_classifier_route = "{{ ai_classifier_route }}"
+ai_classifier_base_url = "{{ ai_classifier_base_url }}"
+ai_classifier_api_key = "{{ ai_classifier_api_key }}"
+ai_classifier_model = "{{ ai_classifier_model }}"
 auth_api_base_url = "{{ auth_api_base_url }}"
 auth_marketing_base_url = "{{ auth_marketing_base_url }}"
 auth_cors_origins = "{{ auth_cors_origins }}"
@@ -513,6 +547,17 @@ redis_channel = "{{ redis_channel }}"
 orus_fake_verifier = "{{ orus_fake_verifier }}"
 webmcp_enabled = "{{ webmcp_enabled }}"
 desktop_oauth_redirect_uris = "{{ desktop_oauth_redirect_uris }}"
+ai_gateway_base_url = "{{ ai_gateway_base_url }}"
+ai_gateway_api_key = "{{ ai_gateway_api_key }}"
+ai_reader_shape = "{{ ai_reader_shape }}"
+ai_reader_base_url = "{{ ai_reader_base_url }}"
+ai_reader_api_key = "{{ ai_reader_api_key }}"
+ai_reader_model = "{{ ai_reader_model }}"
+ai_classifier = "{{ ai_classifier }}"
+ai_classifier_route = "{{ ai_classifier_route }}"
+ai_classifier_base_url = "{{ ai_classifier_base_url }}"
+ai_classifier_api_key = "{{ ai_classifier_api_key }}"
+ai_classifier_model = "{{ ai_classifier_model }}"
 auth_api_base_url = "{{ auth_api_base_url }}"
 auth_marketing_base_url = "{{ auth_marketing_base_url }}"
 auth_cors_origins = "{{ auth_cors_origins }}"
