@@ -11,7 +11,7 @@ use crate::app::{
     AccountMfaPage, AccountPasskeysPage, AccountPasswordPage, AccountProfilePage,
     AccountProvidersPage, AccountSessionsPage, AccountVaultRedirectPage, AdminHealthPage,
     AdminOwnershipClaimsPage, AdminPoliciesPage, AdminUsersPage, AuthProviderAdminPage, AuthRequiredPage,
-    AuthorizationPolicyPage, ForbiddenPage, ForgotPasswordPage, HomePage, InvitationAcceptPage,
+    AuthorizationPolicyPage, ForbiddenPage, ForgotPasswordPage, MarketingHomePage, MarketingPrivacyPage, InvitationAcceptPage,
     LoginPage, NotFoundPage, OAuthCallbackErrorPage, OAuthCallbackPage, OrgVaultPage,
     OrganizationAuditPage, OrganizationInvitationsPage, OrganizationMembersPage,
     OrganizationPermissionsPage, OrganizationRolesPage, OrganizationSettingsPage,
@@ -80,7 +80,8 @@ pub fn App() -> impl IntoView {
         <Router>
             <Routes fallback>
                 <ParentRoute path=path!("") view=AppLayout>
-                    <Route path=path!("") view=HomePage />
+                    <Route path=path!("") view=MarketingHomePage />
+                    <Route path=path!("/privacy") view=MarketingPrivacyPage />
                     <Route path=path!("/login") view=LoginPage />
                     <Route path=path!("/register") view=RegisterPage />
                     <Route path=path!("/forgot-password") view=ForgotPasswordPage />

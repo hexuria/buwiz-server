@@ -110,6 +110,11 @@ impl wasip3::exports::http::handler::Guest for FullstackServer {
                 false
             }
         };
+        if crate::downloads::is_download_path(&request_path) {
+            let platform = crate::downloads::platform_for_path(&request_path);
+            let location = crate::downloads::resolve(platform).await;
+            return download_redirect_response(&location);
+        }
         if crate::mcp::is_mcp_request(&request_path) {
             let response = crate::mcp::serve(req).await.map_err(|error| {
                 tracing::error!(
@@ -774,7 +779,8 @@ fn apply_browser_security_headers(headers: &mut http::HeaderMap) {
         "Content-Security-Policy",
         http::HeaderValue::from_static(
             "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; \
-             style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; \
+             style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; \
+             font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; \
              connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
         ),
     );
@@ -832,6 +838,19 @@ fn server_fn_error_response(
                 error = %error,
                 "failed to build server function error response"
             );
+            ErrorCode::InternalError(None)
+        })?;
+    wasip3::http_compat::http_into_wasi_response(response)
+}
+
+fn download_redirect_response(location: &str) -> Result<Response, ErrorCode> {
+    let response = http::Response::builder()
+        .status(http::StatusCode::FOUND)
+        .header(LOCATION, location)
+        .header(http::header::CACHE_CONTROL, "public, max-age=300")
+        .body(http_body_util::Empty::<bytes::Bytes>::new())
+        .map_err(|error| {
+            tracing::error!(error = %error, "failed to build download redirect");
             ErrorCode::InternalError(None)
         })?;
     wasip3::http_compat::http_into_wasi_response(response)

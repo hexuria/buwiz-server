@@ -32,6 +32,8 @@ mod auth_product;
 
 #[cfg(feature = "ssr")]
 mod claim_ai;
+#[cfg(feature = "ssr")]
+mod downloads;
 
 #[cfg(feature = "ssr")]
 mod error;

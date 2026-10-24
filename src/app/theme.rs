@@ -96,6 +96,46 @@ pub fn ThemeToggle() -> impl IntoView {
     }
 }
 
+/// Public-site header variant of [`ThemeToggle`]: same storage and cycle.
+#[island]
+pub fn MarketingThemeToggle() -> impl IntoView {
+    let (theme, set_theme) = signal(AppTheme::System);
+
+    Effect::new(move |_| {
+        #[cfg(feature = "hydrate")]
+        set_theme.set(read_stored_theme().unwrap_or(AppTheme::System));
+    });
+
+    let cycle = move |_| {
+        let next = theme.get_untracked().next();
+        set_theme.set(next);
+        #[cfg(feature = "hydrate")]
+        {
+            store_theme(next);
+            apply_theme(next);
+        }
+    };
+
+    view! {
+        <button
+            type="button"
+            class="h-9 px-3 rounded-lg border border-gc-border bg-gc-bg-hover/60 hover:bg-gc-bg-hover text-gc-text-muted hover:text-gc-text transition-colors inline-flex items-center gap-1.5 text-xs font-medium cursor-pointer active:scale-[0.98]"
+            data-testid="marketing-theme-toggle"
+            aria-label=move || format!("Theme: {}. Click to change.", theme.get().label())
+            on:click=cycle
+        >
+            <span class="material-symbols-outlined text-[16px] leading-none" aria-hidden="true">
+                {move || match theme.get() {
+                    AppTheme::Light => "light_mode",
+                    AppTheme::Dark => "dark_mode",
+                    AppTheme::System => "contrast",
+                }}
+            </span>
+            <span class="hidden sm:inline">{move || theme.get().label()}</span>
+        </button>
+    }
+}
+
 fn theme_glyph(theme: AppTheme) -> &'static str {
     match theme {
         AppTheme::Light => "☀",

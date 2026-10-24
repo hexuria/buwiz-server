@@ -842,6 +842,7 @@ pub mod admin;
 pub mod auth;
 pub mod dashboard;
 pub mod helpers;
+pub mod marketing;
 pub mod organizations;
 pub mod path;
 pub mod router;
@@ -858,6 +859,7 @@ pub use admin::*;
 pub use auth::*;
 pub use dashboard::{DashboardHome, DashboardPage};
 pub use helpers::*;
+pub use marketing::{MarketingHomePage, MarketingPrivacyPage};
 pub use organizations::*;
 pub use path::*;
 pub use router::App;
@@ -887,54 +889,6 @@ use crate::ui::classes::{
     HOME_KICKER, HOME_NOTE, HOME_STEP, HOME_STEP_INDEX, HOME_STEP_P, HOME_STEP_STRONG, HOME_STEPS,
     HOME_STEPS_LIST, HOME_TITLE, INPUT, PANEL, PANEL_COMPACT, RESULT_LINE, SECTION_LABEL,
 };
-
-#[component]
-pub fn HomePage() -> impl IntoView {
-    public_page_shell(
-        "Philippine tax workspace",
-        "Cloud tax profiles with exclusive TIN ownership, verified sessions, and a desktop-friendly login URL — built on Spin + Leptos + wasi-auth.",
-        view! {
-            <section class=HOME_INTRO>
-                <p class=HOME_KICKER>"Buwiz cloud control plane"</p>
-                <h2 class=HOME_TITLE data-testid="home-heading">"One verified session for web and desktop."</h2>
-                <p class=HOME_COPY>
-                    "Register, verify your email, then hold tax profiles as a personal account or a company workspace. Desktop IMAP secrets and local PIN/TOTP stay on the device."
-                </p>
-                <div class=HOME_ACTIONS>
-                    <a class=BTN_PRIMARY href="/register">"Create account"</a>
-                    <a class=BTN_SECONDARY href="/login">"Sign in"</a>
-                </div>
-            </section>
-            <section class=HOME_STEPS>
-                <p class=SECTION_LABEL>"Start here"</p>
-                <ol class=HOME_STEPS_LIST>
-                    <li class=HOME_STEP>
-                        <span class=HOME_STEP_INDEX>"01"</span>
-                        <div>
-                            <strong class=HOME_STEP_STRONG>"Register"</strong>
-                            <p class=HOME_STEP_P>"Create an account. Capture mail is the local default; Resend is for real inboxes."</p>
-                        </div>
-                    </li>
-                    <li class=HOME_STEP>
-                        <span class=HOME_STEP_INDEX>"02"</span>
-                        <div>
-                            <strong class=HOME_STEP_STRONG>"Verify"</strong>
-                            <p class=HOME_STEP_P>"Email must be verified before you can create or claim a tax profile."</p>
-                        </div>
-                    </li>
-                    <li class=HOME_STEP>
-                        <span class=HOME_STEP_INDEX>"03"</span>
-                        <div>
-                            <strong class=HOME_STEP_STRONG>"Own a TIN"</strong>
-                            <p class=HOME_STEP_P>"One holder per TIN + branch. A company may hold it until the verified owner claims or reclaims."</p>
-                        </div>
-                    </li>
-                </ol>
-                <p class=HOME_NOTE>"Desktop apps sign in at /oauth/authorize (PKCE) or /login/device. WebMCP attributes are on auth forms — humans still confirm submit."</p>
-            </section>
-        },
-    )
-}
 
 /// Best-effort async sleep for hydrate (vault reveal auto-mask).
 #[cfg(feature = "hydrate")]
