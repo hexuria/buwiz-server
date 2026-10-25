@@ -981,6 +981,20 @@ mod server_fn_path_tests {
 }
 
 #[cfg(test)]
+mod security_header_tests {
+    #[test]
+    fn pages_are_uncached_and_cannot_be_framed() {
+        let mut headers = http::HeaderMap::new();
+        super::apply_browser_security_headers(&mut headers);
+        assert_eq!(headers[http::header::CACHE_CONTROL], "no-store");
+        assert_eq!(headers["X-Frame-Options"], "DENY");
+        let csp = headers["Content-Security-Policy"].to_str().expect("csp");
+        assert!(csp.starts_with("default-src 'self';"), "{csp}");
+        assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+    }
+}
+
+#[cfg(test)]
 mod csr_document_tests {
     use super::csr_document_html;
 

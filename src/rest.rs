@@ -25,7 +25,7 @@ type RestResponse = http::Response<RestBody>;
 type RestRequest = http::Request<wasip3::http_compat::IncomingRequestBody>;
 const MAX_REST_BODY_BYTES: usize = 256 * 1024;
 
-pub fn is_rest_request(req: &RestRequest) -> bool {
+pub fn is_rest_request<B>(req: &http::Request<B>) -> bool {
     let path = req.uri().path();
     if path == "/me" {
         return true;
@@ -47,7 +47,7 @@ pub fn is_rest_request(req: &RestRequest) -> bool {
         // ddd:domain-rest-prefix:end
 }
 
-fn tax_profiles_http_is_api(req: &RestRequest) -> bool {
+fn tax_profiles_http_is_api<B>(req: &http::Request<B>) -> bool {
     let path = req.uri().path();
     if !matches!(*req.method(), Method::GET | Method::HEAD) {
         return true;
@@ -58,7 +58,7 @@ fn tax_profiles_http_is_api(req: &RestRequest) -> bool {
     access_token_from_request(req).is_some() || accept_prefers_json(req)
 }
 
-fn accept_prefers_json(req: &RestRequest) -> bool {
+fn accept_prefers_json<B>(req: &http::Request<B>) -> bool {
     req.headers()
         .get(http::header::ACCEPT)
         .and_then(|value| value.to_str().ok())
@@ -1003,7 +1003,7 @@ fn oauth_flow_binding_from_request(req: &RestRequest) -> Option<String> {
         .and_then(crate::application::oauth_flow_value_from_cookie_header)
 }
 
-fn access_token_from_request(req: &RestRequest) -> Option<String> {
+fn access_token_from_request<B>(req: &http::Request<B>) -> Option<String> {
     req.headers()
         .get(http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -1384,6 +1384,37 @@ mod tests {
         assert_eq!(provider, "google");
     }
 
+    fn request(method: Method, path: &str, accept: Option<&str>) -> http::Request<()> {
+        let mut builder = http::Request::builder().method(method).uri(path);
+        if let Some(accept) = accept {
+            builder = builder.header(http::header::ACCEPT, accept);
+        }
+        builder.body(()).unwrap()
+    }
+
+    #[test]
+    fn api_paths_are_rest_and_pages_are_not() {
+        let get = |path: &str| is_rest_request(&request(Method::GET, path, None));
+        for path in [
+            "/me",
+            "/api/auth/session",
+            "/api/agents",
+            "/api/agents/c1/revoke",
+            "/api/device-filings",
+            "/api/device-filings/f1",
+            "/api/admin/users",
+            "/tax-profiles/p1",
+        ] {
+            assert!(get(path), "{path}");
+        }
+        for path in ["/dashboard", "/api/agentsx", "/api/device-filingsx", "/me/x", "/tax-profiles"] {
+            assert!(!get(path), "{path}");
+        }
+        let json = request(Method::GET, "/tax-profiles", Some("application/json"));
+        assert!(is_rest_request(&json));
+        assert!(is_rest_request(&request(Method::POST, "/tax-profiles", None)));
+    }
+
     #[test]
     fn agent_revoke_route_reads_the_connection() {
         assert_eq!(device_filing_route("/api/device-filings/abc"), Some("abc"));
@@ -1477,6 +1508,8 @@ mod tests {
             Some(ClaimRoute::FilePart { claim_id: "c1" })
         );
         assert_eq!(claim_route("/api/tax-profiles/ownership-claims/c1/file"), None);
+        assert_eq!(claim_route("/api/tax-profiles/ownership-claims//file-parts"), None);
+        assert_eq!(claim_route("/api/tax-profiles/ownership-claims//withdraw"), None);
         assert_eq!(
             claim_route("/api/tax-profiles/ownership-claims/c1/withdraw"),
             Some(ClaimRoute::Withdraw { claim_id: "c1" })

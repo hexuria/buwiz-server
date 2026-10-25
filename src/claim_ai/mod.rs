@@ -118,9 +118,56 @@ async fn call_reader(
         transport::send(http::Method::POST, &call.url, headers, Bytes::from(body), READER_TIMEOUT)
             .await
             .map_err(|failure| format!("reader {}: {failure}", config.endpoint.model))?;
+    reader_reply(config, status, &reply)
+}
+
+fn reader_reply(config: &config::ReaderConfig, status: u16, reply: &[u8]) -> Result<reader::ReaderOutput, String> {
     if !(200..300).contains(&status) {
-        let detail: String = String::from_utf8_lossy(&reply).chars().take(300).collect();
+        let detail: String = String::from_utf8_lossy(reply).chars().take(300).collect();
         return Err(format!("reader {} returned HTTP {status}: {detail}", config.endpoint.model));
     }
-    reader::parse(config.shape, &reply)
+    reader::parse(config.shape, reply)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::{ClassifierConfig, ClassifierRoute, Endpoint, ReaderConfig, ReaderShape};
+
+    fn endpoint(model: &str) -> Endpoint {
+        Endpoint { base_url: "https://ai.test".into(), api_key: "k".into(), model: model.into() }
+    }
+
+    fn reader() -> ReaderConfig {
+        ReaderConfig { shape: ReaderShape::OpenAi, endpoint: endpoint("reader-1") }
+    }
+
+    #[test]
+    fn only_a_2xx_reply_is_read() {
+        let answer = serde_json::json!({
+            "is_form_2303": true, "document_confidence": 0.9, "tin": null, "branch_code": null,
+            "registered_name": null, "rdo_code": null, "registered_address": null,
+            "tampering_signs": [], "transcript": "COR"
+        });
+        let body = serde_json::json!({"choices": [{"message": {"content": answer.to_string()}}]}).to_string();
+        let output = reader_reply(&reader(), 200, body.as_bytes()).expect("read");
+        assert_eq!(output.transcript, "COR");
+        let error = reader_reply(&reader(), 503, b"overloaded").unwrap_err();
+        assert_eq!(error, "reader reader-1 returned HTTP 503: overloaded");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn each_failed_or_skipped_model_is_a_problem() {
+        let both = AssessmentConfig {
+            reader: Some(reader()),
+            classifier: Some(ClassifierConfig { route: ClassifierRoute::Decisions, endpoint: endpoint("jev") }),
+        };
+        let run = read_and_classify(&both, UploadKind::Pdf, b"%PDF").await;
+        assert!(run.reading.is_none());
+        assert_eq!(run.reader_model.as_deref(), Some("reader-1"));
+        assert_eq!(run.classifier_model, None);
+        assert_eq!(run.problems.len(), 2, "{:?}", run.problems);
+        assert_eq!(run.problems[0], "reader reader-1: AI requests need the Spin runtime");
+        assert!(run.problems[1].starts_with("Jev skipped"), "{:?}", run.problems);
+    }
 }

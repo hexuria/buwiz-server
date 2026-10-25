@@ -524,14 +524,7 @@ pub(crate) async fn resolve_agent_access_token(
         permissions: PassPermissions::from_stored(&row_string_list(row, "permissions")),
         profile_ids: row_string_list(row, "profile_ids"),
         resource: row_string(row, "resource").unwrap_or_default(),
-        expires_at: row
-            .get("expires_at")
-            .and_then(|value| match value {
-                Value::Number(number) => number.as_i64().or_else(|| number.as_f64().map(|n| n as i64)),
-                Value::String(text) => text.parse().ok(),
-                _ => None,
-            })
-            .unwrap_or(0),
+        expires_at: row.get("expires_at").and_then(epoch_seconds).unwrap_or(0),
     };
     // Best effort: a failed timestamp must not fail the agent's call.
     let _ = execute_sql(
@@ -542,6 +535,15 @@ pub(crate) async fn resolve_agent_access_token(
     )
     .await;
     Ok(Some(actor))
+}
+
+/// Unix seconds from an `EXTRACT(EPOCH ...)` cell: a number, or its text.
+fn epoch_seconds(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(number) => number.as_i64().or_else(|| number.as_f64().map(|n| n as i64)),
+        Value::String(text) => text.parse().ok(),
+        _ => None,
+    }
 }
 
 pub(crate) async fn list_agent_connections(
@@ -824,5 +826,37 @@ fn json_cell(row: &Value, key: &str) -> Value {
         Some(Value::String(raw)) => serde_json::from_str(raw).unwrap_or(Value::Null),
         Some(value) => value.clone(),
         None => Value::Null,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expiry_reads_a_number_or_its_text() {
+        assert_eq!(epoch_seconds(&json!(1_800_000_000)), Some(1_800_000_000));
+        assert_eq!(epoch_seconds(&json!(1_800_000_000.7)), Some(1_800_000_000));
+        assert_eq!(epoch_seconds(&json!("1800000000")), Some(1_800_000_000));
+        assert_eq!(epoch_seconds(&json!("soon")), None);
+        assert_eq!(epoch_seconds(&Value::Null), None);
+    }
+
+    #[test]
+    fn numbers_read_from_a_number_or_its_text() {
+        let row = json!({"year": 2026, "period": "3", "bad": "x"});
+        assert_eq!(row_number(&row, "year"), 2026);
+        assert_eq!(row_number(&row, "period"), 3);
+        assert_eq!(row_number(&row, "bad"), 0);
+        assert_eq!(row_number(&row, "missing"), 0);
+    }
+
+    #[test]
+    fn json_cells_parse_text_and_pass_values_through() {
+        let row = json!({"text": "{\"a\":1}", "value": {"b": 2}, "broken": "{"});
+        assert_eq!(json_cell(&row, "text"), json!({"a": 1}));
+        assert_eq!(json_cell(&row, "value"), json!({"b": 2}));
+        assert_eq!(json_cell(&row, "broken"), Value::Null);
+        assert_eq!(json_cell(&row, "missing"), Value::Null);
     }
 }

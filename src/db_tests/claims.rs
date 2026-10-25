@@ -291,6 +291,38 @@ async fn the_claim_server_functions_pass_the_caller_through() {
     assert_eq!(claim.status, "withdrawn");
 }
 
+/// Re-running the AI review is for staff, on someone else's pending claim,
+/// and says so when no model is configured (as in tests).
+#[tokio::test(flavor = "current_thread")]
+async fn reassessing_needs_a_pending_claim_of_someone_else_and_a_model() {
+    use crate::app::server_fns as ui;
+    if !database() {
+        return;
+    }
+    let case = case().await;
+    upload(&case, PDF).await.expect("upload");
+    let staff = user().await;
+    make_staff(&staff);
+    let unconfigured = app::reassess_ownership_claim(case.claim.claim_id.clone(), staff.auth()).await;
+    assert!(matches!(unconfigured, Err(AuthStackError::Configuration { .. })), "{unconfigured:?}");
+    act_as(&staff);
+    let through_ui = ui::reassess_ownership_claim(case.claim.claim_id.clone()).await;
+    assert!(
+        through_ui.as_ref().is_err_and(|e| e.to_string().contains("not configured")),
+        "{through_ui:?}"
+    );
+
+    make_staff(&case.claimant);
+    let own = app::reassess_ownership_claim(case.claim.claim_id.clone(), case.claimant.auth()).await;
+    assert!(matches!(own, Err(AuthStackError::Forbidden)), "{own:?}");
+
+    app::decide_ownership_claim(case.claim.claim_id.clone(), false, note("blurry"), staff.auth())
+        .await
+        .expect("reject");
+    let closed = app::reassess_ownership_claim(case.claim.claim_id.clone(), staff.auth()).await;
+    assert!(matches!(closed, Err(AuthStackError::Conflict { .. })), "{closed:?}");
+}
+
 /// Another pending claim, so the queue is never empty after a decision.
 async fn case_for_queue() -> String {
     let case = case().await;

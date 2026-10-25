@@ -57,11 +57,7 @@ pub fn canonical_agent_resource(issuer: &str, requested: &str) -> Result<String,
     }
     let own = format!("{issuer}/mcp");
     let requested = requested.trim().trim_end_matches('/');
-    if requested.is_empty()
-        || requested == issuer
-        || requested == own
-        || same_loopback_mcp(&own, requested)
-    {
+    if requested.is_empty() || requested == issuer || requested == own {
         return Ok(own);
     }
     let Some(canonical) = loopback_mcp_resource(requested) else {
@@ -107,7 +103,7 @@ pub fn resource_matches_grant(issuer: &str, granted: &str, requested: &str) -> R
 
 /// Canonical `http://host:port/mcp` for a loopback bir-mcp URL, or `None`.
 fn loopback_mcp_resource(uri: &str) -> Option<String> {
-    if uri.len() > 512 || !uri.is_ascii() || uri.contains(['#', '?', '\\', ' ']) {
+    if !plain_resource_text(uri) {
         return None;
     }
     let (scheme, rest) = uri.split_once(':')?;
@@ -122,6 +118,12 @@ fn loopback_mcp_resource(uri: &str) -> Option<String> {
     }
     let tail = &rest[2 + authority.len()..];
     (tail == "/mcp").then(|| format!("http://{host}:{port}/mcp"))
+}
+
+/// Short ASCII with no fragment, query, backslash or space. The parse after
+/// it refuses all of these too; this refuses them before parsing starts.
+fn plain_resource_text(uri: &str) -> bool {
+    uri.len() <= 512 && uri.is_ascii() && !uri.contains(['#', '?', '\\', ' '])
 }
 
 /// Same loopback MCP port, host spelling aside (`localhost` and `127.0.0.1`).
@@ -664,6 +666,17 @@ mod tests {
             canonical_agent_resource("https://account.buwiz.com", "").unwrap(),
             "https://account.buwiz.com/mcp"
         );
+    }
+
+    #[test]
+    fn resource_text_is_short_plain_ascii() {
+        assert!(plain_resource_text("http://127.0.0.1:8765/mcp"));
+        assert!(plain_resource_text(&"a".repeat(512)));
+        assert!(!plain_resource_text(&"a".repeat(513)));
+        assert!(!plain_resource_text("http://127.0.0.1:8765/mcé"));
+        for bad in ['#', '?', '\\', ' '] {
+            assert!(!plain_resource_text(&format!("http://127.0.0.1:8765/mcp{bad}")), "{bad:?}");
+        }
     }
 
     #[test]

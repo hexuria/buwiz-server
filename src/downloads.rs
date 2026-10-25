@@ -88,11 +88,15 @@ async fn latest_assets() -> Result<Vec<Asset>, String> {
     )
     .await
     .map_err(|failure| failure.to_string())?;
+    assets_from_reply(status, &body)
+}
+
+fn assets_from_reply(status: u16, body: &[u8]) -> Result<Vec<Asset>, String> {
     if status != 200 {
         return Err(format!("github api returned {status}"));
     }
     let release: Release =
-        serde_json::from_slice(&body).map_err(|error| format!("release json: {error}"))?;
+        serde_json::from_slice(body).map_err(|error| format!("release json: {error}"))?;
     Ok(release.assets)
 }
 
@@ -137,5 +141,38 @@ mod tests {
             Some("https://dl/Buwiz-Forms-1.2.0-Linux-x64.deb")
         );
         assert_eq!(pick_asset(&assets[..1], Platform::MacOS), None);
+    }
+
+    #[test]
+    fn needs_both_the_platform_and_the_installer_type() {
+        let wrong = vec![
+            asset("Buwiz-Forms-1.2.0-Windows-x64-portable.zip"),
+            asset("Buwiz-Forms-1.2.0-Linux-x64-Setup.exe"),
+            asset("Buwiz-Forms-1.2.0-macOS-universal.zip"),
+            asset("Buwiz-Forms-1.2.0-Windows-x64.dmg"),
+            asset("Buwiz-Forms-1.2.0-Linux-x64.rpm"),
+            asset("Buwiz-Forms-1.2.0-Linux-arm64.deb"),
+        ];
+        for platform in [Platform::Windows, Platform::MacOS, Platform::Linux] {
+            assert_eq!(pick_asset(&wrong, platform), None, "{platform:?}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn falls_back_to_the_releases_page() {
+        assert_eq!(resolve(None).await, RELEASES_PAGE);
+        // Outside Spin the lookup fails, so a platform falls back too.
+        assert_eq!(resolve(Some(Platform::Linux)).await, RELEASES_PAGE);
+    }
+
+    #[test]
+    fn reads_assets_from_a_release_reply() {
+        let body = br#"{"assets":[{"name":"a.dmg","browser_download_url":"https://dl/a.dmg"}]}"#;
+        let assets = assets_from_reply(200, body).expect("assets");
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].name, "a.dmg");
+        assert_eq!(assets[0].browser_download_url, "https://dl/a.dmg");
+        assert_eq!(assets_from_reply(404, body).err().as_deref(), Some("github api returned 404"));
+        assert!(assets_from_reply(200, b"not json").is_err());
     }
 }

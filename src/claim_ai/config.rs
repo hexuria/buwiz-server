@@ -214,10 +214,12 @@ mod tests {
     #[test]
     fn either_role_runs_alone() {
         let jev_only = resolve_with(&[("AI_READER_SHAPE", "off"), ("AI_CLASSIFIER_API_KEY", "ts")]).unwrap();
+        assert!(jev_only.is_enabled());
         assert!(jev_only.reader.is_none());
         assert_eq!(jev_only.classifier.unwrap().endpoint.base_url, "https://api.typesafe.ai");
 
         let anthropic_only = resolve_with(&[("AI_CLASSIFIER", "off"), ("AI_READER_API_KEY", "sk-ant")]).unwrap();
+        assert!(anthropic_only.is_enabled());
         assert!(anthropic_only.classifier.is_none());
         let reader = anthropic_only.reader.unwrap();
         assert_eq!(reader.endpoint.base_url, "https://api.anthropic.com");

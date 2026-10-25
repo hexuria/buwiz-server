@@ -930,6 +930,16 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn metadata_points_every_endpoint_at_the_issuer() {
+        let metadata = authorization_server_metadata().await;
+        let issuer = metadata["issuer"].as_str().expect("issuer").to_owned();
+        assert!(issuer.starts_with("http"), "{issuer}");
+        assert_eq!(metadata["introspection_endpoint"], format!("{issuer}/oauth/introspect"));
+        assert_eq!(metadata["token_endpoint"], format!("{issuer}/oauth/token"));
+        assert_eq!(metadata["introspection_endpoint_auth_methods_supported"], serde_json::json!(["none"]));
+    }
+
     #[test]
     fn desktop_paths_are_recognized() {
         assert!(is_desktop_oauth_request(

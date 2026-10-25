@@ -80,7 +80,8 @@ pub async fn upload_ownership_claim_part(
         let (kind, file) = finish_upload(&claim.claim_id, total, &key).await?;
         // Best effort: a failed or unconfigured AI check leaves the claim
         // pending for a plain human review.
-        if let Err(error) = run_ai_review(&claim, kind, &file).await {
+        let config = crate::claim_ai::load_config().await;
+        if let Err(error) = run_ai_review(&claim, kind, &file, config).await {
             tracing::warn!(claim = %claim.claim_id, error = %error, "AI review not stored");
         }
     }
@@ -125,9 +126,10 @@ async fn run_ai_review(
     claim: &crate::store::StoredClaim,
     kind: UploadKind,
     file: &[u8],
+    config: Result<crate::claim_ai::config::AssessmentConfig, String>,
 ) -> AuthStackResult<bool> {
     let mut view = ClaimAssessmentView::default();
-    let config = match crate::claim_ai::load_config().await {
+    let config = match config {
         Ok(config) if !config.is_enabled() => return Ok(false),
         Ok(config) => Some(config),
         Err(problem) => {
@@ -142,39 +144,9 @@ async fn run_ai_review(
         view.classifier_model = run.classifier_model;
         view.problems = run.problems;
         if let Some(reading) = &run.reading {
-            let loaded = crate::store::load_tax_profile_by_id(&claim.profile_id).await?;
-            let state = &loaded.state;
-            let facts = state.facts.as_ref();
-            let known = |value: Option<&String>| value.filter(|v| !v.trim().is_empty()).cloned();
-            let expected = ProfileExpectation {
-                branch_code: state.branch_code.clone().unwrap_or_else(|| "00000".to_owned()),
-                registered_name: known(facts.map(|f| &f.registered_name)),
-                rdo_code: known(facts.map(|f| &f.rdo_code)),
-                registered_address: known(facts.map(|f| &f.registered_address)),
-            };
-            let tin = match (read_registration(reading, &expected.branch_code), &state.identity_hash) {
-                (Some(key), Some(profile_hash)) => {
-                    let pepper = crate::store::tin_identity_pepper().await?;
-                    if &TinIdentityHash::compute(&pepper, &key.tin_root, &key.branch_code) == profile_hash {
-                        TinCheck::Matches
-                    } else {
-                        TinCheck::Differs
-                    }
-                }
-                _ => TinCheck::Unreadable,
-            };
-            let assessment =
-                assess(reading, tin, &expected, UploadSignals { ai_refusals: claim.ai_refusals });
-            recommendation = Some(snake_case(&assessment.recommendation));
-            view.findings = assessment
-                .findings
-                .iter()
-                .map(|finding| ClaimFindingView {
-                    check: finding.check.clone(),
-                    outcome: snake_case(&finding.outcome),
-                    detail: finding.detail.clone(),
-                })
-                .collect();
+            let (recommended, findings) = assess_reading(claim, reading).await?;
+            recommendation = Some(recommended);
+            view.findings = findings;
         }
     }
     view.recommendation = recommendation.clone();
@@ -183,6 +155,46 @@ async fn run_ai_review(
     crate::store::store_ownership_claim_assessment(&claim.claim_id, recommendation.as_deref(), &stored)
         .await?;
     Ok(true)
+}
+
+/// What the reading says about this claim's profile: the recommendation and
+/// each finding, in snake case for storage.
+async fn assess_reading(
+    claim: &crate::store::StoredClaim,
+    reading: &DocumentReading,
+) -> AuthStackResult<(String, Vec<ClaimFindingView>)> {
+    let loaded = crate::store::load_tax_profile_by_id(&claim.profile_id).await?;
+    let state = &loaded.state;
+    let facts = state.facts.as_ref();
+    let known = |value: Option<&String>| value.filter(|v| !v.trim().is_empty()).cloned();
+    let expected = ProfileExpectation {
+        branch_code: state.branch_code.clone().unwrap_or_else(|| "00000".to_owned()),
+        registered_name: known(facts.map(|f| &f.registered_name)),
+        rdo_code: known(facts.map(|f| &f.rdo_code)),
+        registered_address: known(facts.map(|f| &f.registered_address)),
+    };
+    let tin = match (read_registration(reading, &expected.branch_code), &state.identity_hash) {
+        (Some(key), Some(profile_hash)) => {
+            let pepper = crate::store::tin_identity_pepper().await?;
+            if &TinIdentityHash::compute(&pepper, &key.tin_root, &key.branch_code) == profile_hash {
+                TinCheck::Matches
+            } else {
+                TinCheck::Differs
+            }
+        }
+        _ => TinCheck::Unreadable,
+    };
+    let assessment = assess(reading, tin, &expected, UploadSignals { ai_refusals: claim.ai_refusals });
+    let findings = assessment
+        .findings
+        .iter()
+        .map(|finding| ClaimFindingView {
+            check: finding.check.clone(),
+            outcome: snake_case(&finding.outcome),
+            detail: finding.detail.clone(),
+        })
+        .collect();
+    Ok((snake_case(&assessment.recommendation), findings))
 }
 
 /// The TIN and branch the model read. A branch the document doesn't show
@@ -285,7 +297,7 @@ pub async fn reassess_ownership_claim(
         .ok_or_else(|| AuthStackError::not_found("this claim has no file"))?;
     let key = crate::store::claim_file_key().await?;
     let file = crate::store::decrypt_claim_file(&claim.claim_id, &nonce, &ciphertext, &key)?;
-    if !run_ai_review(&claim, kind, &file).await? {
+    if !run_ai_review(&claim, kind, &file, crate::claim_ai::load_config().await).await? {
         return Err(AuthStackError::configuration(
             "AI review is not configured: set AI_GATEWAY_API_KEY or a per-role key",
         ));
@@ -412,6 +424,101 @@ mod tests {
         assert_eq!(key.branch_code.as_str(), "00007");
         assert!(read_registration(&read("12345", None), "00000").is_none());
         assert!(read_registration(&DocumentReading::default(), "00000").is_none());
+    }
+
+    /// A pending claim on a firm's draft, with its file uploaded, and the
+    /// draft's TIN root.
+    async fn pending_claim() -> (crate::store::StoredClaim, String) {
+        use base64::Engine as _;
+        use crate::db_tests::{MANAGE, firm, profile, user};
+        let member = user().await;
+        let org = firm(&member, &[MANAGE]).await;
+        let (_, tin_root) = profile(&member, Some(&org)).await;
+        let claimant = user().await;
+        let claim = start_ownership_claim(
+            OwnershipClaimStartRequest { tin_root: tin_root.clone(), branch_code: "00000".to_owned() },
+            claimant.auth(),
+        )
+        .await
+        .expect("start");
+        let pdf = b"%PDF-1.4\n% test fixture\n%%EOF\n";
+        let part = OwnershipClaimPartRequest {
+            index: 0,
+            total: 1,
+            data: base64::engine::general_purpose::STANDARD.encode(pdf),
+        };
+        upload_ownership_claim_part(claim.claim_id.clone(), part, claimant.auth())
+            .await
+            .expect("upload");
+        let stored = crate::store::load_ownership_claim(&claim.claim_id)
+            .await
+            .expect("load")
+            .expect("claim");
+        (stored, tin_root)
+    }
+
+    fn outcome(findings: &[ClaimFindingView], check: &str) -> String {
+        findings.iter().find(|f| f.check == check).expect(check).outcome.clone()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_reading_is_checked_against_the_claimed_profile() {
+        if !crate::db_tests::database() {
+            return;
+        }
+        let (claim, tin_root) = pending_claim().await;
+        let reading = |tin: &str| DocumentReading {
+            registered_name: Some("Test Taxpayer".to_owned()),
+            ..read(tin, None)
+        };
+        let (_, same) = assess_reading(&claim, &reading(&tin_root)).await.expect("assess");
+        assert_eq!(outcome(&same, "tin"), "matches");
+        assert_eq!(outcome(&same, "registered_name"), "matches");
+
+        let other = if tin_root.starts_with('8') { "912345678" } else { "812345678" };
+        let (recommended, differs) = assess_reading(&claim, &reading(other)).await.expect("assess");
+        assert_eq!(outcome(&differs, "tin"), "differs");
+        assert_eq!(recommended, "not_claimable");
+
+        let (_, unreadable) = assess_reading(&claim, &reading("12")).await.expect("assess");
+        assert_eq!(outcome(&unreadable, "tin"), "unchecked");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ai_review_runs_only_when_configured_and_records_why_it_could_not_read() {
+        use crate::claim_ai::config::{AssessmentConfig, ClassifierConfig, ClassifierRoute, Endpoint};
+        if !crate::db_tests::database() {
+            return;
+        }
+        let (claim, _) = pending_claim().await;
+        let stored = || async {
+            crate::store::list_pending_ownership_claims()
+                .await
+                .expect("queue")
+                .into_iter()
+                .find(|c| c.claim_id == claim.claim_id)
+                .expect("pending")
+                .ai_assessment
+        };
+        let pdf = b"%PDF-1.4\n";
+        assert!(!run_ai_review(&claim, UploadKind::Pdf, pdf, Ok(AssessmentConfig::default())).await.unwrap());
+        assert!(stored().await.is_none(), "an unconfigured review stores nothing");
+
+        let jev_on_a_gateway = AssessmentConfig {
+            reader: None,
+            classifier: Some(ClassifierConfig {
+                route: ClassifierRoute::Decisions,
+                endpoint: Endpoint { base_url: "https://gw.test".into(), api_key: "k".into(), model: "jev".into() },
+            }),
+        };
+        assert!(run_ai_review(&claim, UploadKind::Pdf, pdf, Ok(jev_on_a_gateway)).await.unwrap());
+        let view = stored().await.expect("stored");
+        assert!(view.problems.iter().any(|p| p.contains("Jev skipped")), "{:?}", view.problems);
+        assert_eq!(view.recommendation, None);
+
+        assert!(run_ai_review(&claim, UploadKind::Pdf, pdf, Err("bad shape".into())).await.unwrap());
+        let view = stored().await.expect("stored");
+        assert_eq!(view.problems, ["AI review is misconfigured: bad shape"]);
     }
 
     #[test]
